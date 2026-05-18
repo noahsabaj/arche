@@ -143,6 +143,7 @@ mod tests {
             world: CoreWorld {
                 name: "Main".to_string(),
             },
+            systems: vec![],
             functions: vec![CoreFunction {
                 name: "startup".to_string(),
                 entry: BlockId(0),

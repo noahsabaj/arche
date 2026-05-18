@@ -494,6 +494,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_spawn_position_to_core")
 
     Invoke-CheckedCommand `
+        -Name "lowers_move_system_to_core_metadata" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_move_system_to_core_metadata")
+
+    Invoke-CheckedCommand `
         -Name "core_verifier_accepts_lowered_math" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "core_verifier_accepts_lowered_math")

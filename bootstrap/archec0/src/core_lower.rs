@@ -4,14 +4,17 @@ use std::collections::HashMap;
 
 use crate::core::{
     BlockId, CoreBinaryOp, CoreBlock, CoreFunction, CoreInstruction, CoreLocal, CoreProgram,
-    CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreTerminator, CoreType, CoreWorld,
-    LocalId, ValueId,
+    CoreQueryAccess, CoreQueryTerm, CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue,
+    CoreSystem, CoreSystemParam, CoreSystemParamKind, CoreTerminator, CoreType, CoreWorld, LocalId,
+    ValueId,
 };
 use crate::layout;
 use crate::parser::{
-    BinaryOperator, ComponentDecl, ComponentLiteralValue, Expression, Program, SpawnComponentField,
-    SpawnComponentLiteral, SpawnStatement, StartupBlock, Statement,
+    BinaryOperator, ComponentDecl, ComponentLiteralValue, Expression, Program,
+    QueryAccess as ParserQueryAccess, ResourceDecl, SpawnComponentField, SpawnComponentLiteral,
+    SpawnStatement, StartupBlock, Statement, SystemDecl, SystemParam, SystemParamKind,
 };
+use crate::runtime;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreLowerError {
@@ -23,12 +26,14 @@ pub fn lower_program_to_core(program: &Program) -> Result<CoreProgram, CoreLower
         .startup
         .as_ref()
         .ok_or_else(|| lower_error("expected startup block"))?;
+    let systems = lower_systems(program)?;
     let (locals, instructions, terminator) = StartupLowerer::new(program).lower_startup(startup)?;
 
     Ok(CoreProgram {
         world: CoreWorld {
             name: program.world.name.clone(),
         },
+        systems,
         functions: vec![CoreFunction {
             name: "startup".to_string(),
             entry: BlockId(0),
@@ -40,6 +45,99 @@ pub fn lower_program_to_core(program: &Program) -> Result<CoreProgram, CoreLower
             }],
         }],
     })
+}
+
+fn lower_systems(program: &Program) -> Result<Vec<CoreSystem>, CoreLowerError> {
+    program
+        .systems
+        .iter()
+        .map(|system| lower_system(program, system))
+        .collect()
+}
+
+fn lower_system(program: &Program, system: &SystemDecl) -> Result<CoreSystem, CoreLowerError> {
+    let params = system
+        .params
+        .iter()
+        .map(|param| lower_system_param(program, param))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(CoreSystem {
+        name: system.name.clone(),
+        params,
+    })
+}
+
+fn lower_system_param(
+    program: &Program,
+    param: &SystemParam,
+) -> Result<CoreSystemParam, CoreLowerError> {
+    let kind = match &param.kind {
+        SystemParamKind::ReadResource { resource_name } => {
+            resolve_resource(&program.resources, resource_name)?;
+            CoreSystemParamKind::ReadResource {
+                resource_id: runtime::stable_resource_id(&program.world.name, resource_name).0,
+                name: qualified_name(&program.world.name, resource_name),
+            }
+        }
+        SystemParamKind::Query { terms } => {
+            let terms = terms
+                .iter()
+                .map(|term| {
+                    resolve_component(&program.components, &term.component_name)?;
+                    Ok(CoreQueryTerm {
+                        access: lower_query_access(term.access),
+                        component_id: layout::stable_component_id(
+                            &program.world.name,
+                            &term.component_name,
+                        )
+                        .0,
+                        name: layout::component_qualified_name(
+                            &program.world.name,
+                            &term.component_name,
+                        ),
+                    })
+                })
+                .collect::<Result<Vec<_>, CoreLowerError>>()?;
+            CoreSystemParamKind::Query { terms }
+        }
+    };
+
+    Ok(CoreSystemParam {
+        name: param.name.clone(),
+        kind,
+    })
+}
+
+fn resolve_resource<'a>(
+    resources: &'a [ResourceDecl],
+    name: &str,
+) -> Result<&'a ResourceDecl, CoreLowerError> {
+    resources
+        .iter()
+        .find(|resource| resource.name == name)
+        .ok_or_else(|| lower_error(format!("unknown resource `{name}`")))
+}
+
+fn resolve_component<'a>(
+    components: &'a [ComponentDecl],
+    name: &str,
+) -> Result<&'a ComponentDecl, CoreLowerError> {
+    components
+        .iter()
+        .find(|component| component.name == name)
+        .ok_or_else(|| lower_error(format!("unknown component `{name}`")))
+}
+
+fn lower_query_access(access: ParserQueryAccess) -> CoreQueryAccess {
+    match access {
+        ParserQueryAccess::Read => CoreQueryAccess::Read,
+        ParserQueryAccess::Mut => CoreQueryAccess::Mut,
+    }
+}
+
+fn qualified_name(world_name: &str, item_name: &str) -> String {
+    format!("{world_name}.{item_name}")
 }
 
 struct StartupLowerer<'a> {
@@ -259,7 +357,10 @@ fn lower_error(message: impl Into<String>) -> CoreLowerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue};
+    use crate::core::{
+        CoreQueryAccess, CoreQueryTerm, CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue,
+        CoreSystem, CoreSystemParam, CoreSystemParamKind,
+    };
     use crate::lexer;
     use crate::parser;
 
@@ -274,6 +375,7 @@ mod tests {
             world: CoreWorld {
                 name: "Main".to_string(),
             },
+            systems: vec![],
             functions: vec![CoreFunction {
                 name: "startup".to_string(),
                 entry: BlockId(0),
@@ -327,6 +429,7 @@ mod tests {
             world: CoreWorld {
                 name: "Demo".to_string(),
             },
+            systems: vec![],
             functions: vec![CoreFunction {
                 name: "startup".to_string(),
                 entry: BlockId(0),
@@ -355,6 +458,64 @@ mod tests {
                             value: 0,
                         },
                     ],
+                    terminator: CoreTerminator::Exit { value: ValueId(0) },
+                }],
+            }],
+        };
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn lowers_move_system_to_core_metadata() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let ast = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let actual = lower_program_to_core(&ast).expect("move_system.arc lowers to Core");
+
+        let expected = CoreProgram {
+            world: CoreWorld {
+                name: "Demo".to_string(),
+            },
+            systems: vec![CoreSystem {
+                name: "Move".to_string(),
+                params: vec![
+                    CoreSystemParam {
+                        name: "time".to_string(),
+                        kind: CoreSystemParamKind::ReadResource {
+                            resource_id: 0x7924ce11db524521,
+                            name: "Demo.Time".to_string(),
+                        },
+                    },
+                    CoreSystemParam {
+                        name: "movers".to_string(),
+                        kind: CoreSystemParamKind::Query {
+                            terms: vec![
+                                CoreQueryTerm {
+                                    access: CoreQueryAccess::Mut,
+                                    component_id: 0x002202c6aeb4f27b,
+                                    name: "Demo.Position".to_string(),
+                                },
+                                CoreQueryTerm {
+                                    access: CoreQueryAccess::Read,
+                                    component_id: 0x2cf8a68bcb7f913b,
+                                    name: "Demo.Velocity".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            }],
+            functions: vec![CoreFunction {
+                name: "startup".to_string(),
+                entry: BlockId(0),
+                locals: vec![],
+                blocks: vec![CoreBlock {
+                    id: BlockId(0),
+                    instructions: vec![CoreInstruction::I32Const {
+                        result: ValueId(0),
+                        value: 0,
+                    }],
                     terminator: CoreTerminator::Exit { value: ValueId(0) },
                 }],
             }],

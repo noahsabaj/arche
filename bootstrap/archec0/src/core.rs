@@ -12,12 +12,44 @@ pub struct BlockId(pub u32);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreProgram {
     pub world: CoreWorld,
+    pub systems: Vec<CoreSystem>,
     pub functions: Vec<CoreFunction>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreWorld {
     pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreSystem {
+    pub name: String,
+    pub params: Vec<CoreSystemParam>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreSystemParam {
+    pub name: String,
+    pub kind: CoreSystemParamKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CoreSystemParamKind {
+    ReadResource { resource_id: u64, name: String },
+    Query { terms: Vec<CoreQueryTerm> },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreQueryTerm {
+    pub access: CoreQueryAccess,
+    pub component_id: u64,
+    pub name: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoreQueryAccess {
+    Read,
+    Mut,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,6 +144,7 @@ mod tests {
             world: CoreWorld {
                 name: "Main".to_string(),
             },
+            systems: vec![],
             functions: vec![CoreFunction {
                 name: "startup".to_string(),
                 entry: BlockId(0),
