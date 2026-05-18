@@ -332,6 +332,13 @@ impl QueryPlan {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QueryRow {
+    pub archetype_index: usize,
+    pub row: usize,
+    pub entity: ArcheEntity,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct QueryDescriptorTable {
     descriptors: Vec<QueryDescriptor>,
@@ -809,6 +816,26 @@ impl ArcheWorld {
             query_name: query.name.clone(),
             entries,
         }
+    }
+
+    pub fn iter_query_rows(&self, plan: &QueryPlan) -> Vec<QueryRow> {
+        let mut rows = Vec::new();
+
+        for entry in plan.entries() {
+            if let Some(table) = self.archetypes.get(entry.archetype_index) {
+                for row in 0..table.entity_count() {
+                    if let Some(entity) = table.entity(row) {
+                        rows.push(QueryRow {
+                            archetype_index: entry.archetype_index,
+                            row,
+                            entity,
+                        });
+                    }
+                }
+            }
+        }
+
+        rows
     }
 
     pub fn allocate_resource_storage(
@@ -1453,6 +1480,65 @@ mod tests {
         assert_eq!(empty_plan.len(), 0);
         assert!(empty_plan.is_empty());
         assert_eq!(empty_plan.entries(), &[]);
+    }
+
+    #[test]
+    fn iterates_position_velocity_query_rows() {
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let query = QueryDescriptor {
+            id: stable_query_id("Demo", "Move", "movers"),
+            name: "Demo.Move.movers".to_string(),
+            terms: vec![
+                QueryTermDescriptor {
+                    access: QueryAccess::Mut,
+                    component_id: position_id,
+                    name: "Demo.Position".to_string(),
+                },
+                QueryTermDescriptor {
+                    access: QueryAccess::Read,
+                    component_id: velocity_id,
+                    name: "Demo.Velocity".to_string(),
+                },
+            ],
+        };
+        let mut world = ArcheWorld::create();
+        let entity = world.alloc_entity();
+
+        world.get_or_create_archetype(ArchetypeKey::new(vec![position_id]));
+        {
+            let table =
+                world.get_or_create_archetype(ArchetypeKey::new(vec![position_id, velocity_id]));
+            assert_eq!(table.insert_entity(entity), 0);
+        }
+
+        let plan = world.build_query_plan(&query);
+        let rows = world.iter_query_rows(&plan);
+
+        assert_eq!(
+            rows,
+            vec![QueryRow {
+                archetype_index: 1,
+                row: 0,
+                entity,
+            }]
+        );
+        assert_eq!(rows[0].entity.index(), 0);
+        assert_eq!(rows[0].entity.generation(), 0);
+        assert!(world.entities().is_alive(entity));
+
+        let empty_query = QueryDescriptor {
+            id: stable_query_id("Demo", "Move", "missing"),
+            name: "Demo.Move.missing".to_string(),
+            terms: vec![QueryTermDescriptor {
+                access: QueryAccess::Read,
+                component_id: ComponentId(0xffff000000000002),
+                name: "Demo.Missing".to_string(),
+            }],
+        };
+        let empty_plan = world.build_query_plan(&empty_query);
+
+        assert!(world.iter_query_rows(&empty_plan).is_empty());
     }
 
     #[test]
