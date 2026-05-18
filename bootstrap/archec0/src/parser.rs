@@ -55,6 +55,19 @@ pub struct SystemParam {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SystemParamKind {
     ReadResource { resource_name: String },
+    Query { terms: Vec<QueryTerm> },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryTerm {
+    pub access: QueryAccess,
+    pub component_name: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum QueryAccess {
+    Read,
+    Mut,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -313,18 +326,69 @@ impl Parser<'_> {
         let name = self.parse_identifier("expected system parameter name")?;
         self.expect(TokenKind::Colon, "expected `:` after system parameter name")?;
 
-        if !self.match_keyword(Keyword::Read) {
-            return Err(ParseError {
-                span: self.peek().span,
-                message: "expected `read` system parameter access".to_string(),
+        if self.match_keyword(Keyword::Read) {
+            let resource_name = self.parse_identifier("expected resource name after `read`")?;
+
+            return Ok(SystemParam {
+                name,
+                kind: SystemParamKind::ReadResource { resource_name },
             });
         }
 
-        let resource_name = self.parse_identifier("expected resource name after `read`")?;
+        if self.match_keyword(Keyword::Query) {
+            let terms = self.parse_query_terms()?;
 
-        Ok(SystemParam {
-            name,
-            kind: SystemParamKind::ReadResource { resource_name },
+            return Ok(SystemParam {
+                name,
+                kind: SystemParamKind::Query { terms },
+            });
+        }
+
+        Err(ParseError {
+            span: self.peek().span,
+            message: "expected `read` or `query` system parameter access".to_string(),
+        })
+    }
+
+    fn parse_query_terms(&mut self) -> Result<Vec<QueryTerm>, ParseError> {
+        self.expect(TokenKind::LeftBracket, "expected `[` after `query`")?;
+
+        let mut terms = Vec::new();
+        if self.peek().kind == TokenKind::RightBracket {
+            return Err(ParseError {
+                span: self.peek().span,
+                message: "expected query component term".to_string(),
+            });
+        }
+
+        loop {
+            terms.push(self.parse_query_term()?);
+
+            if self.peek().kind != TokenKind::Comma {
+                break;
+            }
+
+            self.advance();
+        }
+
+        self.expect(
+            TokenKind::RightBracket,
+            "expected `]` after query component terms",
+        )?;
+        Ok(terms)
+    }
+
+    fn parse_query_term(&mut self) -> Result<QueryTerm, ParseError> {
+        let access = if self.match_keyword(Keyword::Mut) {
+            QueryAccess::Mut
+        } else {
+            QueryAccess::Read
+        };
+        let component_name = self.parse_identifier("expected query component name")?;
+
+        Ok(QueryTerm {
+            access,
+            component_name,
         })
     }
 
@@ -707,7 +771,8 @@ impl fmt::Display for Program {
                 writeln!(formatter, "    params 0")?;
             } else {
                 for param in &system.params {
-                    writeln!(formatter, "    {}", format_system_param(param))?;
+                    write_system_param(formatter, param)?;
+                    writeln!(formatter)?;
                 }
             }
             write!(formatter, "    body empty")?;
@@ -855,11 +920,37 @@ fn write_component_literal_value(
     }
 }
 
-fn format_system_param(param: &SystemParam) -> String {
+fn write_system_param(formatter: &mut fmt::Formatter<'_>, param: &SystemParam) -> fmt::Result {
     match &param.kind {
         SystemParamKind::ReadResource { resource_name } => {
-            format!("param {}: read {}", param.name, resource_name)
+            write!(
+                formatter,
+                "    param {}: read {}",
+                param.name, resource_name
+            )
         }
+        SystemParamKind::Query { terms } => {
+            writeln!(formatter, "    param {}: query", param.name)?;
+            for (index, term) in terms.iter().enumerate() {
+                if index > 0 {
+                    writeln!(formatter)?;
+                }
+                write!(
+                    formatter,
+                    "      {} {}",
+                    format_query_access(term.access),
+                    term.component_name
+                )?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn format_query_access(access: QueryAccess) -> &'static str {
+    match access {
+        QueryAccess::Read => "read",
+        QueryAccess::Mut => "mut",
     }
 }
 

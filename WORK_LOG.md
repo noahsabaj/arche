@@ -66,7 +66,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M9-003 | Parse system query parameters | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast` represents a `query[mut Position, Velocity]` parameter without query planning or runtime scanning. |
+| M9-004 | Lower system declarations to Core metadata | A focused unit test proves parsed system declarations lower into canonical Core system metadata without executable behavior. |
 
 ### Doing
 
@@ -136,6 +136,7 @@ Board rules:
 | M8-006 | Add resource source fixture | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\time_delta.arc --emit-ast` printed the exact AST for a `Demo.Time` resource declaration and startup `resource Time { delta: 1.0 }` statement; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the `time_delta.arc --emit-ast` assertion included. This was parser/AST-only: no resource execution, systems, queries, Core lowering, runtime wiring, ELF/codegen changes, or generated executable behavior was added. M8 resources are complete. Implementation commit: `bdcda43`. |
 | M9-001 | Parse system declarations | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast` printed the exact AST for a named empty `system Move() {}` declaration; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the `move_system.arc --emit-ast` assertion included. This was parser/AST-only: no resource params, query params, schedules, Core metadata, runtime descriptors, or execution behavior was added. Implementation commit: `6bf5db1`. |
 | M9-002 | Parse system resource parameters | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast` printed the exact AST for `system Move(time: read Time)`, including the `Demo.Time` resource declaration and `param time: read Time`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the updated `move_system.arc --emit-ast` assertion included. This was parser/AST-only: no type checking, resource binding, Core lowering, scheduling, runtime descriptors, or execution behavior was added. Implementation commit: `9f188cd`. |
+| M9-003 | Parse system query parameters | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast` printed the exact AST for `system Move` with `time: read Time` and `movers: query[mut Position, Velocity]`, including `mut Position` and default `read Velocity`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the updated `move_system.arc --emit-ast` assertion included. This was parser/AST-only: no query planning, type checking, Core metadata, runtime descriptors, scheduling, or execution behavior was added. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -143,7 +144,6 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M9-004 | Lower system declarations to Core metadata | A focused unit test proves parsed system declarations lower into canonical Core system metadata without executable behavior. |
 | M9-005 | Add runtime system descriptor table | A runtime unit test registers and retrieves a `Move` system descriptor with deterministic metadata. |
 | M9-006 | Add system source fixture using Time.delta | A source fixture proves a non-executed system body can reference `Time.delta` and component fields without adding query loops. |
 
@@ -1234,19 +1234,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M9-002 stayed parser/AST-only | 99/100 |
-| `move_system.arc --emit-ast` proves source-level read-resource parameter syntax for `system Move(time: read Time)` | 99/100 |
+| M9-003 stayed parser/AST-only | 99/100 |
+| `move_system.arc --emit-ast` proves source-level query parameter syntax for `system Move(..., movers: query[mut Position, Velocity])` | 99/100 |
 | Existing M0-M9 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M9-002 complete and controlled M9 progress | 99/100 |
-| Active inventory promotes only M9-003 while keeping M9-004 through M9-006 in Backlog | 98/100 |
+| Board state reflects M9-003 complete and controlled M9 progress | 99/100 |
+| Active inventory promotes only M9-004 while keeping M9-005 and M9-006 in Backlog | 98/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M9-003` in `Ready`.
+- The active board has only `M9-004` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, M9-001, and M9-002.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, M9-001, M9-002, and M9-003.
 - Detailed active inventory includes M9-001 through M9-006 only.
 - M10 query-loop work remains a proof target only.
-- M7 spawn entities and M8 resources are complete; M9 has named system declarations and read-resource parameters, and next adds query parameters before Core metadata, runtime descriptors, or any query-loop execution.
+- M7 spawn entities and M8 resources are complete; M9 has named system declarations, read-resource parameters, and query parameters; next lowers system declarations to Core metadata before runtime descriptors or any query-loop execution.

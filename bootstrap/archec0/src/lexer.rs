@@ -16,6 +16,8 @@ pub enum TokenKind {
     RightBrace,
     LeftParen,
     RightParen,
+    LeftBracket,
+    RightBracket,
     Colon,
     Comma,
     Equal,
@@ -185,6 +187,20 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                     span: Span { start, end: index },
                 });
             }
+            '[' => {
+                index += 1;
+                tokens.push(Token {
+                    kind: TokenKind::LeftBracket,
+                    span: Span { start, end: index },
+                });
+            }
+            ']' => {
+                index += 1;
+                tokens.push(Token {
+                    kind: TokenKind::RightBracket,
+                    span: Span { start, end: index },
+                });
+            }
             ':' => {
                 index += 1;
                 tokens.push(Token {
@@ -333,6 +349,8 @@ impl fmt::Display for TokenKind {
             Self::RightBrace => formatter.write_str("RightBrace"),
             Self::LeftParen => formatter.write_str("LeftParen"),
             Self::RightParen => formatter.write_str("RightParen"),
+            Self::LeftBracket => formatter.write_str("LeftBracket"),
+            Self::RightBracket => formatter.write_str("RightBracket"),
             Self::Colon => formatter.write_str("Colon"),
             Self::Comma => formatter.write_str("Comma"),
             Self::Equal => formatter.write_str("Equal"),

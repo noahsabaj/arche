@@ -29,8 +29,9 @@ The proof chain currently demonstrates:
 - Source-level parsing for a `Demo.Time` resource fixture with `Time { delta: 1.0 }`.
 - Source-level parsing for named system declarations, starting with `system Move() {}`.
 - Source-level parsing for system read-resource parameters, starting with `time: read Time`.
+- Source-level parsing for system query parameters, starting with `movers: query[mut Position, Velocity]`.
 
-M8 resources are complete. The active board is currently on M9 systems. The next proof is parsing system query parameters.
+M8 resources are complete. The active board is currently on M9 systems. The next proof is lowering system declarations to Arche Core metadata.
 
 ## What This Is Not Yet
 
