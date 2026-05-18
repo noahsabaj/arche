@@ -41,8 +41,9 @@ The proof chain currently demonstrates:
 - Runtime `Move` application over query rows, updating `Position` from `Velocity * Time.delta`.
 - Source-level parsing for schedule declarations, starting with `schedule Main { run Move }`.
 - Core metadata lowering for schedule declarations.
+- Runtime schedule descriptor registration for `Demo.Main`.
 
-M10 first query loop is complete. The active board is currently on M11 schedules. The next proof is runtime schedule descriptor registration.
+M10 first query loop is complete. The active board is currently on M11 schedules. The next proof is building a sequential schedule plan.
 
 ## What This Is Not Yet
 

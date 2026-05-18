@@ -275,6 +275,58 @@ pub fn stable_system_id(world_name: &str, system_name: &str) -> SystemId {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScheduleId(pub u64);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScheduleItemDescriptor {
+    Run {
+        system_id: SystemId,
+        system_name: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScheduleDescriptor {
+    pub id: ScheduleId,
+    pub name: String,
+    pub items: Vec<ScheduleItemDescriptor>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ScheduleDescriptorTable {
+    descriptors: Vec<ScheduleDescriptor>,
+}
+
+impl ScheduleDescriptorTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.descriptors.len()
+    }
+
+    pub fn register(&mut self, descriptor: ScheduleDescriptor) -> bool {
+        if self.get(descriptor.id).is_some() {
+            return false;
+        }
+
+        self.descriptors.push(descriptor);
+        true
+    }
+
+    pub fn get(&self, id: ScheduleId) -> Option<&ScheduleDescriptor> {
+        self.descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+    }
+}
+
+pub fn stable_schedule_id(world_name: &str, schedule_name: &str) -> ScheduleId {
+    ScheduleId(stable_qualified_id(world_name, schedule_name))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueryId(pub u64);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -736,6 +788,7 @@ pub struct ArcheWorld {
     component_descriptors: ComponentDescriptorTable,
     resource_descriptors: ResourceDescriptorTable,
     system_descriptors: SystemDescriptorTable,
+    schedule_descriptors: ScheduleDescriptorTable,
     query_descriptors: QueryDescriptorTable,
     resource_storages: Vec<ResourceStorage>,
     archetypes: Vec<ArchetypeTable>,
@@ -748,6 +801,7 @@ impl ArcheWorld {
             component_descriptors: ComponentDescriptorTable::new(),
             resource_descriptors: ResourceDescriptorTable::new(),
             system_descriptors: SystemDescriptorTable::new(),
+            schedule_descriptors: ScheduleDescriptorTable::new(),
             query_descriptors: QueryDescriptorTable::new(),
             resource_storages: Vec::new(),
             archetypes: Vec::new(),
@@ -786,6 +840,14 @@ impl ArcheWorld {
 
     pub fn system_descriptors(&self) -> &SystemDescriptorTable {
         &self.system_descriptors
+    }
+
+    pub fn register_schedule_descriptor(&mut self, descriptor: ScheduleDescriptor) -> bool {
+        self.schedule_descriptors.register(descriptor)
+    }
+
+    pub fn schedule_descriptors(&self) -> &ScheduleDescriptorTable {
+        &self.schedule_descriptors
     }
 
     pub fn register_query_descriptor(&mut self, descriptor: QueryDescriptor) -> bool {
@@ -958,6 +1020,7 @@ impl ArcheWorld {
             && self.component_descriptors.len() == 0
             && self.resource_descriptors.len() == 0
             && self.system_descriptors.len() == 0
+            && self.schedule_descriptors.len() == 0
             && self.query_descriptors.len() == 0
             && self.resource_storages.is_empty()
             && self.archetypes.is_empty()
@@ -1330,6 +1393,55 @@ mod tests {
 
         assert!(!world.register_system_descriptor(duplicate));
         assert_eq!(world.system_descriptors().get(move_id), Some(&move_system));
+    }
+
+    #[test]
+    fn registers_main_schedule_descriptor() {
+        let main_id = stable_schedule_id("Demo", "Main");
+        let main_schedule = ScheduleDescriptor {
+            id: main_id,
+            name: "Demo.Main".to_string(),
+            items: vec![ScheduleItemDescriptor::Run {
+                system_id: SystemId(0x723b6b52df270ed5),
+                system_name: "Demo.Move".to_string(),
+            }],
+        };
+        let mut world = ArcheWorld::create();
+
+        assert_eq!(main_id, ScheduleId(0xed3d905325519b05));
+        assert!(world.register_schedule_descriptor(main_schedule.clone()));
+        assert_eq!(world.schedule_descriptors().len(), 1);
+        assert_eq!(
+            world.schedule_descriptors().get(main_id),
+            Some(&main_schedule)
+        );
+
+        let descriptor = world
+            .schedule_descriptors()
+            .get(main_id)
+            .expect("Demo.Main schedule descriptor should be registered");
+        assert_eq!(descriptor.id, ScheduleId(0xed3d905325519b05));
+        assert_eq!(descriptor.name, "Demo.Main");
+        assert_eq!(descriptor.items.len(), 1);
+        assert_eq!(
+            descriptor.items[0],
+            ScheduleItemDescriptor::Run {
+                system_id: SystemId(0x723b6b52df270ed5),
+                system_name: "Demo.Move".to_string(),
+            }
+        );
+
+        let duplicate = ScheduleDescriptor {
+            id: main_id,
+            name: "Demo.Main.Duplicate".to_string(),
+            items: Vec::new(),
+        };
+
+        assert!(!world.register_schedule_descriptor(duplicate));
+        assert_eq!(
+            world.schedule_descriptors().get(main_id),
+            Some(&main_schedule)
+        );
     }
 
     #[test]
@@ -2219,6 +2331,7 @@ mod tests {
         assert_eq!(world.component_descriptors().len(), 0);
         assert_eq!(world.resource_descriptors().len(), 0);
         assert_eq!(world.system_descriptors().len(), 0);
+        assert_eq!(world.schedule_descriptors().len(), 0);
         assert_eq!(world.query_descriptors().len(), 0);
         assert_eq!(world.resource_storage_count(), 0);
         assert_eq!(world.archetype_count(), 0);
