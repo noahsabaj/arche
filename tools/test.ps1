@@ -791,6 +791,27 @@ try {
             "      integer 0"
         )
 
+    $timeDeltaAstOutput = @(Invoke-CheckedCommandWithOutput `
+        -Name "archec0 examples/time_delta.arc --emit-ast" `
+        -Executable "cargo" `
+        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\time_delta.arc", "--emit-ast"))
+
+    Assert-LinesEqual `
+        -Name "time_delta AST" `
+        -Actual $timeDeltaAstOutput `
+        -Expected @(
+            "Program",
+            "  world Demo",
+            "  resource Time",
+            "    field delta: f32",
+            "  startup",
+            "    resource Time",
+            "      field delta",
+            "        float 1.0",
+            "    exit",
+            "      integer 0"
+        )
+
     $positionInspectOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/position.arc --inspect-components" `
         -Executable "cargo" `

@@ -26,8 +26,9 @@ The proof chain currently demonstrates:
 - Runtime storage of exact little-endian `Time.delta` payload bytes.
 - Runtime retrieval and decoding of `Time.delta` as `1.0f32`.
 - Runtime debug inspection of stored singleton resource state.
+- Source-level parsing for a `Demo.Time` resource fixture with `Time { delta: 1.0 }`.
 
-The active board is currently on M8 resources. The next proof is adding a source fixture for `Time { delta: 1.0 }`.
+M8 resources are complete. The active board is currently on M9 systems. The next proof is parsing system declarations.
 
 ## What This Is Not Yet
 
@@ -69,6 +70,7 @@ The runner builds `archec0`, checks parser/Core/runtime proofs, emits ELF64 bina
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- --help
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\math.arc --emit-ast
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\math.arc --emit-core
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\time_delta.arc --emit-ast
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\position.arc --inspect-components
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\exit42.arc -o .\build\exit42
 ```

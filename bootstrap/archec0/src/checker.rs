@@ -52,6 +52,10 @@ fn check_statement(
             span: crate::lexer::Span { start: 0, end: 0 },
             message: "spawn checking is not implemented yet".to_string(),
         }),
+        Statement::Resource(_) => Err(CheckError {
+            span: crate::lexer::Span { start: 0, end: 0 },
+            message: "resource checking is not implemented yet".to_string(),
+        }),
     }
 }
 

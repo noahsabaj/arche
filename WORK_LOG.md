@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M8 resources.
+**Current focus:** M9 system/resource access.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -66,7 +66,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M8-006 | Add resource source fixture | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\time_delta.arc --emit-ast` proves a source fixture represents `Time { delta: 1.0 }` without adding system execution or query behavior. |
+| M9-001 | Parse system declarations | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast` proves a named `system Move` declaration can be represented without params, queries, scheduling, or execution. |
 
 ### Doing
 
@@ -133,12 +133,19 @@ Board rules:
 | M8-003 | Store Time.delta payload | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml stores_time_delta_resource_payload` passed, proving `ArcheWorld` can copy exact little-endian `f32` payload bytes `00 00 80 3F` for `Demo.Time.delta` into existing aligned singleton resource storage, preserve the single storage allocation, and leave descriptor metadata intact; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource-payload proof included. This was byte storage only: no payload decoding, source fixture, systems, queries, CLI behavior, Core changes, ELF/codegen changes, or generated executable behavior was added. Implementation commit: `8a97272`. |
 | M8-004 | Retrieve Time.delta payload | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml retrieves_time_delta_resource_payload` passed, proving `ArcheWorld` can read raw singleton resource payload bytes and decode `Demo.Time.delta` as little-endian IEEE-754 `1.0f32` using resource descriptor metadata; missing storage and missing fields return `ResourceStorageError`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource-retrieval proof included. This was runtime retrieval only: no source fixture, systems, queries, CLI behavior, Core changes, ELF/codegen changes, generated executable behavior, or debug inspection text was added. Implementation commit: `44f8b3e`. |
 | M8-005 | Add runtime resource inspection | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml debug_inspects_time_delta_resource` passed, proving `debug_inspect_world` reports stored singleton resource state as `resources 1`, `resource Demo.Time`, and `delta: f32 = 1.0`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource-inspection proof included. This was runtime inspection only: no source fixture, parser changes, systems, queries, CLI behavior, Core changes, ELF/codegen changes, or generated executable behavior was added. Implementation commit: `17ee641`. |
+| M8-006 | Add resource source fixture | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\time_delta.arc --emit-ast` printed the exact AST for a `Demo.Time` resource declaration and startup `resource Time { delta: 1.0 }` statement; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the `time_delta.arc --emit-ast` assertion included. This was parser/AST-only: no resource execution, systems, queries, Core lowering, runtime wiring, ELF/codegen changes, or generated executable behavior was added. M8 resources are complete. Implementation commit: `pending`. |
 
 ### Backlog
 
 Dependency ordered:
 
-Empty.
+| Issue | Title | Done when |
+|---|---|---|
+| M9-002 | Parse system resource parameters | `move_system.arc --emit-ast` represents a `Time` resource parameter without type checking, resource binding, scheduling, or execution. |
+| M9-003 | Parse system query parameters | `move_system.arc --emit-ast` represents a `query[mut Position, Velocity]` parameter without query planning or runtime scanning. |
+| M9-004 | Lower system declarations to Core metadata | A focused unit test proves parsed system declarations lower into canonical Core system metadata without executable behavior. |
+| M9-005 | Add runtime system descriptor table | A runtime unit test registers and retrieves a `Move` system descriptor with deterministic metadata. |
+| M9-006 | Add system source fixture using Time.delta | A source fixture proves a non-executed system body can reference `Time.delta` and component fields without adding query loops. |
 
 ## Milestones
 
@@ -372,7 +379,7 @@ after a compiled `Move` system scans `Position` and `Velocity` component columns
 
 M10 is the first true Arche milestone. Everything before it exists to make this possible.
 
-## Detailed Issues M0-M8
+## Detailed Issues M0-M9
 
 ### M0 Epic: Permanent Engineering Loop
 
@@ -1055,7 +1062,7 @@ Done when runtime inspection proves the world has `1` entity, the entity has `Po
 
 ### M8 Epic: Resources
 
-Only M8-001 through M8-006 are expanded now. Do not expand M9-M10 into a large active board before singleton resource payload proofs are complete.
+M8 is complete. It proved singleton resource descriptors, aligned storage, payload storage, retrieval, runtime inspection, and a source fixture for `Time { delta: 1.0 }`.
 
 #### M8-001: Define runtime resource descriptors
 
@@ -1117,6 +1124,70 @@ cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\time_delt
 
 Done when a source fixture represents `Time { delta: 1.0 }` without adding system execution or query behavior.
 
+### M9 Epic: Systems
+
+M9 is expanded only through the controlled system declaration backlog below. Do not expand M10 query-loop work before system declarations and descriptors are proven.
+
+#### M9-001: Parse system declarations
+
+Acceptance test:
+
+```powershell
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast
+```
+
+Done when a source fixture represents a named `system Move` declaration without parsing resource params, query params, scheduling, or execution.
+
+#### M9-002: Parse system resource parameters
+
+Acceptance test:
+
+```powershell
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast
+```
+
+Done when `move_system.arc --emit-ast` represents a `Time` resource parameter without binding or execution behavior.
+
+#### M9-003: Parse system query parameters
+
+Acceptance test:
+
+```powershell
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast
+```
+
+Done when `move_system.arc --emit-ast` represents a `query[mut Position, Velocity]` parameter without query planning or runtime scanning.
+
+#### M9-004: Lower system declarations to Core metadata
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_move_system_to_core_metadata
+```
+
+Done when parsed system declarations lower into canonical Core system metadata without executable behavior.
+
+#### M9-005: Add runtime system descriptor table
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml registers_move_system_descriptor
+```
+
+Done when the runtime registers and retrieves a `Move` system descriptor with deterministic metadata.
+
+#### M9-006: Add system source fixture using Time.delta
+
+Acceptance test:
+
+```powershell
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast
+```
+
+Done when a source fixture proves a non-executed system body can reference `Time.delta` and component fields without adding query loops.
+
 ## Daily Workflow
 
 Each work session:
@@ -1163,19 +1234,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M8-005 stayed runtime resource inspection only | 99/100 |
-| `debug_inspects_time_delta_resource` proves deterministic `Demo.Time.delta` debug output | 99/100 |
+| M8-006 stayed parser/AST-only | 99/100 |
+| `time_delta.arc --emit-ast` proves source-level `Demo.Time` resource syntax and `Time { delta: 1.0 }` payload representation | 99/100 |
 | Existing M0-M8 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M8-005 complete and controlled M8 progress | 99/100 |
-| Active inventory is limited to M8-006 ready with an empty backlog | 98/100 |
+| Board state reflects M8 complete and controlled M9 progress | 99/100 |
+| Active inventory promotes only M9-001 while keeping M9-002 through M9-006 in Backlog | 98/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M8-006` in `Ready`.
+- The active board has only `M9-001` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, M8-001, M8-002, M8-003, M8-004, and M8-005.
-- Detailed active inventory includes M8-001 through M8-006 only.
-- Later milestones remain proof targets only.
-- M7 spawn entities is complete; singleton resource descriptors, aligned storage allocation, raw `Time.delta` payload storage, retrieval/decoding, and runtime inspection are complete; the resource source fixture starts with M8-006.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, and completed M8.
+- Detailed active inventory includes M9-001 through M9-006 only.
+- M10 query-loop work remains a proof target only.
+- M7 spawn entities and M8 resources are complete; M9 starts with named system declarations before resource parameters, query parameters, Core metadata, runtime descriptors, or any query-loop execution.

@@ -56,6 +56,9 @@ impl MachineEmitter {
                 Statement::Spawn(_) => {
                     let _ = write!(self.output, "\n  spawn unsupported");
                 }
+                Statement::Resource(_) => {
+                    let _ = write!(self.output, "\n  resource unsupported");
+                }
                 Statement::Exit(exit) => {
                     let value = self.emit_expression(&exit.expression);
                     let _ = write!(self.output, "\n  exit {value}");

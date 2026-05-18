@@ -94,6 +94,9 @@ impl<'a> StartupLowerer<'a> {
                 Statement::Spawn(spawn) => {
                     self.lower_spawn_statement(spawn)?;
                 }
+                Statement::Resource(_) => {
+                    return Err(lower_error("resource lowering is not implemented yet"));
+                }
             }
         }
 

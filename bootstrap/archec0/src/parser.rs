@@ -6,6 +6,7 @@ use crate::lexer::{Keyword, Span, Token, TokenKind};
 pub struct Program {
     pub world: WorldDecl,
     pub components: Vec<ComponentDecl>,
+    pub resources: Vec<ResourceDecl>,
     pub startup: Option<StartupBlock>,
 }
 
@@ -27,6 +28,18 @@ pub struct ComponentField {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceDecl {
+    pub name: String,
+    pub fields: Vec<ResourceField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceField {
+    pub name: String,
+    pub type_name: TypeName,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StartupBlock {
     pub statements: Vec<Statement>,
 }
@@ -35,6 +48,7 @@ pub struct StartupBlock {
 pub enum Statement {
     Let(LetStatement),
     Spawn(SpawnStatement),
+    Resource(ResourceStatement),
     Exit(ExitStatement),
 }
 
@@ -58,6 +72,18 @@ pub struct SpawnComponentLiteral {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpawnComponentField {
+    pub name: String,
+    pub value: ComponentLiteralValue,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceStatement {
+    pub name: String,
+    pub fields: Vec<ResourceLiteralField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceLiteralField {
     pub name: String,
     pub value: ComponentLiteralValue,
 }
@@ -115,8 +141,19 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, ParseError> {
     let mut parser = Parser { tokens, current: 0 };
     let world = parser.parse_world_declaration()?;
     let mut components = Vec::new();
-    while parser.match_keyword(Keyword::Component) {
-        components.push(parser.parse_component_declaration()?);
+    let mut resources = Vec::new();
+    loop {
+        if parser.match_keyword(Keyword::Component) {
+            components.push(parser.parse_component_declaration()?);
+            continue;
+        }
+
+        if parser.match_keyword(Keyword::Resource) {
+            resources.push(parser.parse_resource_declaration()?);
+            continue;
+        }
+
+        break;
     }
     let startup = if parser.match_keyword(Keyword::Startup) {
         Some(parser.parse_startup_block()?)
@@ -128,6 +165,7 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, ParseError> {
     Ok(Program {
         world,
         components,
+        resources,
         startup,
     })
 }
@@ -190,6 +228,32 @@ impl Parser<'_> {
         Ok(ComponentDecl { name, fields })
     }
 
+    fn parse_resource_declaration(&mut self) -> Result<ResourceDecl, ParseError> {
+        let name = self.parse_identifier("expected resource name after `resource`")?;
+        self.expect(TokenKind::LeftBrace, "expected `{` after resource name")?;
+
+        let mut fields = Vec::new();
+        while self.peek().kind != TokenKind::RightBrace {
+            if self.peek().kind == TokenKind::Eof {
+                return Err(ParseError {
+                    span: self.peek().span,
+                    message: "expected `}` to close resource declaration".to_string(),
+                });
+            }
+
+            let name = self.parse_identifier("expected resource field name")?;
+            self.expect(TokenKind::Colon, "expected `:` after resource field name")?;
+            let type_name = self.parse_type_name("expected resource field type after `:`")?;
+            fields.push(ResourceField { name, type_name });
+        }
+
+        self.expect(
+            TokenKind::RightBrace,
+            "expected `}` to close resource declaration",
+        )?;
+        Ok(ResourceDecl { name, fields })
+    }
+
     fn parse_startup_block(&mut self) -> Result<StartupBlock, ParseError> {
         self.expect(TokenKind::LeftBrace, "expected `{` after `startup`")?;
 
@@ -219,6 +283,10 @@ impl Parser<'_> {
 
         if self.match_keyword(Keyword::Spawn) {
             return self.parse_spawn_statement();
+        }
+
+        if self.match_keyword(Keyword::Resource) {
+            return self.parse_resource_statement();
         }
 
         Err(ParseError {
@@ -292,6 +360,49 @@ impl Parser<'_> {
 
         self.expect(TokenKind::RightBrace, "expected `}` to close spawn block")?;
         Ok(Statement::Spawn(SpawnStatement { components }))
+    }
+
+    fn parse_resource_statement(&mut self) -> Result<Statement, ParseError> {
+        let name = self.parse_identifier("expected resource literal name after `resource`")?;
+        self.expect(
+            TokenKind::LeftBrace,
+            "expected `{` after resource literal name",
+        )?;
+
+        let mut fields = Vec::new();
+        if self.peek().kind == TokenKind::RightBrace {
+            return Err(ParseError {
+                span: self.peek().span,
+                message: "expected resource literal field".to_string(),
+            });
+        }
+
+        loop {
+            fields.push(self.parse_resource_literal_field()?);
+
+            if self.peek().kind != TokenKind::Comma {
+                break;
+            }
+
+            self.advance();
+        }
+
+        self.expect(
+            TokenKind::RightBrace,
+            "expected `}` after resource literal fields",
+        )?;
+        Ok(Statement::Resource(ResourceStatement { name, fields }))
+    }
+
+    fn parse_resource_literal_field(&mut self) -> Result<ResourceLiteralField, ParseError> {
+        let name = self.parse_identifier("expected resource literal field name")?;
+        self.expect(
+            TokenKind::Colon,
+            "expected `:` after resource literal field name",
+        )?;
+        let value = self.parse_component_literal_value()?;
+
+        Ok(ResourceLiteralField { name, value })
     }
 
     fn parse_spawn_component_field(&mut self) -> Result<SpawnComponentField, ParseError> {
@@ -501,6 +612,20 @@ impl fmt::Display for Program {
             }
         }
 
+        for resource in &self.resources {
+            writeln!(formatter)?;
+            write!(formatter, "  resource {}", resource.name)?;
+
+            for field in &resource.fields {
+                writeln!(formatter)?;
+                write!(
+                    formatter,
+                    "    field {}: {}",
+                    field.name, field.type_name.name
+                )?;
+            }
+        }
+
         if let Some(startup) = &self.startup {
             writeln!(formatter)?;
             write!(formatter, "  startup")?;
@@ -535,6 +660,16 @@ impl fmt::Display for Program {
                             }
                         }
                     }
+                    Statement::Resource(resource) => {
+                        writeln!(formatter)?;
+                        write!(formatter, "    resource {}", resource.name)?;
+
+                        for field in &resource.fields {
+                            writeln!(formatter)?;
+                            writeln!(formatter, "      field {}", field.name)?;
+                            write_component_literal_value(formatter, &field.value, "        ")?;
+                        }
+                    }
                     Statement::Exit(exit) => {
                         writeln!(formatter)?;
                         writeln!(formatter, "    exit")?;
@@ -567,6 +702,16 @@ impl fmt::Display for Statement {
                         write!(formatter, " {}: {}", field.name, field.value)?;
                     }
                     formatter.write_str(" }")?;
+                }
+                formatter.write_str(" }")
+            }
+            Self::Resource(resource) => {
+                write!(formatter, "resource {} {{", resource.name)?;
+                for (index, field) in resource.fields.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str(",")?;
+                    }
+                    write!(formatter, " {}: {}", field.name, field.value)?;
                 }
                 formatter.write_str(" }")
             }
