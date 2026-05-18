@@ -18,6 +18,11 @@ system Move(
     time: read Time,
     movers: query[mut Position, Velocity]
 ) {
+    time.delta
+    Position.x
+    Position.y
+    Velocity.x
+    Velocity.y
 }
 
 startup {

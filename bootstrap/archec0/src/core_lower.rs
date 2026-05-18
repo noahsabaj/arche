@@ -302,6 +302,9 @@ impl<'a> StartupLowerer<'a> {
                     .push(CoreInstruction::LocalLoad { result, local });
                 Ok(result)
             }
+            Expression::FieldAccess { field_name, .. } => Err(lower_error(format!(
+                "field access `{field_name}` is not lowerable yet"
+            ))),
             Expression::Binary(binary) => {
                 let left = self.lower_expression(&binary.left)?;
                 let right = self.lower_expression(&binary.right)?;

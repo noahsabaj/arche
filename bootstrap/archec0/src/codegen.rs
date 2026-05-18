@@ -99,7 +99,9 @@ fn local_arithmetic_exit_body(expression: &Expression) -> Result<Vec<u8>, Codege
 fn integer_expression(expression: &Expression) -> Result<u64, CodegenError> {
     match expression {
         Expression::Integer(integer) => Ok(integer.value),
-        Expression::Identifier { .. } | Expression::Binary(_) => Err(unsupported_shape()),
+        Expression::Identifier { .. } | Expression::FieldAccess { .. } | Expression::Binary(_) => {
+            Err(unsupported_shape())
+        }
     }
 }
 

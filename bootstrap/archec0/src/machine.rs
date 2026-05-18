@@ -80,6 +80,11 @@ impl MachineEmitter {
                 let _ = write!(self.output, "\n  {temp} = load slot {slot}");
                 temp
             }
+            Expression::FieldAccess { .. } => {
+                let temp = self.allocate_temp();
+                let _ = write!(self.output, "\n  {temp} = unsupported.field");
+                temp
+            }
             Expression::Binary(binary) => {
                 let left = self.emit_expression(&binary.left);
                 let right = self.emit_expression(&binary.right);

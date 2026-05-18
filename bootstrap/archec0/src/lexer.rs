@@ -20,6 +20,7 @@ pub enum TokenKind {
     RightBracket,
     Colon,
     Comma,
+    Dot,
     Equal,
     Plus,
     Minus,
@@ -215,6 +216,13 @@ pub fn lex(source: &str) -> Result<Vec<Token>, LexError> {
                     span: Span { start, end: index },
                 });
             }
+            '.' => {
+                index += 1;
+                tokens.push(Token {
+                    kind: TokenKind::Dot,
+                    span: Span { start, end: index },
+                });
+            }
             '=' => {
                 index += 1;
                 tokens.push(Token {
@@ -353,6 +361,7 @@ impl fmt::Display for TokenKind {
             Self::RightBracket => formatter.write_str("RightBracket"),
             Self::Colon => formatter.write_str("Colon"),
             Self::Comma => formatter.write_str("Comma"),
+            Self::Dot => formatter.write_str("Dot"),
             Self::Equal => formatter.write_str("Equal"),
             Self::Plus => formatter.write_str("Plus"),
             Self::Minus => formatter.write_str("Minus"),

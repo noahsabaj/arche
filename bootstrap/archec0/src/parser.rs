@@ -44,6 +44,7 @@ pub struct ResourceField {
 pub struct SystemDecl {
     pub name: String,
     pub params: Vec<SystemParam>,
+    pub body: SystemBody,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,6 +69,16 @@ pub struct QueryTerm {
 pub enum QueryAccess {
     Read,
     Mut,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemBody {
+    pub statements: Vec<SystemBodyStatement>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemBodyStatement {
+    pub expression: Expression,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -138,7 +149,15 @@ pub struct ExitStatement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Expression {
     Integer(IntegerLiteral),
-    Identifier { name: String, span: Span },
+    Identifier {
+        name: String,
+        span: Span,
+    },
+    FieldAccess {
+        target: Box<Expression>,
+        field_name: String,
+        field_span: Span,
+    },
     Binary(BinaryExpression),
 }
 
@@ -313,13 +332,30 @@ impl Parser<'_> {
             TokenKind::RightParen,
             "expected `)` after system parameters",
         )?;
-        self.expect(TokenKind::LeftBrace, "expected `{` after system signature")?;
-        self.expect(
-            TokenKind::RightBrace,
-            "expected `}` after empty system body",
-        )?;
+        let body = self.parse_system_body()?;
 
-        Ok(SystemDecl { name, params })
+        Ok(SystemDecl { name, params, body })
+    }
+
+    fn parse_system_body(&mut self) -> Result<SystemBody, ParseError> {
+        self.expect(TokenKind::LeftBrace, "expected `{` after system signature")?;
+
+        let mut statements = Vec::new();
+        while self.peek().kind != TokenKind::RightBrace {
+            if self.peek().kind == TokenKind::Eof {
+                return Err(ParseError {
+                    span: self.peek().span,
+                    message: "expected `}` to close system body".to_string(),
+                });
+            }
+
+            let expression =
+                self.parse_expression_with_message("expected system body expression")?;
+            statements.push(SystemBodyStatement { expression });
+        }
+
+        self.expect(TokenKind::RightBrace, "expected `}` to close system body")?;
+        Ok(SystemBody { statements })
     }
 
     fn parse_system_param(&mut self) -> Result<SystemParam, ParseError> {
@@ -609,11 +645,11 @@ impl Parser<'_> {
     }
 
     fn parse_expression_with_message(&mut self, message: &str) -> Result<Expression, ParseError> {
-        let left = self.parse_primary_expression(message)?;
+        let left = self.parse_field_access_expression(message)?;
 
         if let Some(operator) = self.match_binary_operator() {
             let message = format!("expected expression after `{operator}`");
-            let right = self.parse_primary_expression(&message)?;
+            let right = self.parse_field_access_expression(&message)?;
             return Ok(Expression::Binary(BinaryExpression {
                 operator,
                 left: Box::new(left),
@@ -622,6 +658,34 @@ impl Parser<'_> {
         }
 
         Ok(left)
+    }
+
+    fn parse_field_access_expression(&mut self, message: &str) -> Result<Expression, ParseError> {
+        let mut expression = self.parse_primary_expression(message)?;
+
+        while self.peek().kind == TokenKind::Dot {
+            self.advance();
+            let token = self.peek();
+            let field_span = token.span;
+            let field_name = match &token.kind {
+                TokenKind::Identifier(name) => name.clone(),
+                _ => {
+                    return Err(ParseError {
+                        span: token.span,
+                        message: "expected field name after `.`".to_string(),
+                    })
+                }
+            };
+            self.advance();
+
+            expression = Expression::FieldAccess {
+                target: Box::new(expression),
+                field_name,
+                field_span,
+            };
+        }
+
+        Ok(expression)
     }
 
     fn parse_primary_expression(&mut self, message: &str) -> Result<Expression, ParseError> {
@@ -775,7 +839,16 @@ impl fmt::Display for Program {
                     writeln!(formatter)?;
                 }
             }
-            write!(formatter, "    body empty")?;
+            if system.body.statements.is_empty() {
+                write!(formatter, "    body empty")?;
+            } else {
+                write!(formatter, "    body")?;
+                for statement in &system.body.statements {
+                    writeln!(formatter)?;
+                    writeln!(formatter, "      expr")?;
+                    write_expression(formatter, &statement.expression, "        ")?;
+                }
+            }
         }
 
         if let Some(startup) = &self.startup {
@@ -877,6 +950,11 @@ impl fmt::Display for Expression {
         match self {
             Self::Integer(integer) => write!(formatter, "{}", integer.value),
             Self::Identifier { name, .. } => formatter.write_str(name),
+            Self::FieldAccess {
+                target, field_name, ..
+            } => {
+                write!(formatter, "{target}.{field_name}")
+            }
             Self::Binary(binary) => write!(
                 formatter,
                 "{} {} {}",
@@ -962,6 +1040,12 @@ fn write_expression(
     match expression {
         Expression::Integer(integer) => write!(formatter, "{indent}integer {}", integer.value),
         Expression::Identifier { name, .. } => write!(formatter, "{indent}identifier {name}"),
+        Expression::FieldAccess {
+            target, field_name, ..
+        } => {
+            writeln!(formatter, "{indent}field {field_name}")?;
+            write_expression(formatter, target, &format!("{indent}  "))
+        }
         Expression::Binary(binary) => {
             writeln!(formatter, "{indent}binary {}", binary.operator)?;
             write_expression(formatter, &binary.left, &format!("{indent}  "))?;

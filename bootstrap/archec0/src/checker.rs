@@ -72,6 +72,10 @@ fn check_expression(
                 message: format!("unknown local variable `{name}`"),
             }),
         },
+        Expression::FieldAccess { field_span, .. } => Err(CheckError {
+            span: *field_span,
+            message: "field access checking is not implemented yet".to_string(),
+        }),
         Expression::Binary(binary) => {
             match binary.operator {
                 BinaryOperator::Add | BinaryOperator::Subtract | BinaryOperator::Multiply => {}
@@ -96,6 +100,7 @@ fn expression_span(expression: &Expression) -> Span {
     match expression {
         Expression::Integer(integer) => integer.span,
         Expression::Identifier { span, .. } => *span,
+        Expression::FieldAccess { target, .. } => expression_span(target),
         Expression::Binary(binary) => expression_span(&binary.left),
     }
 }
