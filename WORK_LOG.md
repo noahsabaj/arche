@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M11 schedules.
+**Current focus:** M12 ECS semantic verification.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -52,7 +52,6 @@ Source file -> parsed ECS program -> Arche Core -> runtime world -> schedule -> 
 
 Current missing links:
 
-- Source-level startup `run Main` representation and source-driven schedule execution.
 - Source-driven startup execution for resources, spawns, and schedules.
 - System body Core lowering for real query loops.
 - Complete ECS metadata in generated native executables.
@@ -68,7 +67,7 @@ Current gaps:
 - Spawn and resource behavior are proven in runtime tests, but startup spawn/resource source is not yet driving generated executable ECS state.
 - System declarations and query metadata exist, but system bodies are not yet lowered into executable query-loop code.
 - M10 Move behavior is proven through a runtime application path, not a compiled source system body.
-- Runtime schedule plan execution is proven; source-level `run Main` is not yet native executable behavior.
+- Runtime schedule plan execution and source-level `run Main` parsing are proven; source-driven schedule execution is not yet native executable behavior.
 
 ## Future Horizon
 
@@ -122,7 +121,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M11-006 | Add schedule source fixture using startup run | Source AST represents `run Main` from startup without generated executable schedule behavior. |
+| M12-001 | Reject unknown schedule run target | `--check` rejects a schedule item that references an unknown system. |
 
 ### Doing
 
@@ -207,6 +206,7 @@ Board rules:
 | M11-003 | Add runtime schedule descriptor table | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml registers_main_schedule_descriptor` passed, proving `ArcheWorld` can register and retrieve `Demo.Main` with stable `ScheduleId(0xed3d905325519b05)` and one ordered `run Demo.Move` item with `SystemId(0x723b6b52df270ed5)`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted runtime schedule descriptor proof included. This was runtime descriptor registration only: no schedule planning, schedule execution, startup `run Main`, parser/Core changes, ELF/codegen changes, or validation against registered system descriptors was added. Implementation commit: `2ebb76f`. |
 | M11-004 | Build sequential schedule plan | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml builds_sequential_schedule_plan` passed, proving `ArcheWorld` can build a deterministic `Demo.Main` schedule plan with one ordered entry for registered `Demo.Move` and reject a schedule item that references an unregistered system with an `unknown system` error; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted runtime schedule planning proof included. This was runtime planning only: no schedule execution, `Move` invocation, startup `run Main`, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `2493f43`. |
 | M11-005 | Execute runtime schedule plan | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_runtime_schedule_plan` passed, proving `ArcheWorld` can execute a `Demo.Main` schedule plan by invoking the bootstrap `Demo.Move` runtime path, reading `Demo.Time.delta`, iterating `Demo.Move.movers`, and updating one `Position + Velocity` row from `Position { x: 1.0, y: 2.0 }` to `Position { x: 4.0, y: 6.0 }` while preserving `Velocity` and entity liveness; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted runtime schedule execution proof included. This was runtime-only: no parser/Core changes, startup `run Main`, source-driven schedule execution, CLI behavior, or generated executable behavior was added. Implementation commit: `986a996`. |
+| M11-006 | Add schedule source fixture using startup run | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast` printed the exact AST for `startup { run Main; exit 0 }`, including `run Main` before the existing exit statement; `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_move_system_to_core_metadata` and `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_schedule_to_core_metadata` passed, proving current Core metadata tests still treat startup `run` as deferred; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the updated source fixture assertion included. This was source/AST-only: no source-driven schedule execution, runtime assembly, generated executable behavior, or real Core startup schedule semantics was added. M11 schedules are complete. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -214,7 +214,9 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| - | - | Empty. |
+| M12-002 | Reject unknown system resource parameter | `--check` rejects a system `read` parameter whose resource is not declared. |
+| M12-003 | Reject unknown query component | `--check` rejects a query term whose component is not declared. |
+| M12-004 | Reject conflicting query access | `--check` rejects conflicting mutable/read component access within a system. |
 
 ## Milestones
 
@@ -1366,7 +1368,7 @@ Done when runtime schedule metadata builds a deterministic sequential plan.
 Acceptance test:
 
 ```powershell
-cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_move_schedule_plan
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_runtime_schedule_plan
 ```
 
 Done when a runtime schedule plan invokes the existing `Move` application path in order.
@@ -1380,6 +1382,54 @@ cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_syst
 ```
 
 Done when startup source can represent `run Main` without generated executable schedule behavior.
+
+### M12: ECS Semantic Verification
+
+Purpose:
+
+```text
+Reject invalid ECS structure before deeper source-driven execution work.
+```
+
+#### M12-001: Reject unknown schedule run target
+
+Acceptance test:
+
+```powershell
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_unknown_schedule_run.arc --check
+```
+
+Done when `--check` rejects a schedule item that references an unknown system.
+
+#### M12-002: Reject unknown system resource parameter
+
+Acceptance test:
+
+```powershell
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_unknown_resource_param.arc --check
+```
+
+Done when `--check` rejects a system `read` parameter whose resource is not declared.
+
+#### M12-003: Reject unknown query component
+
+Acceptance test:
+
+```powershell
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_unknown_query_component.arc --check
+```
+
+Done when `--check` rejects a query term whose component is not declared.
+
+#### M12-004: Reject conflicting query access
+
+Acceptance test:
+
+```powershell
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_conflicting_query_access.arc --check
+```
+
+Done when `--check` rejects conflicting mutable/read component access within a system.
 
 ## Daily Workflow
 
@@ -1427,18 +1477,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M11-005 stayed runtime execution-only | 99/100 |
-| `executes_runtime_schedule_plan` proves a schedule plan invokes the bootstrap `Move` path | 99/100 |
+| M11-006 stayed source/AST-only | 99/100 |
+| `move_system.arc --emit-ast` proves startup `run Main` representation | 99/100 |
 | Existing M0-M11 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M11-005 complete and controlled M11 progress | 99/100 |
-| Active inventory promotes only M11-006 and leaves the M11 backlog empty | 99/100 |
+| Board state marks M11 complete and starts controlled M12 verification work | 98/100 |
+| Active inventory promotes only M12-001 and keeps M12 backlog limited to M12-002 through M12-004 | 98/100 |
 
 Weighted confidence: 99/100.
 
 Verification pass:
 
-- The active board has only `M11-006` in `Ready`.
+- The active board has only `M12-001` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, M11-001, M11-002, M11-003, M11-004, and M11-005.
-- Detailed active inventory includes M10-001 through M10-006 and M11-001 through M11-006 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, and M10 first query loop are complete. M11 now has source-level schedule declaration parsing, Core schedule metadata lowering, runtime schedule descriptors, sequential schedule planning, and runtime schedule plan execution; next adds the source fixture for startup `run Main`.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, and completed M11.
+- Detailed active inventory includes M11-001 through M11-006 and M12-001 through M12-004 only.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, and M11 schedules are complete. M12 begins ECS semantic verification, starting with unknown schedule run targets.

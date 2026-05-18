@@ -48,6 +48,10 @@ fn check_statement(
             check_expression(&exit.expression, bindings)?;
             Ok(())
         }
+        Statement::Run(_) => Err(CheckError {
+            span: crate::lexer::Span { start: 0, end: 0 },
+            message: "startup run checking is not implemented yet".to_string(),
+        }),
         Statement::Spawn(_) => Err(CheckError {
             span: crate::lexer::Span { start: 0, end: 0 },
             message: "spawn checking is not implemented yet".to_string(),

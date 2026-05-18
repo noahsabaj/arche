@@ -53,6 +53,9 @@ impl MachineEmitter {
                     let slot = self.locals[&let_statement.name];
                     let _ = write!(self.output, "\n  store slot {slot}, {value}");
                 }
+                Statement::Run(_) => {
+                    let _ = write!(self.output, "\n  run unsupported");
+                }
                 Statement::Spawn(_) => {
                     let _ = write!(self.output, "\n  spawn unsupported");
                 }

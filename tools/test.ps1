@@ -915,6 +915,7 @@ try {
             "  schedule Main",
             "    run Move",
             "  startup",
+            "    run Main",
             "    exit",
             "      integer 0"
         )

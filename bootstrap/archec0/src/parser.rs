@@ -101,6 +101,7 @@ pub struct StartupBlock {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Statement {
     Let(LetStatement),
+    Run(RunStatement),
     Spawn(SpawnStatement),
     Resource(ResourceStatement),
     Exit(ExitStatement),
@@ -111,6 +112,11 @@ pub struct LetStatement {
     pub name: String,
     pub type_name: TypeName,
     pub initializer: Expression,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunStatement {
+    pub schedule_name: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -509,6 +515,10 @@ impl Parser<'_> {
             return self.parse_exit_statement();
         }
 
+        if self.match_keyword(Keyword::Run) {
+            return self.parse_run_statement();
+        }
+
         if self.match_keyword(Keyword::Spawn) {
             return self.parse_spawn_statement();
         }
@@ -535,6 +545,12 @@ impl Parser<'_> {
             type_name,
             initializer,
         }))
+    }
+
+    fn parse_run_statement(&mut self) -> Result<Statement, ParseError> {
+        let schedule_name = self.parse_identifier("expected schedule name after `run`")?;
+
+        Ok(Statement::Run(RunStatement { schedule_name }))
     }
 
     fn parse_exit_statement(&mut self) -> Result<Statement, ParseError> {
@@ -934,6 +950,10 @@ impl fmt::Display for Program {
                         )?;
                         write_expression(formatter, &let_statement.initializer, "      ")?;
                     }
+                    Statement::Run(run) => {
+                        writeln!(formatter)?;
+                        write!(formatter, "    run {}", run.schedule_name)?;
+                    }
                     Statement::Spawn(spawn) => {
                         writeln!(formatter)?;
                         write!(formatter, "    spawn")?;
@@ -984,6 +1004,7 @@ impl fmt::Display for Statement {
                 "let {}: {} = {}",
                 let_statement.name, let_statement.type_name.name, let_statement.initializer
             ),
+            Self::Run(run) => write!(formatter, "run {}", run.schedule_name),
             Self::Spawn(spawn) => {
                 write!(formatter, "spawn {{")?;
                 for component in &spawn.components {

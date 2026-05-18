@@ -30,5 +30,6 @@ schedule Main {
 }
 
 startup {
+    run Main
     exit 0
 }

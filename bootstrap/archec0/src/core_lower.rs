@@ -241,6 +241,7 @@ impl<'a> StartupLowerer<'a> {
                     let value = self.lower_expression(&exit.expression)?;
                     terminator = Some(CoreTerminator::Exit { value });
                 }
+                Statement::Run(_) => {}
                 Statement::Spawn(spawn) => {
                     self.lower_spawn_statement(spawn)?;
                 }

@@ -44,8 +44,9 @@ The proof chain currently demonstrates:
 - Runtime schedule descriptor registration for `Demo.Main`.
 - Runtime sequential schedule plan construction for `Demo.Main`.
 - Runtime schedule plan execution for `Demo.Main`, invoking the bootstrap `Move` path.
+- Source-level parsing for startup `run Main`.
 
-M10 first query loop is complete. The active board is currently on M11 schedules. The next proof is the source fixture for startup `run Main`.
+M11 schedules are complete. The active board is currently on M12 ECS semantic verification. The next proof is rejecting an unknown schedule run target.
 
 ## What This Is Not Yet
 
