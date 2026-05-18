@@ -12,6 +12,7 @@ This file is not a second design document. It is the build map for proving that 
 - Private remote: `https://github.com/noahsabaj/arche`.
 - Generated proof/build artifacts are intentionally ignored via `.gitignore`, including `build/` and `bootstrap/archec0/target/`.
 - Current board remains `M7-005` Ready; this repository setup does not advance a milestone issue.
+- `README.md` provides GitHub orientation for the repository; it does not advance the milestone board.
 
 ## Operating Model
 
