@@ -574,6 +574,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_sequential_schedule_plan")
 
     Invoke-CheckedCommand `
+        -Name "executes_runtime_schedule_plan" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_runtime_schedule_plan")
+
+    Invoke-CheckedCommand `
         -Name "defines_position_velocity_query_descriptor" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_position_velocity_query_descriptor")

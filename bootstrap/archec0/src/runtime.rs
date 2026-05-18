@@ -358,6 +358,11 @@ pub struct SchedulePlanError {
     pub message: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScheduleExecuteError {
+    pub message: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueryId(pub u64);
 
@@ -915,6 +920,98 @@ impl ArcheWorld {
         })
     }
 
+    pub fn execute_schedule_plan(
+        &mut self,
+        plan: &SchedulePlan,
+    ) -> Result<(), ScheduleExecuteError> {
+        for entry in plan.entries() {
+            if entry.system_id == stable_system_id("Demo", "Move")
+                && entry.system_name == "Demo.Move"
+            {
+                self.execute_demo_move_system()?;
+                continue;
+            }
+
+            return Err(schedule_execute_error(format!(
+                "unsupported system `{}`",
+                entry.system_name
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn execute_demo_move_system(&mut self) -> Result<(), ScheduleExecuteError> {
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let time_id = stable_resource_id("Demo", "Time");
+        let query_id = stable_query_id("Demo", "Move", "movers");
+        let query = self
+            .query_descriptors
+            .get(query_id)
+            .cloned()
+            .ok_or_else(|| {
+                schedule_execute_error("query descriptor `Demo.Move.movers` is not registered")
+            })?;
+        let query_plan = self.build_query_plan(&query);
+        let rows = self.iter_query_rows(&query_plan);
+
+        for row in rows {
+            let (position_x, position_y, velocity_x, velocity_y) = {
+                let table = self.archetype_at(row.archetype_index).ok_or_else(|| {
+                    schedule_execute_error(format!(
+                        "query row references missing archetype {}",
+                        row.archetype_index
+                    ))
+                })?;
+                let position_bytes = table
+                    .column(position_id)
+                    .and_then(|column| column.row_bytes(row.row))
+                    .ok_or_else(|| {
+                        schedule_execute_error(format!(
+                            "Demo.Position payload missing for row {}",
+                            row.row
+                        ))
+                    })?;
+                let velocity_bytes = table
+                    .column(velocity_id)
+                    .and_then(|column| column.row_bytes(row.row))
+                    .ok_or_else(|| {
+                        schedule_execute_error(format!(
+                            "Demo.Velocity payload missing for row {}",
+                            row.row
+                        ))
+                    })?;
+
+                (
+                    read_schedule_f32(position_bytes, 0, "Demo.Position.x")?,
+                    read_schedule_f32(position_bytes, 4, "Demo.Position.y")?,
+                    read_schedule_f32(velocity_bytes, 0, "Demo.Velocity.x")?,
+                    read_schedule_f32(velocity_bytes, 4, "Demo.Velocity.y")?,
+                )
+            };
+            let delta = self
+                .read_resource_f32_field(time_id, "delta")
+                .map_err(|error| schedule_execute_error(error.message))?;
+            let updated_position = f32_pair_payload(
+                position_x + velocity_x * delta,
+                position_y + velocity_y * delta,
+            );
+
+            self.archetype_at_mut(row.archetype_index)
+                .ok_or_else(|| {
+                    schedule_execute_error(format!(
+                        "query row references missing mutable archetype {}",
+                        row.archetype_index
+                    ))
+                })?
+                .copy_component_payload(position_id, row.row, &updated_position)
+                .map_err(|error| schedule_execute_error(error.message))?;
+        }
+
+        Ok(())
+    }
+
     pub fn register_query_descriptor(&mut self, descriptor: QueryDescriptor) -> bool {
         self.query_descriptors.register(descriptor)
     }
@@ -1090,6 +1187,33 @@ impl ArcheWorld {
             && self.resource_storages.is_empty()
             && self.archetypes.is_empty()
     }
+}
+
+fn schedule_execute_error(message: impl Into<String>) -> ScheduleExecuteError {
+    ScheduleExecuteError {
+        message: message.into(),
+    }
+}
+
+fn f32_pair_payload(x: f32, y: f32) -> [u8; 8] {
+    let x = x.to_le_bytes();
+    let y = y.to_le_bytes();
+    [x[0], x[1], x[2], x[3], y[0], y[1], y[2], y[3]]
+}
+
+fn read_schedule_f32(
+    bytes: &[u8],
+    offset: usize,
+    field_name: &str,
+) -> Result<f32, ScheduleExecuteError> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| schedule_execute_error(format!("{field_name} offset overflows")))?;
+    let bytes = bytes.get(offset..end).ok_or_else(|| {
+        schedule_execute_error(format!("{field_name} extends beyond component payload"))
+    })?;
+
+    Ok(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 pub fn debug_inspect_world(world: &ArcheWorld) -> String {
@@ -1561,6 +1685,189 @@ mod tests {
         assert!(
             error.message.contains("unknown system"),
             "unexpected schedule plan error: {}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn executes_runtime_schedule_plan() {
+        fn xy_descriptor(id: ComponentId, name: &str) -> ComponentDescriptor {
+            ComponentDescriptor {
+                id,
+                name: name.to_string(),
+                size: 8,
+                align: 4,
+                fields: vec![
+                    ComponentFieldDescriptor {
+                        name: "x".to_string(),
+                        type_name: "f32".to_string(),
+                        offset: 0,
+                    },
+                    ComponentFieldDescriptor {
+                        name: "y".to_string(),
+                        type_name: "f32".to_string(),
+                        offset: 4,
+                    },
+                ],
+            }
+        }
+
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let time_id = stable_resource_id("Demo", "Time");
+        let move_id = stable_system_id("Demo", "Move");
+        let main_id = stable_schedule_id("Demo", "Main");
+        let position = xy_descriptor(position_id, "Demo.Position");
+        let velocity = xy_descriptor(velocity_id, "Demo.Velocity");
+        let time = ResourceDescriptor {
+            id: time_id,
+            name: "Demo.Time".to_string(),
+            size: 4,
+            align: 4,
+            fields: vec![ResourceFieldDescriptor {
+                name: "delta".to_string(),
+                type_name: "f32".to_string(),
+                offset: 0,
+            }],
+        };
+        let move_system = SystemDescriptor {
+            id: move_id,
+            name: "Demo.Move".to_string(),
+            params: vec![
+                SystemParamDescriptor {
+                    name: "time".to_string(),
+                    kind: SystemParamDescriptorKind::ReadResource {
+                        resource_id: time_id,
+                        name: "Demo.Time".to_string(),
+                    },
+                },
+                SystemParamDescriptor {
+                    name: "movers".to_string(),
+                    kind: SystemParamDescriptorKind::Query {
+                        terms: vec![
+                            SystemQueryTermDescriptor {
+                                access: SystemAccess::Mut,
+                                component_id: position_id,
+                                name: "Demo.Position".to_string(),
+                            },
+                            SystemQueryTermDescriptor {
+                                access: SystemAccess::Read,
+                                component_id: velocity_id,
+                                name: "Demo.Velocity".to_string(),
+                            },
+                        ],
+                    },
+                },
+            ],
+        };
+        let movers_query = QueryDescriptor {
+            id: stable_query_id("Demo", "Move", "movers"),
+            name: "Demo.Move.movers".to_string(),
+            terms: vec![
+                QueryTermDescriptor {
+                    access: QueryAccess::Mut,
+                    component_id: position_id,
+                    name: "Demo.Position".to_string(),
+                },
+                QueryTermDescriptor {
+                    access: QueryAccess::Read,
+                    component_id: velocity_id,
+                    name: "Demo.Velocity".to_string(),
+                },
+            ],
+        };
+        let main_schedule = ScheduleDescriptor {
+            id: main_id,
+            name: "Demo.Main".to_string(),
+            items: vec![ScheduleItemDescriptor::Run {
+                system_id: move_id,
+                system_name: "Demo.Move".to_string(),
+            }],
+        };
+        let initial_position = f32_pair_payload(1.0, 2.0);
+        let initial_velocity = f32_pair_payload(3.0, 4.0);
+        let expected_position = f32_pair_payload(4.0, 6.0);
+        let mut world = ArcheWorld::create();
+        let entity = world.alloc_entity();
+
+        assert!(world.register_component_descriptor(position.clone()));
+        assert!(world.register_component_descriptor(velocity.clone()));
+        assert!(world.register_resource_descriptor(time.clone()));
+        assert!(world.register_system_descriptor(move_system));
+        assert!(world.register_query_descriptor(movers_query));
+        assert!(world.register_schedule_descriptor(main_schedule.clone()));
+        assert!(world
+            .allocate_resource_storage(&time)
+            .expect("Demo.Time resource storage allocation should succeed"));
+        world
+            .store_resource_payload(time_id, &1.0f32.to_le_bytes())
+            .expect("Demo.Time payload store should succeed");
+
+        {
+            let table =
+                world.get_or_create_archetype(ArchetypeKey::new(vec![position_id, velocity_id]));
+            assert!(table
+                .allocate_component_column(&position, 1)
+                .expect("Demo.Position column allocation should succeed"));
+            assert!(table
+                .allocate_component_column(&velocity, 1)
+                .expect("Demo.Velocity column allocation should succeed"));
+            assert_eq!(table.insert_entity(entity), 0);
+            table
+                .copy_component_payload(position_id, 0, &initial_position)
+                .expect("initial Demo.Position payload copy should succeed");
+            table
+                .copy_component_payload(velocity_id, 0, &initial_velocity)
+                .expect("initial Demo.Velocity payload copy should succeed");
+        }
+
+        let plan = world
+            .build_schedule_plan(&main_schedule)
+            .expect("Demo.Main schedule should build a plan");
+
+        world
+            .execute_schedule_plan(&plan)
+            .expect("Demo.Main schedule plan should execute");
+
+        let table = world
+            .archetype_at(0)
+            .expect("Demo.Position + Demo.Velocity archetype should exist");
+        let position_column = table
+            .column(position_id)
+            .expect("Demo.Position column should exist");
+        let velocity_column = table
+            .column(velocity_id)
+            .expect("Demo.Velocity column should exist");
+
+        assert_eq!(
+            position_column.row_bytes(0),
+            Some(expected_position.as_slice())
+        );
+        assert_eq!(
+            velocity_column.row_bytes(0),
+            Some(initial_velocity.as_slice())
+        );
+        assert_eq!(position_column.row_count(), 1);
+        assert_eq!(velocity_column.row_count(), 1);
+        assert_eq!(table.entity_count(), 1);
+        assert_eq!(table.entity(0), Some(entity));
+        assert!(world.entities().is_alive(entity));
+
+        let unsupported_plan = SchedulePlan {
+            schedule_id: main_id,
+            schedule_name: "Demo.Main".to_string(),
+            entries: vec![SchedulePlanEntry {
+                system_id: SystemId(0xffff000000000004),
+                system_name: "Demo.Unsupported".to_string(),
+            }],
+        };
+        let error = world
+            .execute_schedule_plan(&unsupported_plan)
+            .expect_err("unsupported systems should fail schedule execution");
+
+        assert!(
+            error.message.contains("unsupported system"),
+            "unexpected schedule execution error: {}",
             error.message
         );
     }

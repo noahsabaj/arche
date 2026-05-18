@@ -43,8 +43,9 @@ The proof chain currently demonstrates:
 - Core metadata lowering for schedule declarations.
 - Runtime schedule descriptor registration for `Demo.Main`.
 - Runtime sequential schedule plan construction for `Demo.Main`.
+- Runtime schedule plan execution for `Demo.Main`, invoking the bootstrap `Move` path.
 
-M10 first query loop is complete. The active board is currently on M11 schedules. The next proof is executing a runtime schedule plan.
+M10 first query loop is complete. The active board is currently on M11 schedules. The next proof is the source fixture for startup `run Main`.
 
 ## What This Is Not Yet
 
