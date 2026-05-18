@@ -144,6 +144,7 @@ mod tests {
                 name: "Main".to_string(),
             },
             systems: vec![],
+            schedules: vec![],
             functions: vec![CoreFunction {
                 name: "startup".to_string(),
                 entry: BlockId(0),

@@ -122,7 +122,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M11-002 | Lower schedule declarations to Core metadata | Parsed schedules lower into canonical Core metadata without execution. |
+| M11-003 | Add runtime schedule descriptor table | The runtime can register and retrieve deterministic schedule descriptors. |
 
 ### Doing
 
@@ -203,6 +203,7 @@ Board rules:
 | M10-005 | Read Time.delta during query iteration | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml reads_time_delta_during_query_iteration` passed, proving a `Demo.Move.movers` query row can be paired with decoded singleton resource state by reading `Demo.Time.delta == 1.0f32` during iteration; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource/query composition proof included. This was runtime composition only: no `Move` application, component payload reads or writes, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `abbd6e9`. |
 | M10-006 | Apply Move system to Position rows | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml applies_move_system_to_position_rows` passed, proving runtime query rows can read `Position`, `Velocity`, and decoded `Demo.Time.delta`, then write updated `Position` bytes from `Position += Velocity * Time.delta`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted Move application proof included. This was runtime-only: no parser/Core/CLI/ELF/codegen behavior, source-level schedule execution, or generated executable behavior was added. M10 first query loop is complete. Implementation commit: `ce6d7eb`. |
 | M11-001 | Parse schedule declarations | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast` printed a top-level `schedule Main` with `run Move` after `system Move` and before `startup`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the exact schedule AST assertion included. This was parser/AST-only: no Core schedule metadata, runtime schedule descriptors, schedule planning, source-level startup run, or executable behavior was added. Implementation commit: `b520d0d`. |
+| M11-002 | Lower schedule declarations to Core metadata | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_schedule_to_core_metadata` passed, proving parsed `schedule Main { run Move }` lowers into Core metadata as `CoreSchedule { name: "Main" }` with a `run Demo.Move` item using stable system ID `0x723b6b52df270ed5`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted schedule Core proof included. This was Core-only: no runtime schedule descriptors, schedule planning, startup `run Main`, schedule execution, `--emit-core` schedule output assertion, or native executable behavior was added. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -210,7 +211,6 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M11-003 | Add runtime schedule descriptor table | The runtime can register and retrieve deterministic schedule descriptors. |
 | M11-004 | Build sequential schedule plan | Runtime schedule metadata builds a deterministic sequential plan. |
 | M11-005 | Execute runtime schedule plan | A runtime schedule plan invokes the existing `Move` application path in order. |
 | M11-006 | Add schedule source fixture using startup run | Source AST represents `run Main` from startup without generated executable schedule behavior. |
@@ -1426,18 +1426,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M11-001 stayed parser/AST-only | 99/100 |
-| `move_system.arc --emit-ast` proves source-level schedule declaration representation | 99/100 |
+| M11-002 stayed Core metadata-only | 99/100 |
+| `lowers_schedule_to_core_metadata` proves canonical schedule metadata lowering | 99/100 |
 | Existing M0-M11 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M11-001 complete and controlled M11 progress | 99/100 |
-| Active inventory promotes only M11-002 and keeps M11 backlog limited to M11-003 through M11-006 | 98/100 |
+| Board state reflects M11-002 complete and controlled M11 progress | 99/100 |
+| Active inventory promotes only M11-003 and keeps M11 backlog limited to M11-004 through M11-006 | 98/100 |
 
 Weighted confidence: 99/100.
 
 Verification pass:
 
-- The active board has only `M11-002` in `Ready`.
+- The active board has only `M11-003` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, and M11-001.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, M11-001, and M11-002.
 - Detailed active inventory includes M10-001 through M10-006 and M11-001 through M11-006 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, and M10 first query loop are complete. M11 now has source-level schedule declaration parsing; next lowers schedules to Core metadata.
+- M7 spawn entities, M8 resources, M9 system/resource access, and M10 first query loop are complete. M11 now has source-level schedule declaration parsing and Core schedule metadata lowering; next adds runtime schedule descriptors.

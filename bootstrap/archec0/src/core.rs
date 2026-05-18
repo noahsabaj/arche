@@ -13,6 +13,7 @@ pub struct BlockId(pub u32);
 pub struct CoreProgram {
     pub world: CoreWorld,
     pub systems: Vec<CoreSystem>,
+    pub schedules: Vec<CoreSchedule>,
     pub functions: Vec<CoreFunction>,
 }
 
@@ -50,6 +51,17 @@ pub struct CoreQueryTerm {
 pub enum CoreQueryAccess {
     Read,
     Mut,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreSchedule {
+    pub name: String,
+    pub items: Vec<CoreScheduleItem>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CoreScheduleItem {
+    Run { system_id: u64, system_name: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -145,6 +157,7 @@ mod tests {
                 name: "Main".to_string(),
             },
             systems: vec![],
+            schedules: vec![],
             functions: vec![CoreFunction {
                 name: "startup".to_string(),
                 entry: BlockId(0),

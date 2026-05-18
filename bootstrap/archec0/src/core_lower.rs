@@ -4,15 +4,16 @@ use std::collections::HashMap;
 
 use crate::core::{
     BlockId, CoreBinaryOp, CoreBlock, CoreFunction, CoreInstruction, CoreLocal, CoreProgram,
-    CoreQueryAccess, CoreQueryTerm, CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue,
-    CoreSystem, CoreSystemParam, CoreSystemParamKind, CoreTerminator, CoreType, CoreWorld, LocalId,
-    ValueId,
+    CoreQueryAccess, CoreQueryTerm, CoreSchedule, CoreScheduleItem, CoreSpawnComponent,
+    CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemParam, CoreSystemParamKind,
+    CoreTerminator, CoreType, CoreWorld, LocalId, ValueId,
 };
 use crate::layout;
 use crate::parser::{
     BinaryOperator, ComponentDecl, ComponentLiteralValue, Expression, Program,
-    QueryAccess as ParserQueryAccess, ResourceDecl, SpawnComponentField, SpawnComponentLiteral,
-    SpawnStatement, StartupBlock, Statement, SystemDecl, SystemParam, SystemParamKind,
+    QueryAccess as ParserQueryAccess, ResourceDecl, ScheduleDecl, ScheduleItem,
+    SpawnComponentField, SpawnComponentLiteral, SpawnStatement, StartupBlock, Statement,
+    SystemDecl, SystemParam, SystemParamKind,
 };
 use crate::runtime;
 
@@ -27,6 +28,7 @@ pub fn lower_program_to_core(program: &Program) -> Result<CoreProgram, CoreLower
         .as_ref()
         .ok_or_else(|| lower_error("expected startup block"))?;
     let systems = lower_systems(program)?;
+    let schedules = lower_schedules(program)?;
     let (locals, instructions, terminator) = StartupLowerer::new(program).lower_startup(startup)?;
 
     Ok(CoreProgram {
@@ -34,6 +36,7 @@ pub fn lower_program_to_core(program: &Program) -> Result<CoreProgram, CoreLower
             name: program.world.name.clone(),
         },
         systems,
+        schedules,
         functions: vec![CoreFunction {
             name: "startup".to_string(),
             entry: BlockId(0),
@@ -45,6 +48,45 @@ pub fn lower_program_to_core(program: &Program) -> Result<CoreProgram, CoreLower
             }],
         }],
     })
+}
+
+fn lower_schedules(program: &Program) -> Result<Vec<CoreSchedule>, CoreLowerError> {
+    program
+        .schedules
+        .iter()
+        .map(|schedule| lower_schedule(program, schedule))
+        .collect()
+}
+
+fn lower_schedule(
+    program: &Program,
+    schedule: &ScheduleDecl,
+) -> Result<CoreSchedule, CoreLowerError> {
+    let items = schedule
+        .items
+        .iter()
+        .map(|item| lower_schedule_item(program, item))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(CoreSchedule {
+        name: schedule.name.clone(),
+        items,
+    })
+}
+
+fn lower_schedule_item(
+    program: &Program,
+    item: &ScheduleItem,
+) -> Result<CoreScheduleItem, CoreLowerError> {
+    match item {
+        ScheduleItem::Run { system_name } => {
+            resolve_system(&program.systems, system_name)?;
+            Ok(CoreScheduleItem::Run {
+                system_id: runtime::stable_system_id(&program.world.name, system_name).0,
+                system_name: qualified_name(&program.world.name, system_name),
+            })
+        }
+    }
 }
 
 fn lower_systems(program: &Program) -> Result<Vec<CoreSystem>, CoreLowerError> {
@@ -127,6 +169,16 @@ fn resolve_component<'a>(
         .iter()
         .find(|component| component.name == name)
         .ok_or_else(|| lower_error(format!("unknown component `{name}`")))
+}
+
+fn resolve_system<'a>(
+    systems: &'a [SystemDecl],
+    name: &str,
+) -> Result<&'a SystemDecl, CoreLowerError> {
+    systems
+        .iter()
+        .find(|system| system.name == name)
+        .ok_or_else(|| lower_error(format!("unknown system `{name}`")))
 }
 
 fn lower_query_access(access: ParserQueryAccess) -> CoreQueryAccess {
@@ -361,8 +413,8 @@ fn lower_error(message: impl Into<String>) -> CoreLowerError {
 mod tests {
     use super::*;
     use crate::core::{
-        CoreQueryAccess, CoreQueryTerm, CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue,
-        CoreSystem, CoreSystemParam, CoreSystemParamKind,
+        CoreQueryAccess, CoreQueryTerm, CoreSchedule, CoreScheduleItem, CoreSpawnComponent,
+        CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemParam, CoreSystemParamKind,
     };
     use crate::lexer;
     use crate::parser;
@@ -379,6 +431,7 @@ mod tests {
                 name: "Main".to_string(),
             },
             systems: vec![],
+            schedules: vec![],
             functions: vec![CoreFunction {
                 name: "startup".to_string(),
                 entry: BlockId(0),
@@ -433,6 +486,7 @@ mod tests {
                 name: "Demo".to_string(),
             },
             systems: vec![],
+            schedules: vec![],
             functions: vec![CoreFunction {
                 name: "startup".to_string(),
                 entry: BlockId(0),
@@ -476,7 +530,31 @@ mod tests {
         let ast = parser::parse_program(&tokens).expect("move_system.arc parses");
         let actual = lower_program_to_core(&ast).expect("move_system.arc lowers to Core");
 
-        let expected = CoreProgram {
+        assert_eq!(actual, expected_move_system_core());
+    }
+
+    #[test]
+    fn lowers_schedule_to_core_metadata() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let ast = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let actual = lower_program_to_core(&ast).expect("move_system.arc lowers to Core");
+
+        assert_eq!(actual, expected_move_system_core());
+        assert_eq!(
+            actual.schedules,
+            vec![CoreSchedule {
+                name: "Main".to_string(),
+                items: vec![CoreScheduleItem::Run {
+                    system_id: 0x723b6b52df270ed5,
+                    system_name: "Demo.Move".to_string(),
+                }],
+            }]
+        );
+    }
+
+    fn expected_move_system_core() -> CoreProgram {
+        CoreProgram {
             world: CoreWorld {
                 name: "Demo".to_string(),
             },
@@ -509,6 +587,13 @@ mod tests {
                     },
                 ],
             }],
+            schedules: vec![CoreSchedule {
+                name: "Main".to_string(),
+                items: vec![CoreScheduleItem::Run {
+                    system_id: 0x723b6b52df270ed5,
+                    system_name: "Demo.Move".to_string(),
+                }],
+            }],
             functions: vec![CoreFunction {
                 name: "startup".to_string(),
                 entry: BlockId(0),
@@ -522,8 +607,6 @@ mod tests {
                     terminator: CoreTerminator::Exit { value: ValueId(0) },
                 }],
             }],
-        };
-
-        assert_eq!(actual, expected);
+        }
     }
 }
