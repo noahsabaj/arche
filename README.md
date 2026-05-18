@@ -20,8 +20,9 @@ The proof chain currently demonstrates:
 - Runtime archetype lookup/create for a normalized `Position` component set.
 - Runtime insertion of an allocated entity row into the `Position` archetype table.
 - Runtime copying and readback of `Position { x: 1.0, y: 2.0 }` payload bytes into the `Position` component column.
+- Runtime debug inspection of a spawned-position world state.
 
-The active board is currently on M7 spawn entities. The next proof is runtime debug inspection for the spawned-position world state.
+The active board is currently on M8 resources. The next proof is defining runtime resource descriptors for `Demo.Time`.
 
 ## What This Is Not Yet
 

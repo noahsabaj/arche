@@ -409,6 +409,10 @@ impl ArcheWorld {
         self.entities.alloc()
     }
 
+    pub fn register_component_descriptor(&mut self, descriptor: ComponentDescriptor) -> bool {
+        self.component_descriptors.register(descriptor)
+    }
+
     pub fn component_descriptors(&self) -> &ComponentDescriptorTable {
         &self.component_descriptors
     }
@@ -437,6 +441,107 @@ impl ArcheWorld {
             && self.component_descriptors.len() == 0
             && self.archetypes.is_empty()
     }
+}
+
+pub fn debug_inspect_world(world: &ArcheWorld) -> String {
+    let mut lines = Vec::new();
+
+    lines.push("world".to_string());
+    lines.push(format!("  entities {}", world.entities.len()));
+    lines.push(format!("  archetypes {}", world.archetypes.len()));
+
+    for table in &world.archetypes {
+        lines.push(format!(
+            "  archetype {}",
+            debug_archetype_name(world, table.key())
+        ));
+
+        for row in 0..table.entity_count() {
+            if let Some(entity) = table.entity(row) {
+                lines.push(format!(
+                    "    row {row} entity index {} generation {}",
+                    entity.index(),
+                    entity.generation()
+                ));
+
+                for component_id in table.key().component_ids() {
+                    debug_inspect_component(world, table, *component_id, row, &mut lines);
+                }
+            }
+        }
+    }
+
+    lines.join("\n")
+}
+
+fn debug_archetype_name(world: &ArcheWorld, key: &ArchetypeKey) -> String {
+    key.component_ids()
+        .iter()
+        .map(|component_id| {
+            world
+                .component_descriptors
+                .get(*component_id)
+                .map(|descriptor| descriptor.name.clone())
+                .unwrap_or_else(|| format!("component 0x{:016x}", component_id.0))
+        })
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+fn debug_inspect_component(
+    world: &ArcheWorld,
+    table: &ArchetypeTable,
+    component_id: ComponentId,
+    row: usize,
+    lines: &mut Vec<String>,
+) {
+    let Some(descriptor) = world.component_descriptors.get(component_id) else {
+        lines.push(format!("      component 0x{:016x}", component_id.0));
+        lines.push("        descriptor missing".to_string());
+        return;
+    };
+
+    lines.push(format!("      component {}", descriptor.name));
+
+    let Some(column) = table.column(component_id) else {
+        lines.push("        column missing".to_string());
+        return;
+    };
+
+    let Some(row_bytes) = column.row_bytes(row) else {
+        lines.push("        payload missing".to_string());
+        return;
+    };
+
+    for field in &descriptor.fields {
+        lines.push(format!(
+            "        {}: {} = {}",
+            field.name,
+            field.type_name,
+            debug_format_field_value(field, row_bytes)
+        ));
+    }
+}
+
+fn debug_format_field_value(field: &ComponentFieldDescriptor, row_bytes: &[u8]) -> String {
+    let offset = field.offset as usize;
+
+    if field.type_name == "f32" && offset + 4 <= row_bytes.len() {
+        let value = f32::from_le_bytes([
+            row_bytes[offset],
+            row_bytes[offset + 1],
+            row_bytes[offset + 2],
+            row_bytes[offset + 3],
+        ]);
+
+        if value.fract() == 0.0 {
+            return format!("{value:.1}");
+        }
+
+        return value.to_string();
+    }
+
+    "unsupported".to_string()
 }
 
 #[cfg(test)]
@@ -717,6 +822,61 @@ mod tests {
             .expect("Position column should remain allocated");
         assert_eq!(column.row_count(), 1);
         assert_eq!(column.row_bytes(0), Some(position_payload.as_slice()));
+    }
+
+    #[test]
+    fn debug_inspects_spawned_position_world() {
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let position_key = ArchetypeKey::new(vec![position_id]);
+        let position = ComponentDescriptor {
+            id: position_id,
+            name: "Demo.Position".to_string(),
+            size: 8,
+            align: 4,
+            fields: vec![
+                ComponentFieldDescriptor {
+                    name: "x".to_string(),
+                    type_name: "f32".to_string(),
+                    offset: 0,
+                },
+                ComponentFieldDescriptor {
+                    name: "y".to_string(),
+                    type_name: "f32".to_string(),
+                    offset: 4,
+                },
+            ],
+        };
+        let position_payload = [0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40];
+        let mut world = ArcheWorld::create();
+
+        assert!(world.register_component_descriptor(position.clone()));
+
+        let entity = world.alloc_entity();
+        {
+            let table = world.get_or_create_archetype(position_key);
+            assert!(table
+                .allocate_component_column(&position, 1)
+                .expect("Position column allocation should succeed"));
+            let row = table.insert_entity(entity);
+
+            table
+                .copy_component_payload(position_id, row, &position_payload)
+                .expect("Position payload copy should succeed");
+        }
+
+        let expected = [
+            "world",
+            "  entities 1",
+            "  archetypes 1",
+            "  archetype Demo.Position",
+            "    row 0 entity index 0 generation 0",
+            "      component Demo.Position",
+            "        x: f32 = 1.0",
+            "        y: f32 = 2.0",
+        ]
+        .join("\n");
+
+        assert_eq!(debug_inspect_world(&world), expected);
     }
 
     #[test]

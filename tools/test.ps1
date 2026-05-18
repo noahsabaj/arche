@@ -564,6 +564,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "copies_position_payload_into_column")
 
     Invoke-CheckedCommand `
+        -Name "debug_inspects_spawned_position_world" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "debug_inspects_spawned_position_world")
+
+    Invoke-CheckedCommand `
         -Name "allocates_position_component_column" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "allocates_position_component_column")
