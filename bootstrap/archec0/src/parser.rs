@@ -43,6 +43,18 @@ pub struct ResourceField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SystemDecl {
     pub name: String,
+    pub params: Vec<SystemParam>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemParam {
+    pub name: String,
+    pub kind: SystemParamKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SystemParamKind {
+    ReadResource { resource_name: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -270,9 +282,23 @@ impl Parser<'_> {
     fn parse_system_declaration(&mut self) -> Result<SystemDecl, ParseError> {
         let name = self.parse_identifier("expected system name after `system`")?;
         self.expect(TokenKind::LeftParen, "expected `(` after system name")?;
+
+        let mut params = Vec::new();
+        if self.peek().kind != TokenKind::RightParen {
+            loop {
+                params.push(self.parse_system_param()?);
+
+                if self.peek().kind != TokenKind::Comma {
+                    break;
+                }
+
+                self.advance();
+            }
+        }
+
         self.expect(
             TokenKind::RightParen,
-            "expected `)` after empty system parameter list",
+            "expected `)` after system parameters",
         )?;
         self.expect(TokenKind::LeftBrace, "expected `{` after system signature")?;
         self.expect(
@@ -280,7 +306,26 @@ impl Parser<'_> {
             "expected `}` after empty system body",
         )?;
 
-        Ok(SystemDecl { name })
+        Ok(SystemDecl { name, params })
+    }
+
+    fn parse_system_param(&mut self) -> Result<SystemParam, ParseError> {
+        let name = self.parse_identifier("expected system parameter name")?;
+        self.expect(TokenKind::Colon, "expected `:` after system parameter name")?;
+
+        if !self.match_keyword(Keyword::Read) {
+            return Err(ParseError {
+                span: self.peek().span,
+                message: "expected `read` system parameter access".to_string(),
+            });
+        }
+
+        let resource_name = self.parse_identifier("expected resource name after `read`")?;
+
+        Ok(SystemParam {
+            name,
+            kind: SystemParamKind::ReadResource { resource_name },
+        })
     }
 
     fn parse_startup_block(&mut self) -> Result<StartupBlock, ParseError> {
@@ -658,7 +703,13 @@ impl fmt::Display for Program {
         for system in &self.systems {
             writeln!(formatter)?;
             writeln!(formatter, "  system {}", system.name)?;
-            writeln!(formatter, "    params 0")?;
+            if system.params.is_empty() {
+                writeln!(formatter, "    params 0")?;
+            } else {
+                for param in &system.params {
+                    writeln!(formatter, "    {}", format_system_param(param))?;
+                }
+            }
             write!(formatter, "    body empty")?;
         }
 
@@ -801,6 +852,14 @@ fn write_component_literal_value(
 ) -> fmt::Result {
     match value {
         ComponentLiteralValue::Float { text, .. } => write!(formatter, "{indent}float {text}"),
+    }
+}
+
+fn format_system_param(param: &SystemParam) -> String {
+    match &param.kind {
+        SystemParamKind::ReadResource { resource_name } => {
+            format!("param {}: read {}", param.name, resource_name)
+        }
     }
 }
 

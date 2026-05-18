@@ -823,8 +823,10 @@ try {
         -Expected @(
             "Program",
             "  world Demo",
+            "  resource Time",
+            "    field delta: f32",
             "  system Move",
-            "    params 0",
+            "    param time: read Time",
             "    body empty",
             "  startup",
             "    exit",

@@ -28,8 +28,9 @@ The proof chain currently demonstrates:
 - Runtime debug inspection of stored singleton resource state.
 - Source-level parsing for a `Demo.Time` resource fixture with `Time { delta: 1.0 }`.
 - Source-level parsing for named system declarations, starting with `system Move() {}`.
+- Source-level parsing for system read-resource parameters, starting with `time: read Time`.
 
-M8 resources are complete. The active board is currently on M9 systems. The next proof is parsing system resource parameters.
+M8 resources are complete. The active board is currently on M9 systems. The next proof is parsing system query parameters.
 
 ## What This Is Not Yet
 
