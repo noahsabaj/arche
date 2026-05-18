@@ -44,6 +44,62 @@ Every issue must produce at least one of these:
 
 If an issue cannot produce one of those, it is too vague and must be split or rewritten.
 
+## Current North Star
+
+```text
+Source file -> parsed ECS program -> Arche Core -> runtime world -> schedule -> query loop -> updated Position -> native proof.
+```
+
+Current missing links:
+
+- Schedule parsing, lowering, runtime planning, and execution.
+- Source-driven startup execution for resources, spawns, and schedules.
+- System body Core lowering for real query loops.
+- Complete ECS metadata in generated native executables.
+- Native generated query-loop code instead of runtime-only helper proofs.
+
+## Integration Debt
+
+These are intentional gaps created by narrow proof milestones.
+
+Current gaps:
+
+- Component/source declarations can produce metadata, but source-level ECS programs are not yet fully executed in generated native binaries.
+- Spawn and resource behavior are proven in runtime tests, but startup spawn/resource source is not yet driving generated executable ECS state.
+- System declarations and query metadata exist, but system bodies are not yet lowered into executable query-loop code.
+- M10 Move behavior is proven through a runtime application path, not a compiled source system body.
+- Schedule execution is the current focus; source-level `run Main` is not yet native executable behavior.
+
+## Future Horizon
+
+These are milestone targets only, not active board issues.
+
+- M12: ECS semantic verification.
+- M13: Source-driven runtime program assembly.
+- M14: Source-level ECS runtime execution proof.
+- M15: Complete ECS metadata in native executable.
+- M16: Native executable source-level ECS startup.
+- M17: Lower system bodies to Core.
+- M18: Native codegen for compiled query loop.
+
+## Do Not Start Yet
+
+- Events.
+- Relations.
+- Parallel scheduling.
+- Package manager.
+- Debugger or profiler.
+- Object/linker split.
+- Generics.
+- Command buffers before schedule/source execution.
+
+## Integration Checkpoints
+
+- After M11: source can represent and plan schedules.
+- After M14: source can drive runtime ECS behavior.
+- After M16: generated executables can create source-described ECS world state.
+- After M18: generated executables can run a compiled system query loop.
+
 ## Board
 
 Board columns:

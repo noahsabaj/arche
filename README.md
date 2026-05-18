@@ -2,7 +2,7 @@
 
 Arche is an ECS-native software platform bootstrap. The current repository is focused on proving the permanent native execution substrate: a bootstrap compiler, a tiny ELF64 backend, Arche Core, ECS metadata, and the first runtime kernel pieces.
 
-This is not a broad language implementation yet. Work advances through executable proofs tracked in `WORK_LOG.md`.
+This is not a broad language implementation yet. Work advances through executable proofs tracked in `WORK_LOG.md`, which also keeps the current north star and integration debt visible.
 
 ## Current Status
 
