@@ -274,6 +274,66 @@ pub fn stable_system_id(world_name: &str, system_name: &str) -> SystemId {
     SystemId(stable_qualified_id(world_name, system_name))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct QueryId(pub u64);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum QueryAccess {
+    Read,
+    Mut,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryTermDescriptor {
+    pub access: QueryAccess,
+    pub component_id: ComponentId,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryDescriptor {
+    pub id: QueryId,
+    pub name: String,
+    pub terms: Vec<QueryTermDescriptor>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct QueryDescriptorTable {
+    descriptors: Vec<QueryDescriptor>,
+}
+
+impl QueryDescriptorTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.descriptors.len()
+    }
+
+    pub fn register(&mut self, descriptor: QueryDescriptor) -> bool {
+        if self.get(descriptor.id).is_some() {
+            return false;
+        }
+
+        self.descriptors.push(descriptor);
+        true
+    }
+
+    pub fn get(&self, id: QueryId) -> Option<&QueryDescriptor> {
+        self.descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+    }
+}
+
+pub fn stable_query_id(world_name: &str, system_name: &str, query_name: &str) -> QueryId {
+    QueryId(stable_qualified_id(
+        &format!("{world_name}.{system_name}"),
+        query_name,
+    ))
+}
+
 #[derive(Debug)]
 pub struct ResourceStorage {
     resource_id: ResourceId,
@@ -634,6 +694,7 @@ pub struct ArcheWorld {
     component_descriptors: ComponentDescriptorTable,
     resource_descriptors: ResourceDescriptorTable,
     system_descriptors: SystemDescriptorTable,
+    query_descriptors: QueryDescriptorTable,
     resource_storages: Vec<ResourceStorage>,
     archetypes: Vec<ArchetypeTable>,
 }
@@ -645,6 +706,7 @@ impl ArcheWorld {
             component_descriptors: ComponentDescriptorTable::new(),
             resource_descriptors: ResourceDescriptorTable::new(),
             system_descriptors: SystemDescriptorTable::new(),
+            query_descriptors: QueryDescriptorTable::new(),
             resource_storages: Vec::new(),
             archetypes: Vec::new(),
         }
@@ -682,6 +744,14 @@ impl ArcheWorld {
 
     pub fn system_descriptors(&self) -> &SystemDescriptorTable {
         &self.system_descriptors
+    }
+
+    pub fn register_query_descriptor(&mut self, descriptor: QueryDescriptor) -> bool {
+        self.query_descriptors.register(descriptor)
+    }
+
+    pub fn query_descriptors(&self) -> &QueryDescriptorTable {
+        &self.query_descriptors
     }
 
     pub fn allocate_resource_storage(
@@ -796,6 +866,7 @@ impl ArcheWorld {
             && self.component_descriptors.len() == 0
             && self.resource_descriptors.len() == 0
             && self.system_descriptors.len() == 0
+            && self.query_descriptors.len() == 0
             && self.resource_storages.is_empty()
             && self.archetypes.is_empty()
     }
@@ -1167,6 +1238,64 @@ mod tests {
 
         assert!(!world.register_system_descriptor(duplicate));
         assert_eq!(world.system_descriptors().get(move_id), Some(&move_system));
+    }
+
+    #[test]
+    fn defines_position_velocity_query_descriptor() {
+        let query_id = stable_query_id("Demo", "Move", "movers");
+        let query = QueryDescriptor {
+            id: query_id,
+            name: "Demo.Move.movers".to_string(),
+            terms: vec![
+                QueryTermDescriptor {
+                    access: QueryAccess::Mut,
+                    component_id: ComponentId(0x002202c6aeb4f27b),
+                    name: "Demo.Position".to_string(),
+                },
+                QueryTermDescriptor {
+                    access: QueryAccess::Read,
+                    component_id: ComponentId(0x2cf8a68bcb7f913b),
+                    name: "Demo.Velocity".to_string(),
+                },
+            ],
+        };
+        let mut world = ArcheWorld::create();
+
+        assert_eq!(query_id, QueryId(0xf4004232b85cef9f));
+        assert!(world.register_query_descriptor(query.clone()));
+        assert_eq!(world.query_descriptors().len(), 1);
+        assert_eq!(world.query_descriptors().get(query_id), Some(&query));
+
+        let descriptor = world
+            .query_descriptors()
+            .get(query_id)
+            .expect("Demo.Move.movers query descriptor should be registered");
+        assert_eq!(descriptor.id, QueryId(0xf4004232b85cef9f));
+        assert_eq!(descriptor.name, "Demo.Move.movers");
+        assert_eq!(
+            descriptor.terms,
+            vec![
+                QueryTermDescriptor {
+                    access: QueryAccess::Mut,
+                    component_id: ComponentId(0x002202c6aeb4f27b),
+                    name: "Demo.Position".to_string(),
+                },
+                QueryTermDescriptor {
+                    access: QueryAccess::Read,
+                    component_id: ComponentId(0x2cf8a68bcb7f913b),
+                    name: "Demo.Velocity".to_string(),
+                },
+            ]
+        );
+
+        let duplicate = QueryDescriptor {
+            id: query_id,
+            name: "Demo.Move.duplicate".to_string(),
+            terms: Vec::new(),
+        };
+
+        assert!(!world.register_query_descriptor(duplicate));
+        assert_eq!(world.query_descriptors().get(query_id), Some(&query));
     }
 
     #[test]
@@ -1585,6 +1714,7 @@ mod tests {
         assert_eq!(world.component_descriptors().len(), 0);
         assert_eq!(world.resource_descriptors().len(), 0);
         assert_eq!(world.system_descriptors().len(), 0);
+        assert_eq!(world.query_descriptors().len(), 0);
         assert_eq!(world.resource_storage_count(), 0);
         assert_eq!(world.archetype_count(), 0);
         assert!(world.is_empty());

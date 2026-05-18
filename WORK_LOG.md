@@ -66,7 +66,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M10-001 | Define runtime query descriptors | A runtime unit test represents `query[mut Position, Velocity]` as deterministic query descriptor metadata. |
+| M10-002 | Match query descriptor to archetype keys | A runtime unit test proves the `Position + Velocity` query descriptor matches an archetype key containing both components. |
 
 ### Doing
 
@@ -140,6 +140,7 @@ Board rules:
 | M9-004 | Lower system declarations to Core metadata | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_move_system_to_core_metadata` passed, proving parsed `system Move` declarations lower into Core metadata with `time: read Demo.Time`, stable resource ID `0x7924ce11db524521`, and `movers: query` terms `mut Demo.Position` ID `0x002202c6aeb4f27b` and `read Demo.Velocity` ID `0x2cf8a68bcb7f913b`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted Core metadata proof included. This was Core-only: no scheduling, runtime system descriptors, query planning, `--emit-core` output assertion, or executable behavior was added. Implementation commit: `012e7b8`. |
 | M9-005 | Add runtime system descriptor table | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml registers_move_system_descriptor` passed, proving the runtime can register and retrieve `Demo.Move` with stable `SystemId(0x723b6b52df270ed5)`, `time: read Demo.Time` resource metadata, and `movers` query terms for mutable `Demo.Position` and read-only `Demo.Velocity`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted system-descriptor proof included. This was runtime descriptor registration only: no scheduling, query planning, source execution, Core changes, ELF/codegen changes, or validation against registered component/resource tables was added. Implementation commit: `fa39ac2`. |
 | M9-006 | Add system source fixture using Time.delta | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast` printed the exact AST for a non-executed `Move` system body containing field-access expression statements for `time.delta`, `Position.x`, `Position.y`, `Velocity.x`, and `Velocity.y`; `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_move_system_to_core_metadata` passed, proving Core metadata lowering still ignores the body; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the updated system-body AST assertion included. This was parser/source-fixture only: no assignment, `for`, scheduling, query iteration, Core body lowering, runtime execution, or ELF/codegen behavior was added. M9 system/resource access is complete. Implementation commit: `0cf4e8a`. |
+| M10-001 | Define runtime query descriptors | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_position_velocity_query_descriptor` passed, proving the runtime can register and retrieve `Demo.Move.movers` with stable `QueryId(0xf4004232b85cef9f)`, mutable `Demo.Position`, and read-only `Demo.Velocity` terms in source order; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted query-descriptor proof included. This was runtime metadata only: no descriptor/archetype matching, query planning, row iteration, resource access, `Move` execution, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -147,7 +148,6 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M10-002 | Match query descriptor to archetype keys | A runtime unit test proves the `Position + Velocity` query descriptor matches an archetype key containing both components. |
 | M10-003 | Build query plan for Position/Velocity | A runtime unit test builds a deterministic query plan for the matching `Position + Velocity` archetype. |
 | M10-004 | Iterate query rows over matching archetype | A runtime unit test iterates one row from the query plan and returns the inserted entity plus component row index. |
 | M10-005 | Read Time.delta during query iteration | A runtime unit test combines query iteration with decoded `Demo.Time.delta`. |
@@ -1304,19 +1304,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M9-006 stayed parser/source-fixture only | 99/100 |
-| `move_system.arc --emit-ast` proves non-executed `Time.delta`, `Position`, and `Velocity` field references | 99/100 |
-| Core metadata lowering still ignores system bodies and remains stable | 98/100 |
-| Existing M0-M9 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M9 complete and controlled M10 progress | 99/100 |
-| Active inventory promotes only M10-001 and limits M10 backlog through M10-006 | 98/100 |
+| M10-001 stayed runtime metadata-only | 99/100 |
+| `defines_position_velocity_query_descriptor` proves stable `Demo.Move.movers` query metadata | 99/100 |
+| Existing M0-M10 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
+| Board state reflects M10-001 complete and controlled M10 progress | 99/100 |
+| Active inventory promotes only M10-002 and limits M10 backlog through M10-006 | 98/100 |
 
 Weighted confidence: 99/100.
 
 Verification pass:
 
-- The active board has only `M10-001` in `Ready`.
+- The active board has only `M10-002` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, and completed M9.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, and M10-001.
 - Detailed active inventory includes M10-001 through M10-006 only.
-- M7 spawn entities, M8 resources, and M9 system/resource access are complete; M10 begins the first query-loop runtime path with query descriptors before matching, planning, iteration, resource access, and row updates.
+- M7 spawn entities, M8 resources, and M9 system/resource access are complete; M10 now has runtime query descriptors and next matches those descriptors against archetype keys before query planning, iteration, resource access, and row updates.
