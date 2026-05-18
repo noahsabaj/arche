@@ -177,6 +177,10 @@ impl ResourceDescriptorTable {
             .iter()
             .find(|descriptor| descriptor.id == id)
     }
+
+    pub fn descriptors(&self) -> &[ResourceDescriptor] {
+        &self.descriptors
+    }
 }
 
 pub fn stable_resource_id(world_name: &str, resource_name: &str) -> ResourceId {
@@ -736,6 +740,14 @@ pub fn debug_inspect_world(world: &ArcheWorld) -> String {
         }
     }
 
+    if world.resource_descriptors.len() > 0 {
+        lines.push(format!("  resources {}", world.resource_descriptors.len()));
+
+        for descriptor in world.resource_descriptors.descriptors() {
+            debug_inspect_resource(world, descriptor, &mut lines);
+        }
+    }
+
     lines.join("\n")
 }
 
@@ -804,6 +816,41 @@ fn debug_format_field_value(field: &ComponentFieldDescriptor, row_bytes: &[u8]) 
         }
 
         return value.to_string();
+    }
+
+    "unsupported".to_string()
+}
+
+fn debug_inspect_resource(
+    world: &ArcheWorld,
+    descriptor: &ResourceDescriptor,
+    lines: &mut Vec<String>,
+) {
+    lines.push(format!("  resource {}", descriptor.name));
+
+    for field in &descriptor.fields {
+        lines.push(format!(
+            "    {}: {} = {}",
+            field.name,
+            field.type_name,
+            debug_format_resource_field_value(world, descriptor.id, field)
+        ));
+    }
+}
+
+fn debug_format_resource_field_value(
+    world: &ArcheWorld,
+    resource_id: ResourceId,
+    field: &ResourceFieldDescriptor,
+) -> String {
+    if field.type_name == "f32" {
+        if let Ok(value) = world.read_resource_f32_field(resource_id, &field.name) {
+            if value.fract() == 0.0 {
+                return format!("{value:.1}");
+            }
+
+            return value.to_string();
+        }
     }
 
     "unsupported".to_string()
@@ -1072,6 +1119,44 @@ mod tests {
 
         let missing_field = world.read_resource_f32_field(time_id, "missing");
         assert!(missing_field.is_err());
+    }
+
+    #[test]
+    fn debug_inspects_time_delta_resource() {
+        let time_id = stable_resource_id("Demo", "Time");
+        let time = ResourceDescriptor {
+            id: time_id,
+            name: "Demo.Time".to_string(),
+            size: 4,
+            align: 4,
+            fields: vec![ResourceFieldDescriptor {
+                name: "delta".to_string(),
+                type_name: "f32".to_string(),
+                offset: 0,
+            }],
+        };
+        let mut world = ArcheWorld::create();
+        let payload = [0x00, 0x00, 0x80, 0x3f];
+
+        assert!(world.register_resource_descriptor(time.clone()));
+        assert!(world
+            .allocate_resource_storage(&time)
+            .expect("Demo.Time resource storage allocation should succeed"));
+        world
+            .store_resource_payload(time_id, &payload)
+            .expect("Demo.Time payload store should succeed");
+
+        let expected = [
+            "world",
+            "  entities 0",
+            "  archetypes 0",
+            "  resources 1",
+            "  resource Demo.Time",
+            "    delta: f32 = 1.0",
+        ]
+        .join("\n");
+
+        assert_eq!(debug_inspect_world(&world), expected);
     }
 
     #[test]

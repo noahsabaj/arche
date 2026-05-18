@@ -564,6 +564,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "retrieves_time_delta_resource_payload")
 
     Invoke-CheckedCommand `
+        -Name "debug_inspects_time_delta_resource" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "debug_inspects_time_delta_resource")
+
+    Invoke-CheckedCommand `
         -Name "creates_archetype_table_for_position" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "creates_archetype_table_for_position")

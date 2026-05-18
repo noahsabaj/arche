@@ -25,8 +25,9 @@ The proof chain currently demonstrates:
 - Runtime aligned storage allocation for singleton resource payloads.
 - Runtime storage of exact little-endian `Time.delta` payload bytes.
 - Runtime retrieval and decoding of `Time.delta` as `1.0f32`.
+- Runtime debug inspection of stored singleton resource state.
 
-The active board is currently on M8 resources. The next proof is runtime resource inspection for the stored `Demo.Time.delta` value.
+The active board is currently on M8 resources. The next proof is adding a source fixture for `Time { delta: 1.0 }`.
 
 ## What This Is Not Yet
 
