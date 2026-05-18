@@ -1066,6 +1066,16 @@ try {
     Assert-OutputContains -Name "bad unknown resource param diagnostic code" -Output $badUnknownResourceParamOutput -ExpectedText "error[CHECK001]"
     Assert-OutputContains -Name "bad unknown resource param diagnostic message" -Output $badUnknownResourceParamOutput -ExpectedText 'unknown resource `MissingTime` in system parameter'
 
+    $badUnknownQueryComponentOutput = @(Invoke-CommandExpectFailure `
+        -Name "archec0 tests/e2e/bad_unknown_query_component.arc rejects unknown query component" `
+        -Executable "cargo" `
+        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\tests\e2e\bad_unknown_query_component.arc", "--check"))
+
+    Assert-OutputContains -Name "bad unknown query component diagnostic path" -Output $badUnknownQueryComponentOutput -ExpectedText "bad_unknown_query_component.arc"
+    Assert-OutputContains -Name "bad unknown query component diagnostic location" -Output $badUnknownQueryComponentOutput -ExpectedText "3:27"
+    Assert-OutputContains -Name "bad unknown query component diagnostic code" -Output $badUnknownQueryComponentOutput -ExpectedText "error[CHECK001]"
+    Assert-OutputContains -Name "bad unknown query component diagnostic message" -Output $badUnknownQueryComponentOutput -ExpectedText 'unknown component `MissingComponent` in query'
+
     $e2eTests = @(Get-ChildItem -LiteralPath $e2eDir -Filter "*.ps1" -File | Sort-Object FullName)
     Write-Host "$($e2eTests.Count) e2e tests discovered"
 

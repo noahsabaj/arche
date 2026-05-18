@@ -65,6 +65,11 @@ fn check_system_params(program: &Program) -> Result<(), CheckError> {
         .iter()
         .map(|resource| resource.name.as_str())
         .collect::<HashSet<_>>();
+    let components = program
+        .components
+        .iter()
+        .map(|component| component.name.as_str())
+        .collect::<HashSet<_>>();
 
     for system in &program.systems {
         for param in &system.params {
@@ -82,7 +87,19 @@ fn check_system_params(program: &Program) -> Result<(), CheckError> {
                         });
                     }
                 }
-                SystemParamKind::Query { .. } => {}
+                SystemParamKind::Query { terms } => {
+                    for term in terms {
+                        if !components.contains(term.component_name.as_str()) {
+                            return Err(CheckError {
+                                span: term.component_span,
+                                message: format!(
+                                    "unknown component `{}` in query",
+                                    term.component_name
+                                ),
+                            });
+                        }
+                    }
+                }
             }
         }
     }

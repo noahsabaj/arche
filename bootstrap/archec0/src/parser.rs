@@ -69,6 +69,7 @@ pub enum SystemParamKind {
 pub struct QueryTerm {
     pub access: QueryAccess,
     pub component_name: String,
+    pub component_span: Span,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -496,11 +497,13 @@ impl Parser<'_> {
         } else {
             QueryAccess::Read
         };
-        let component_name = self.parse_identifier("expected query component name")?;
+        let (component_name, component_span) =
+            self.parse_identifier_with_span("expected query component name")?;
 
         Ok(QueryTerm {
             access,
             component_name,
+            component_span,
         })
     }
 

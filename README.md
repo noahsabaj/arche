@@ -47,8 +47,9 @@ The proof chain currently demonstrates:
 - Source-level parsing for startup `run Main`.
 - ECS semantic checking, starting with rejection of unknown schedule run targets.
 - ECS semantic checking for unknown system resource parameters.
+- ECS semantic checking for unknown query components.
 
-M12 ECS semantic verification is underway. The next proof is rejecting an unknown query component.
+M12 ECS semantic verification is underway. The next proof is rejecting conflicting query access.
 
 ## What This Is Not Yet
 
