@@ -66,7 +66,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M8-001 | Define runtime resource descriptors | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_time_delta_resource_descriptor` proves the runtime can represent `Demo.Time` as a singleton resource descriptor with `delta: f32`. |
+| M8-002 | Allocate resource storage | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml allocates_time_delta_resource_storage` proves the runtime allocates aligned storage for one `Demo.Time` resource payload. |
 
 ### Doing
 
@@ -128,13 +128,13 @@ Board rules:
 | M7-005 | Insert entity into archetype table | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml inserts_entity_into_position_archetype` passed, proving `ArcheWorld` can allocate an `ArcheEntity`, get or create the `Demo.Position` archetype table, insert that entity as row `0`, read the row back, and keep the entity alive in the world entity table; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted row-insertion proof included. This was runtime-only: no component payload bytes, component column row writes, source-level spawn execution, parser/Core changes, or generated ELF behavior were added. Implementation commit: `586d149`. |
 | M7-006 | Copy component payload into column | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml copies_position_payload_into_column` passed, proving the runtime can copy exact little-endian `Position { x: 1.0, y: 2.0 }` payload bytes into row `0` of the `Demo.Position` column, read them back, advance the column payload row count to `1`, preserve the inserted entity row, and keep the entity alive in the world entity table; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted payload-copy proof included. This was runtime-only: no parser/Core/source-level spawn execution, generated ELF behavior, or M8 work was added. Implementation commit: `4436203`. |
 | M7-007 | Add runtime debug inspection for world state | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml debug_inspects_spawned_position_world` passed, proving runtime inspection reports a world with `1` entity, `1` archetype, row `0` entity index `0` generation `0`, component `Demo.Position`, and decoded fields `x: f32 = 1.0` and `y: f32 = 2.0`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted debug-inspection proof included. This was runtime-only: no source-level spawn execution, generated ELF behavior, CLI inspection command, M8 resource storage, or broader debug tooling was added. M7 spawn entities is complete. Implementation commit: `9957c15`. |
+| M8-001 | Define runtime resource descriptors | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_time_delta_resource_descriptor` passed, proving the runtime can represent `Demo.Time` as singleton resource metadata with stable `ResourceId(0x7924ce11db524521)`, size `4`, align `4`, and field `delta: f32 @ 0`; duplicate registration returns `false` and leaves the original descriptor unchanged; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource-descriptor proof included. This was descriptor-only: no resource storage, payload writes, source fixture, systems, queries, or generated executable behavior was added. Implementation commit will be recorded after push. |
 
 ### Backlog
 
 Dependency ordered:
 
 ```text
-M8-002 Allocate resource storage
 M8-003 Store Time.delta payload
 M8-004 Retrieve Time.delta payload
 M8-005 Add runtime resource inspection
@@ -1164,19 +1164,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M7-007 stayed runtime debug inspection only | 99/100 |
-| `debug_inspects_spawned_position_world` proves one entity, `Demo.Position`, and decoded `x = 1.0`, `y = 2.0` | 99/100 |
-| Existing M0-M7 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M7 complete and controlled M8 progress | 99/100 |
-| Active inventory is limited to M8-001 ready plus M8-002 through M8-006 backlog | 97/100 |
+| M8-001 stayed runtime resource descriptor only | 99/100 |
+| `defines_time_delta_resource_descriptor` proves stable `Demo.Time` identity and `delta: f32 @ 0` layout metadata | 99/100 |
+| Existing M0-M8 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
+| Board state reflects M8-001 complete and controlled M8 progress | 99/100 |
+| Active inventory is limited to M8-002 ready plus M8-003 through M8-006 backlog | 98/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M8-001` in `Ready`.
+- The active board has only `M8-002` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, and completed M7.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, and M8-001.
 - Detailed active inventory includes M8-001 through M8-006 only.
 - Later milestones remain proof targets only.
-- M7 spawn entities is complete; singleton resource descriptor work starts with M8-001.
+- M7 spawn entities is complete; singleton resource descriptors are complete; resource storage allocation starts with M8-002.

@@ -130,6 +130,68 @@ impl ComponentDescriptorTable {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceId(pub u64);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceFieldDescriptor {
+    pub name: String,
+    pub type_name: String,
+    pub offset: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceDescriptor {
+    pub id: ResourceId,
+    pub name: String,
+    pub size: u32,
+    pub align: u32,
+    pub fields: Vec<ResourceFieldDescriptor>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ResourceDescriptorTable {
+    descriptors: Vec<ResourceDescriptor>,
+}
+
+impl ResourceDescriptorTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.descriptors.len()
+    }
+
+    pub fn register(&mut self, descriptor: ResourceDescriptor) -> bool {
+        if self.get(descriptor.id).is_some() {
+            return false;
+        }
+
+        self.descriptors.push(descriptor);
+        true
+    }
+
+    pub fn get(&self, id: ResourceId) -> Option<&ResourceDescriptor> {
+        self.descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+    }
+}
+
+pub fn stable_resource_id(world_name: &str, resource_name: &str) -> ResourceId {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in format!("{world_name}.{resource_name}").bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    ResourceId(hash)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArchetypeKey {
     component_ids: Vec<ComponentId>,
@@ -387,6 +449,7 @@ pub struct ComponentColumnError {
 pub struct ArcheWorld {
     entities: EntityTable,
     component_descriptors: ComponentDescriptorTable,
+    resource_descriptors: ResourceDescriptorTable,
     archetypes: Vec<ArchetypeTable>,
 }
 
@@ -395,6 +458,7 @@ impl ArcheWorld {
         Self {
             entities: EntityTable::new(),
             component_descriptors: ComponentDescriptorTable::new(),
+            resource_descriptors: ResourceDescriptorTable::new(),
             archetypes: Vec::new(),
         }
     }
@@ -415,6 +479,14 @@ impl ArcheWorld {
 
     pub fn component_descriptors(&self) -> &ComponentDescriptorTable {
         &self.component_descriptors
+    }
+
+    pub fn register_resource_descriptor(&mut self, descriptor: ResourceDescriptor) -> bool {
+        self.resource_descriptors.register(descriptor)
+    }
+
+    pub fn resource_descriptors(&self) -> &ResourceDescriptorTable {
+        &self.resource_descriptors
     }
 
     pub fn archetype_count(&self) -> usize {
@@ -439,6 +511,7 @@ impl ArcheWorld {
     pub fn is_empty(&self) -> bool {
         self.entities.len() == 0
             && self.component_descriptors.len() == 0
+            && self.resource_descriptors.len() == 0
             && self.archetypes.is_empty()
     }
 }
@@ -632,6 +705,56 @@ mod tests {
 
         assert!(!descriptors.register(duplicate));
         assert_eq!(descriptors.get(position_id), Some(&position));
+    }
+
+    #[test]
+    fn defines_time_delta_resource_descriptor() {
+        let time_id = stable_resource_id("Demo", "Time");
+        let time = ResourceDescriptor {
+            id: time_id,
+            name: "Demo.Time".to_string(),
+            size: 4,
+            align: 4,
+            fields: vec![ResourceFieldDescriptor {
+                name: "delta".to_string(),
+                type_name: "f32".to_string(),
+                offset: 0,
+            }],
+        };
+        let mut world = ArcheWorld::create();
+
+        assert_eq!(time_id, ResourceId(0x7924ce11db524521));
+        assert!(world.register_resource_descriptor(time.clone()));
+        assert_eq!(world.resource_descriptors().len(), 1);
+        assert_eq!(world.resource_descriptors().get(time_id), Some(&time));
+
+        let descriptor = world
+            .resource_descriptors()
+            .get(time_id)
+            .expect("Demo.Time resource descriptor should be registered");
+        assert_eq!(descriptor.id, ResourceId(0x7924ce11db524521));
+        assert_eq!(descriptor.name, "Demo.Time");
+        assert_eq!(descriptor.size, 4);
+        assert_eq!(descriptor.align, 4);
+        assert_eq!(
+            descriptor.fields,
+            vec![ResourceFieldDescriptor {
+                name: "delta".to_string(),
+                type_name: "f32".to_string(),
+                offset: 0,
+            }]
+        );
+
+        let duplicate = ResourceDescriptor {
+            id: time_id,
+            name: "Demo.Time.Duplicate".to_string(),
+            size: 8,
+            align: 4,
+            fields: Vec::new(),
+        };
+
+        assert!(!world.register_resource_descriptor(duplicate));
+        assert_eq!(world.resource_descriptors().get(time_id), Some(&time));
     }
 
     #[test]
@@ -885,6 +1008,7 @@ mod tests {
 
         assert_eq!(world.entities().len(), 0);
         assert_eq!(world.component_descriptors().len(), 0);
+        assert_eq!(world.resource_descriptors().len(), 0);
         assert_eq!(world.archetype_count(), 0);
         assert!(world.is_empty());
 

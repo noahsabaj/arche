@@ -21,8 +21,9 @@ The proof chain currently demonstrates:
 - Runtime insertion of an allocated entity row into the `Position` archetype table.
 - Runtime copying and readback of `Position { x: 1.0, y: 2.0 }` payload bytes into the `Position` component column.
 - Runtime debug inspection of a spawned-position world state.
+- Runtime resource descriptors for singleton world data, starting with `Demo.Time`.
 
-The active board is currently on M8 resources. The next proof is defining runtime resource descriptors for `Demo.Time`.
+The active board is currently on M8 resources. The next proof is allocating aligned storage for a `Demo.Time` resource payload.
 
 ## What This Is Not Yet
 
