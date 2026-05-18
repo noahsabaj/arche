@@ -892,6 +892,8 @@ try {
             "      expr",
             "        field y",
             "          identifier Velocity",
+            "  schedule Main",
+            "    run Move",
             "  startup",
             "    exit",
             "      integer 0"

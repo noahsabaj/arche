@@ -8,6 +8,7 @@ pub struct Program {
     pub components: Vec<ComponentDecl>,
     pub resources: Vec<ResourceDecl>,
     pub systems: Vec<SystemDecl>,
+    pub schedules: Vec<ScheduleDecl>,
     pub startup: Option<StartupBlock>,
 }
 
@@ -79,6 +80,17 @@ pub struct SystemBody {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SystemBodyStatement {
     pub expression: Expression,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScheduleDecl {
+    pub name: String,
+    pub items: Vec<ScheduleItem>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ScheduleItem {
+    Run { system_name: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -193,6 +205,7 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, ParseError> {
     let mut components = Vec::new();
     let mut resources = Vec::new();
     let mut systems = Vec::new();
+    let mut schedules = Vec::new();
     loop {
         if parser.match_keyword(Keyword::Component) {
             components.push(parser.parse_component_declaration()?);
@@ -206,6 +219,11 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, ParseError> {
 
         if parser.match_keyword(Keyword::System) {
             systems.push(parser.parse_system_declaration()?);
+            continue;
+        }
+
+        if parser.match_keyword(Keyword::Schedule) {
+            schedules.push(parser.parse_schedule_declaration()?);
             continue;
         }
 
@@ -223,6 +241,7 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, ParseError> {
         components,
         resources,
         systems,
+        schedules,
         startup,
     })
 }
@@ -356,6 +375,41 @@ impl Parser<'_> {
 
         self.expect(TokenKind::RightBrace, "expected `}` to close system body")?;
         Ok(SystemBody { statements })
+    }
+
+    fn parse_schedule_declaration(&mut self) -> Result<ScheduleDecl, ParseError> {
+        let name = self.parse_identifier("expected schedule name after `schedule`")?;
+        self.expect(TokenKind::LeftBrace, "expected `{` after schedule name")?;
+
+        let mut items = Vec::new();
+        while self.peek().kind != TokenKind::RightBrace {
+            if self.peek().kind == TokenKind::Eof {
+                return Err(ParseError {
+                    span: self.peek().span,
+                    message: "expected `}` to close schedule declaration".to_string(),
+                });
+            }
+
+            items.push(self.parse_schedule_item()?);
+        }
+
+        self.expect(
+            TokenKind::RightBrace,
+            "expected `}` to close schedule declaration",
+        )?;
+        Ok(ScheduleDecl { name, items })
+    }
+
+    fn parse_schedule_item(&mut self) -> Result<ScheduleItem, ParseError> {
+        if self.match_keyword(Keyword::Run) {
+            let system_name = self.parse_identifier("expected system name after `run`")?;
+            return Ok(ScheduleItem::Run { system_name });
+        }
+
+        Err(ParseError {
+            span: self.peek().span,
+            message: "expected `run` schedule item".to_string(),
+        })
     }
 
     fn parse_system_param(&mut self) -> Result<SystemParam, ParseError> {
@@ -847,6 +901,20 @@ impl fmt::Display for Program {
                     writeln!(formatter)?;
                     writeln!(formatter, "      expr")?;
                     write_expression(formatter, &statement.expression, "        ")?;
+                }
+            }
+        }
+
+        for schedule in &self.schedules {
+            writeln!(formatter)?;
+            write!(formatter, "  schedule {}", schedule.name)?;
+
+            for item in &schedule.items {
+                match item {
+                    ScheduleItem::Run { system_name } => {
+                        writeln!(formatter)?;
+                        write!(formatter, "    run {system_name}")?;
+                    }
                 }
             }
         }

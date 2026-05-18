@@ -39,8 +39,9 @@ The proof chain currently demonstrates:
 - Runtime query row iteration over matching archetypes.
 - Runtime access to decoded `Time.delta` during query iteration.
 - Runtime `Move` application over query rows, updating `Position` from `Velocity * Time.delta`.
+- Source-level parsing for schedule declarations, starting with `schedule Main { run Move }`.
 
-M10 first query loop is complete. The active board is currently on M11 schedules. The next proof is parsing schedule declarations.
+M10 first query loop is complete. The active board is currently on M11 schedules. The next proof is lowering schedule declarations to Core metadata.
 
 ## What This Is Not Yet
 

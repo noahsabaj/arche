@@ -25,6 +25,10 @@ system Move(
     Velocity.y
 }
 
+schedule Main {
+    run Move
+}
+
 startup {
     exit 0
 }
