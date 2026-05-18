@@ -35,8 +35,9 @@ The proof chain currently demonstrates:
 - Source-level parsing for non-executed system body field references, including `time.delta`, `Position`, and `Velocity` fields.
 - Runtime query descriptor metadata for `Demo.Move.movers`.
 - Runtime query descriptor matching against archetype component sets.
+- Runtime query plan construction for matching `Position`/`Velocity` archetypes.
 
-M9 system/resource access is complete. The active board is currently on M10 first query loop. The next proof is building a query plan for `Position`/`Velocity`.
+M9 system/resource access is complete. The active board is currently on M10 first query loop. The next proof is iterating query rows over a matching archetype.
 
 ## What This Is Not Yet
 

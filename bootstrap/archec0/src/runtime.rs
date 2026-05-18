@@ -305,6 +305,33 @@ impl QueryDescriptor {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryPlanEntry {
+    pub archetype_index: usize,
+    pub key: ArchetypeKey,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QueryPlan {
+    pub query_id: QueryId,
+    pub query_name: String,
+    pub entries: Vec<QueryPlanEntry>,
+}
+
+impl QueryPlan {
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn entries(&self) -> &[QueryPlanEntry] {
+        &self.entries
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct QueryDescriptorTable {
     descriptors: Vec<QueryDescriptor>,
@@ -760,6 +787,28 @@ impl ArcheWorld {
 
     pub fn query_descriptors(&self) -> &QueryDescriptorTable {
         &self.query_descriptors
+    }
+
+    pub fn build_query_plan(&self, query: &QueryDescriptor) -> QueryPlan {
+        let entries = self
+            .archetypes
+            .iter()
+            .enumerate()
+            .filter_map(|(archetype_index, table)| {
+                query
+                    .matches_archetype_key(table.key())
+                    .then(|| QueryPlanEntry {
+                        archetype_index,
+                        key: table.key().clone(),
+                    })
+            })
+            .collect();
+
+        QueryPlan {
+            query_id: query.id,
+            query_name: query.name.clone(),
+            entries,
+        }
     }
 
     pub fn allocate_resource_storage(
@@ -1342,6 +1391,68 @@ mod tests {
         assert!(!query.matches_archetype_key(&ArchetypeKey::new(vec![velocity_id])));
         assert!(!query.matches_archetype_key(&ArchetypeKey::new(vec![position_id])));
         assert!(!query.matches_archetype_key(&ArchetypeKey::new(Vec::new())));
+    }
+
+    #[test]
+    fn builds_position_velocity_query_plan() {
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let missing_id = ComponentId(0xffff000000000002);
+        let query = QueryDescriptor {
+            id: stable_query_id("Demo", "Move", "movers"),
+            name: "Demo.Move.movers".to_string(),
+            terms: vec![
+                QueryTermDescriptor {
+                    access: QueryAccess::Mut,
+                    component_id: position_id,
+                    name: "Demo.Position".to_string(),
+                },
+                QueryTermDescriptor {
+                    access: QueryAccess::Read,
+                    component_id: velocity_id,
+                    name: "Demo.Velocity".to_string(),
+                },
+            ],
+        };
+        let mut world = ArcheWorld::create();
+
+        world.get_or_create_archetype(ArchetypeKey::new(vec![position_id]));
+        world.get_or_create_archetype(ArchetypeKey::new(vec![position_id, velocity_id]));
+        world.get_or_create_archetype(ArchetypeKey::new(vec![velocity_id]));
+
+        let plan = world.build_query_plan(&query);
+
+        assert_eq!(plan.query_id, QueryId(0xf4004232b85cef9f));
+        assert_eq!(plan.query_name, "Demo.Move.movers");
+        assert_eq!(plan.len(), 1);
+        assert!(!plan.is_empty());
+        assert_eq!(
+            plan.entries(),
+            &[QueryPlanEntry {
+                archetype_index: 1,
+                key: ArchetypeKey::new(vec![position_id, velocity_id]),
+            }]
+        );
+
+        let missing_query = QueryDescriptor {
+            id: stable_query_id("Demo", "Move", "missing"),
+            name: "Demo.Move.missing".to_string(),
+            terms: vec![QueryTermDescriptor {
+                access: QueryAccess::Read,
+                component_id: missing_id,
+                name: "Demo.Missing".to_string(),
+            }],
+        };
+        let empty_plan = world.build_query_plan(&missing_query);
+
+        assert_eq!(
+            empty_plan.query_id,
+            stable_query_id("Demo", "Move", "missing")
+        );
+        assert_eq!(empty_plan.query_name, "Demo.Move.missing");
+        assert_eq!(empty_plan.len(), 0);
+        assert!(empty_plan.is_empty());
+        assert_eq!(empty_plan.entries(), &[]);
     }
 
     #[test]

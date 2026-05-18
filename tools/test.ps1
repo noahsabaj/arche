@@ -569,6 +569,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "matches_position_velocity_query_to_archetype")
 
     Invoke-CheckedCommand `
+        -Name "builds_position_velocity_query_plan" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_position_velocity_query_plan")
+
+    Invoke-CheckedCommand `
         -Name "allocates_time_delta_resource_storage" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "allocates_time_delta_resource_storage")
