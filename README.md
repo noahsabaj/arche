@@ -38,8 +38,9 @@ The proof chain currently demonstrates:
 - Runtime query plan construction for matching `Position`/`Velocity` archetypes.
 - Runtime query row iteration over matching archetypes.
 - Runtime access to decoded `Time.delta` during query iteration.
+- Runtime `Move` application over query rows, updating `Position` from `Velocity * Time.delta`.
 
-M9 system/resource access is complete. The active board is currently on M10 first query loop. The next proof is applying `Move` to update `Position` rows.
+M10 first query loop is complete. The active board is currently on M11 schedules. The next proof is parsing schedule declarations.
 
 ## What This Is Not Yet
 

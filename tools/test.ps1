@@ -584,6 +584,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "reads_time_delta_during_query_iteration")
 
     Invoke-CheckedCommand `
+        -Name "applies_move_system_to_position_rows" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "applies_move_system_to_position_rows")
+
+    Invoke-CheckedCommand `
         -Name "allocates_time_delta_resource_storage" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "allocates_time_delta_resource_storage")

@@ -934,6 +934,14 @@ impl ArcheWorld {
         self.archetypes.iter().find(|table| table.key() == key)
     }
 
+    pub fn archetype_at(&self, index: usize) -> Option<&ArchetypeTable> {
+        self.archetypes.get(index)
+    }
+
+    pub fn archetype_at_mut(&mut self, index: usize) -> Option<&mut ArchetypeTable> {
+        self.archetypes.get_mut(index)
+    }
+
     pub fn get_or_create_archetype(&mut self, key: ArchetypeKey) -> &mut ArchetypeTable {
         if let Some(index) = self.archetypes.iter().position(|table| table.key() == &key) {
             return &mut self.archetypes[index];
@@ -1616,6 +1624,182 @@ mod tests {
             .collect();
 
         assert_eq!(row_deltas, vec![(rows[0], 1.0)]);
+        assert!(world.entities().is_alive(entity));
+    }
+
+    #[test]
+    fn applies_move_system_to_position_rows() {
+        fn f32_pair_payload(x: f32, y: f32) -> [u8; 8] {
+            let x = x.to_le_bytes();
+            let y = y.to_le_bytes();
+            [x[0], x[1], x[2], x[3], y[0], y[1], y[2], y[3]]
+        }
+
+        fn read_f32(bytes: &[u8], offset: usize) -> f32 {
+            f32::from_le_bytes([
+                bytes[offset],
+                bytes[offset + 1],
+                bytes[offset + 2],
+                bytes[offset + 3],
+            ])
+        }
+
+        fn xy_descriptor(id: ComponentId, name: &str) -> ComponentDescriptor {
+            ComponentDescriptor {
+                id,
+                name: name.to_string(),
+                size: 8,
+                align: 4,
+                fields: vec![
+                    ComponentFieldDescriptor {
+                        name: "x".to_string(),
+                        type_name: "f32".to_string(),
+                        offset: 0,
+                    },
+                    ComponentFieldDescriptor {
+                        name: "y".to_string(),
+                        type_name: "f32".to_string(),
+                        offset: 4,
+                    },
+                ],
+            }
+        }
+
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let time_id = stable_resource_id("Demo", "Time");
+        let position = xy_descriptor(position_id, "Demo.Position");
+        let velocity = xy_descriptor(velocity_id, "Demo.Velocity");
+        let time = ResourceDescriptor {
+            id: time_id,
+            name: "Demo.Time".to_string(),
+            size: 4,
+            align: 4,
+            fields: vec![ResourceFieldDescriptor {
+                name: "delta".to_string(),
+                type_name: "f32".to_string(),
+                offset: 0,
+            }],
+        };
+        let query = QueryDescriptor {
+            id: stable_query_id("Demo", "Move", "movers"),
+            name: "Demo.Move.movers".to_string(),
+            terms: vec![
+                QueryTermDescriptor {
+                    access: QueryAccess::Mut,
+                    component_id: position_id,
+                    name: "Demo.Position".to_string(),
+                },
+                QueryTermDescriptor {
+                    access: QueryAccess::Read,
+                    component_id: velocity_id,
+                    name: "Demo.Velocity".to_string(),
+                },
+            ],
+        };
+        let initial_position = f32_pair_payload(1.0, 2.0);
+        let initial_velocity = f32_pair_payload(3.0, 4.0);
+        let expected_position = f32_pair_payload(4.0, 6.0);
+        let mut world = ArcheWorld::create();
+        let entity = world.alloc_entity();
+
+        assert!(world.register_component_descriptor(position.clone()));
+        assert!(world.register_component_descriptor(velocity.clone()));
+        assert!(world.register_resource_descriptor(time.clone()));
+        assert!(world
+            .allocate_resource_storage(&time)
+            .expect("Demo.Time resource storage allocation should succeed"));
+        world
+            .store_resource_payload(time_id, &1.0f32.to_le_bytes())
+            .expect("Demo.Time payload store should succeed");
+
+        {
+            let table =
+                world.get_or_create_archetype(ArchetypeKey::new(vec![position_id, velocity_id]));
+            assert!(table
+                .allocate_component_column(&position, 1)
+                .expect("Demo.Position column allocation should succeed"));
+            assert!(table
+                .allocate_component_column(&velocity, 1)
+                .expect("Demo.Velocity column allocation should succeed"));
+            assert_eq!(table.insert_entity(entity), 0);
+            table
+                .copy_component_payload(position_id, 0, &initial_position)
+                .expect("initial Demo.Position payload copy should succeed");
+            table
+                .copy_component_payload(velocity_id, 0, &initial_velocity)
+                .expect("initial Demo.Velocity payload copy should succeed");
+        }
+
+        let plan = world.build_query_plan(&query);
+        let rows = world.iter_query_rows(&plan);
+        assert_eq!(
+            rows,
+            vec![QueryRow {
+                archetype_index: 0,
+                row: 0,
+                entity,
+            }]
+        );
+
+        for row in &rows {
+            let (position_x, position_y, velocity_x, velocity_y) = {
+                let table = world
+                    .archetype_at(row.archetype_index)
+                    .expect("query row should reference an existing archetype");
+                let position_bytes = table
+                    .column(position_id)
+                    .and_then(|column| column.row_bytes(row.row))
+                    .expect("Demo.Position payload should exist for query row");
+                let velocity_bytes = table
+                    .column(velocity_id)
+                    .and_then(|column| column.row_bytes(row.row))
+                    .expect("Demo.Velocity payload should exist for query row");
+
+                (
+                    read_f32(position_bytes, 0),
+                    read_f32(position_bytes, 4),
+                    read_f32(velocity_bytes, 0),
+                    read_f32(velocity_bytes, 4),
+                )
+            };
+            let delta = world
+                .read_resource_f32_field(time_id, "delta")
+                .expect("Demo.Time.delta decode should succeed");
+            let updated_position = f32_pair_payload(
+                position_x + velocity_x * delta,
+                position_y + velocity_y * delta,
+            );
+
+            world
+                .archetype_at_mut(row.archetype_index)
+                .expect("query row should reference an existing mutable archetype")
+                .copy_component_payload(position_id, row.row, &updated_position)
+                .expect("updated Demo.Position payload copy should succeed");
+        }
+
+        let table = world
+            .archetype_at(0)
+            .expect("Demo.Position + Demo.Velocity archetype should exist");
+        let position_column = table
+            .column(position_id)
+            .expect("Demo.Position column should exist");
+        let velocity_column = table
+            .column(velocity_id)
+            .expect("Demo.Velocity column should exist");
+
+        assert_eq!(
+            position_column.row_bytes(0),
+            Some(expected_position.as_slice())
+        );
+        assert_eq!(
+            velocity_column.row_bytes(0),
+            Some(initial_velocity.as_slice())
+        );
+        assert_eq!(position_column.row_count(), 1);
+        assert_eq!(velocity_column.row_count(), 1);
+        assert_eq!(table.entity_count(), 1);
+        assert_eq!(table.entity(0), Some(entity));
         assert!(world.entities().is_alive(entity));
     }
 

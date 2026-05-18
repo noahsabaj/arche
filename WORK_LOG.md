@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M10 first query loop.
+**Current focus:** M11 schedules.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -66,7 +66,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M10-006 | Apply Move system to Position rows | A runtime unit test updates `Position` using `Velocity` and `Time.delta` without generated executable system calls. |
+| M11-001 | Parse schedule declarations | `examples\move_system.arc --emit-ast` represents `schedule Main { run Move }` without schedule execution. |
 
 ### Doing
 
@@ -145,6 +145,7 @@ Board rules:
 | M10-003 | Build query plan for Position/Velocity | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml builds_position_velocity_query_plan` passed, proving the runtime builds a deterministic `Demo.Move.movers` query plan by scanning archetypes in insertion order and returning the matching `Position + Velocity` archetype at index `1` with a cloned key snapshot; the same proof returns an empty plan for a query requiring a missing component. `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted query-plan proof included. This was runtime planning only: no row iteration, resource reads, system execution, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `48427f8`. |
 | M10-004 | Iterate query rows over matching archetype | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml iterates_position_velocity_query_rows` passed, proving the runtime can use a `Demo.Move.movers` query plan to enumerate one entity row from the matching `Position + Velocity` archetype at archetype index `1`, row `0`, with entity index `0` generation `0`, while empty plans produce no rows; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted query-row iteration proof included. This was runtime row identity iteration only: no component payload reads, `Time.delta` reads, `Move` execution, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `94aa468`. |
 | M10-005 | Read Time.delta during query iteration | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml reads_time_delta_during_query_iteration` passed, proving a `Demo.Move.movers` query row can be paired with decoded singleton resource state by reading `Demo.Time.delta == 1.0f32` during iteration; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource/query composition proof included. This was runtime composition only: no `Move` application, component payload reads or writes, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `abbd6e9`. |
+| M10-006 | Apply Move system to Position rows | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml applies_move_system_to_position_rows` passed, proving runtime query rows can read `Position`, `Velocity`, and decoded `Demo.Time.delta`, then write updated `Position` bytes from `Position += Velocity * Time.delta`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted Move application proof included. This was runtime-only: no parser/Core/CLI/ELF/codegen behavior, source-level schedule execution, or generated executable behavior was added. M10 first query loop is complete. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -152,7 +153,11 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| - | - | Empty. |
+| M11-002 | Lower schedule declarations to Core metadata | Parsed schedules lower into canonical Core metadata without execution. |
+| M11-003 | Add runtime schedule descriptor table | The runtime can register and retrieve deterministic schedule descriptors. |
+| M11-004 | Build sequential schedule plan | Runtime schedule metadata builds a deterministic sequential plan. |
+| M11-005 | Execute runtime schedule plan | A runtime schedule plan invokes the existing `Move` application path in order. |
+| M11-006 | Add schedule source fixture using startup run | Source AST represents `run Main` from startup without generated executable schedule behavior. |
 
 ## Milestones
 
@@ -1259,6 +1264,66 @@ cargo test --manifest-path .\bootstrap\archec0\Cargo.toml applies_move_system_to
 
 Done when runtime code updates `Position` from `Velocity * Time.delta` without generated executable system calls.
 
+#### M11-001: Parse schedule declarations
+
+Acceptance test:
+
+```powershell
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast
+```
+
+Done when `schedule Main { run Move }` appears in AST output without adding schedule execution.
+
+#### M11-002: Lower schedule declarations to Core metadata
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_schedule_to_core_metadata
+```
+
+Done when parsed schedule declarations lower into canonical Core metadata.
+
+#### M11-003: Add runtime schedule descriptor table
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml registers_main_schedule_descriptor
+```
+
+Done when the runtime can register and retrieve `Demo.Main` schedule metadata.
+
+#### M11-004: Build sequential schedule plan
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml builds_sequential_schedule_plan
+```
+
+Done when runtime schedule metadata builds a deterministic sequential plan.
+
+#### M11-005: Execute runtime schedule plan
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_move_schedule_plan
+```
+
+Done when a runtime schedule plan invokes the existing `Move` application path in order.
+
+#### M11-006: Add schedule source fixture using startup run
+
+Acceptance test:
+
+```powershell
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast
+```
+
+Done when startup source can represent `run Main` without generated executable schedule behavior.
+
 ## Daily Workflow
 
 Each work session:
@@ -1305,18 +1370,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M10-005 stayed runtime resource/query composition only | 99/100 |
-| `reads_time_delta_during_query_iteration` proves decoded `Time.delta` can be paired with query rows | 99/100 |
+| M10-006 stayed runtime Move application only | 99/100 |
+| `applies_move_system_to_position_rows` proves `Position += Velocity * Time.delta` over query rows | 99/100 |
 | Existing M0-M10 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M10-005 complete and controlled M10 progress | 99/100 |
-| Active inventory promotes only M10-006 and leaves the backlog empty | 98/100 |
+| Board state reflects M10 complete and controlled M11 progress | 99/100 |
+| Active inventory promotes only M11-001 and grows M11 backlog only through M11-006 | 98/100 |
 
 Weighted confidence: 99/100.
 
 Verification pass:
 
-- The active board has only `M10-006` in `Ready`.
+- The active board has only `M11-001` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, M10-001, M10-002, M10-003, M10-004, and M10-005.
-- Detailed active inventory includes M10-001 through M10-006 only.
-- M7 spawn entities, M8 resources, and M9 system/resource access are complete; M10 now has runtime query descriptors, archetype-key matching, query plan construction, query row iteration, and `Time.delta` access during iteration. Next applies `Move` to update `Position` rows.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, and completed M10.
+- Detailed active inventory includes M10-001 through M10-006 and M11-001 through M11-006 only.
+- M7 spawn entities, M8 resources, M9 system/resource access, and M10 first query loop are complete. Next starts M11 schedules with source-level schedule declaration parsing.
