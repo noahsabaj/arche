@@ -1,0 +1,5 @@
+world Main
+
+startup {
+    exit
+}

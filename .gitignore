@@ -1,0 +1,8 @@
+build/
+bootstrap/archec0/target/
+*.exe
+*.pdb
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
