@@ -46,8 +46,9 @@ The proof chain currently demonstrates:
 - Runtime schedule plan execution for `Demo.Main`, invoking the bootstrap `Move` path.
 - Source-level parsing for startup `run Main`.
 - ECS semantic checking, starting with rejection of unknown schedule run targets.
+- ECS semantic checking for unknown system resource parameters.
 
-M12 ECS semantic verification is underway. The next proof is rejecting an unknown system resource parameter.
+M12 ECS semantic verification is underway. The next proof is rejecting an unknown query component.
 
 ## What This Is Not Yet
 

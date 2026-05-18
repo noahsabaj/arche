@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::lexer::Span;
-use crate::parser::{BinaryOperator, Expression, Program, ScheduleItem, Statement};
+use crate::parser::{
+    BinaryOperator, Expression, Program, ScheduleItem, Statement, SystemParamKind,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckError {
@@ -18,6 +20,7 @@ pub fn check_program(program: &Program) -> Result<(), CheckError> {
     let mut bindings = HashMap::new();
 
     check_schedules(program)?;
+    check_system_params(program)?;
 
     if let Some(startup) = &program.startup {
         for statement in &startup.statements {
@@ -49,6 +52,37 @@ fn check_schedules(program: &Program) -> Result<(), CheckError> {
                         });
                     }
                 }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn check_system_params(program: &Program) -> Result<(), CheckError> {
+    let resources = program
+        .resources
+        .iter()
+        .map(|resource| resource.name.as_str())
+        .collect::<HashSet<_>>();
+
+    for system in &program.systems {
+        for param in &system.params {
+            match &param.kind {
+                SystemParamKind::ReadResource {
+                    resource_name,
+                    resource_span,
+                } => {
+                    if !resources.contains(resource_name.as_str()) {
+                        return Err(CheckError {
+                            span: *resource_span,
+                            message: format!(
+                                "unknown resource `{resource_name}` in system parameter"
+                            ),
+                        });
+                    }
+                }
+                SystemParamKind::Query { .. } => {}
             }
         }
     }

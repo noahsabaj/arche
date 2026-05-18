@@ -56,8 +56,13 @@ pub struct SystemParam {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SystemParamKind {
-    ReadResource { resource_name: String },
-    Query { terms: Vec<QueryTerm> },
+    ReadResource {
+        resource_name: String,
+        resource_span: Span,
+    },
+    Query {
+        terms: Vec<QueryTerm>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -430,11 +435,15 @@ impl Parser<'_> {
         self.expect(TokenKind::Colon, "expected `:` after system parameter name")?;
 
         if self.match_keyword(Keyword::Read) {
-            let resource_name = self.parse_identifier("expected resource name after `read`")?;
+            let (resource_name, resource_span) =
+                self.parse_identifier_with_span("expected resource name after `read`")?;
 
             return Ok(SystemParam {
                 name,
-                kind: SystemParamKind::ReadResource { resource_name },
+                kind: SystemParamKind::ReadResource {
+                    resource_name,
+                    resource_span,
+                },
             });
         }
 
@@ -1103,7 +1112,7 @@ fn write_component_literal_value(
 
 fn write_system_param(formatter: &mut fmt::Formatter<'_>, param: &SystemParam) -> fmt::Result {
     match &param.kind {
-        SystemParamKind::ReadResource { resource_name } => {
+        SystemParamKind::ReadResource { resource_name, .. } => {
             write!(
                 formatter,
                 "    param {}: read {}",

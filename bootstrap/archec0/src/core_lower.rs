@@ -115,7 +115,7 @@ fn lower_system_param(
     param: &SystemParam,
 ) -> Result<CoreSystemParam, CoreLowerError> {
     let kind = match &param.kind {
-        SystemParamKind::ReadResource { resource_name } => {
+        SystemParamKind::ReadResource { resource_name, .. } => {
             resolve_resource(&program.resources, resource_name)?;
             CoreSystemParamKind::ReadResource {
                 resource_id: runtime::stable_resource_id(&program.world.name, resource_name).0,

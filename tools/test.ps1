@@ -1056,6 +1056,16 @@ try {
     Assert-OutputContains -Name "bad unknown schedule run diagnostic code" -Output $badUnknownScheduleRunOutput -ExpectedText "error[CHECK001]"
     Assert-OutputContains -Name "bad unknown schedule run diagnostic message" -Output $badUnknownScheduleRunOutput -ExpectedText 'unknown system `Missing` in schedule'
 
+    $badUnknownResourceParamOutput = @(Invoke-CommandExpectFailure `
+        -Name "archec0 tests/e2e/bad_unknown_resource_param.arc rejects unknown system resource parameter" `
+        -Executable "cargo" `
+        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\tests\e2e\bad_unknown_resource_param.arc", "--check"))
+
+    Assert-OutputContains -Name "bad unknown resource param diagnostic path" -Output $badUnknownResourceParamOutput -ExpectedText "bad_unknown_resource_param.arc"
+    Assert-OutputContains -Name "bad unknown resource param diagnostic location" -Output $badUnknownResourceParamOutput -ExpectedText "3:24"
+    Assert-OutputContains -Name "bad unknown resource param diagnostic code" -Output $badUnknownResourceParamOutput -ExpectedText "error[CHECK001]"
+    Assert-OutputContains -Name "bad unknown resource param diagnostic message" -Output $badUnknownResourceParamOutput -ExpectedText 'unknown resource `MissingTime` in system parameter'
+
     $e2eTests = @(Get-ChildItem -LiteralPath $e2eDir -Filter "*.ps1" -File | Sort-Object FullName)
     Write-Host "$($e2eTests.Count) e2e tests discovered"
 
