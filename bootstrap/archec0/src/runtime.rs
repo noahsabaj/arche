@@ -254,6 +254,10 @@ impl ResourceStorage {
         self.storage.as_ptr()
     }
 
+    pub fn payload_bytes(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.storage.as_ptr(), self.byte_size) }
+    }
+
     pub fn store_payload(&mut self, payload_bytes: &[u8]) -> Result<(), ResourceStorageError> {
         if payload_bytes.len() != self.byte_size {
             return Err(ResourceStorageError {
@@ -605,6 +609,55 @@ impl ArcheWorld {
         self.resource_storages
             .iter()
             .find(|storage| storage.resource_id == id)
+    }
+
+    pub fn resource_payload(&self, id: ResourceId) -> Result<&[u8], ResourceStorageError> {
+        let storage = self
+            .resource_storage(id)
+            .ok_or_else(|| ResourceStorageError {
+                message: format!("resource storage 0x{:016x} is not allocated", id.0),
+            })?;
+
+        Ok(storage.payload_bytes())
+    }
+
+    pub fn read_resource_f32_field(
+        &self,
+        id: ResourceId,
+        field_name: &str,
+    ) -> Result<f32, ResourceStorageError> {
+        let descriptor = self
+            .resource_descriptors
+            .get(id)
+            .ok_or_else(|| ResourceStorageError {
+                message: format!("resource descriptor 0x{:016x} is not registered", id.0),
+            })?;
+        let field = descriptor
+            .fields
+            .iter()
+            .find(|field| field.name == field_name)
+            .ok_or_else(|| ResourceStorageError {
+                message: format!("resource field `{field_name}` is not registered"),
+            })?;
+
+        if field.type_name != "f32" {
+            return Err(ResourceStorageError {
+                message: format!(
+                    "resource field `{field_name}` has unsupported type `{}`",
+                    field.type_name
+                ),
+            });
+        }
+
+        let payload = self.resource_payload(id)?;
+        let offset = field.offset as usize;
+        let bytes = payload
+            .get(offset..offset + 4)
+            .ok_or_else(|| ResourceStorageError {
+                message: format!("resource field `{field_name}` extends beyond payload"),
+            })?;
+
+        Ok(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     pub fn store_resource_payload(
@@ -976,6 +1029,49 @@ mod tests {
 
         let missing = world.store_resource_payload(ResourceId(0xffffffffffffffff), &payload);
         assert!(missing.is_err());
+    }
+
+    #[test]
+    fn retrieves_time_delta_resource_payload() {
+        let time_id = stable_resource_id("Demo", "Time");
+        let time = ResourceDescriptor {
+            id: time_id,
+            name: "Demo.Time".to_string(),
+            size: 4,
+            align: 4,
+            fields: vec![ResourceFieldDescriptor {
+                name: "delta".to_string(),
+                type_name: "f32".to_string(),
+                offset: 0,
+            }],
+        };
+        let mut world = ArcheWorld::create();
+        let payload = [0x00, 0x00, 0x80, 0x3f];
+
+        assert!(world.register_resource_descriptor(time.clone()));
+        assert!(world
+            .allocate_resource_storage(&time)
+            .expect("Demo.Time resource storage allocation should succeed"));
+        world
+            .store_resource_payload(time_id, &payload)
+            .expect("Demo.Time payload store should succeed");
+
+        let stored_payload = world
+            .resource_payload(time_id)
+            .expect("Demo.Time payload read should succeed");
+        assert_eq!(stored_payload, &payload);
+        assert_eq!(
+            world
+                .read_resource_f32_field(time_id, "delta")
+                .expect("Demo.Time.delta decode should succeed"),
+            1.0
+        );
+
+        let missing_storage = world.resource_payload(ResourceId(0xffffffffffffffff));
+        assert!(missing_storage.is_err());
+
+        let missing_field = world.read_resource_f32_field(time_id, "missing");
+        assert!(missing_field.is_err());
     }
 
     #[test]

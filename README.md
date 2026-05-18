@@ -24,8 +24,9 @@ The proof chain currently demonstrates:
 - Runtime resource descriptors for singleton world data, starting with `Demo.Time`.
 - Runtime aligned storage allocation for singleton resource payloads.
 - Runtime storage of exact little-endian `Time.delta` payload bytes.
+- Runtime retrieval and decoding of `Time.delta` as `1.0f32`.
 
-The active board is currently on M8 resources. The next proof is retrieving and decoding `Time.delta` from runtime resource storage.
+The active board is currently on M8 resources. The next proof is runtime resource inspection for the stored `Demo.Time.delta` value.
 
 ## What This Is Not Yet
 

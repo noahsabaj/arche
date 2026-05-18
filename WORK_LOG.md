@@ -66,7 +66,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M8-004 | Retrieve Time.delta payload | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml retrieves_time_delta_resource_payload` proves the runtime retrieves and decodes `Time.delta` as an observed `f32` value. |
+| M8-005 | Add runtime resource inspection | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml debug_inspects_time_delta_resource` proves runtime debug inspection reports the stored `Demo.Time.delta` value. |
 
 ### Doing
 
@@ -131,13 +131,13 @@ Board rules:
 | M8-001 | Define runtime resource descriptors | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_time_delta_resource_descriptor` passed, proving the runtime can represent `Demo.Time` as singleton resource metadata with stable `ResourceId(0x7924ce11db524521)`, size `4`, align `4`, and field `delta: f32 @ 0`; duplicate registration returns `false` and leaves the original descriptor unchanged; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource-descriptor proof included. This was descriptor-only: no resource storage, payload writes, source fixture, systems, queries, or generated executable behavior was added. Implementation commit: `bd0a240`. |
 | M8-002 | Allocate resource storage | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml allocates_time_delta_resource_storage` passed, proving `ArcheWorld` can allocate aligned storage for singleton `Demo.Time` resource payloads with `ResourceId(0x7924ce11db524521)`, byte size `4`, alignment `4`, storage byte size `4`, and an aligned storage pointer; duplicate allocation returns `false` without replacing the original allocation; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource-storage proof included. This was storage-only: no payload writes, retrieval/decoding, source fixture, systems, queries, or generated executable behavior was added. Implementation commit: `5dafb6f`. |
 | M8-003 | Store Time.delta payload | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml stores_time_delta_resource_payload` passed, proving `ArcheWorld` can copy exact little-endian `f32` payload bytes `00 00 80 3F` for `Demo.Time.delta` into existing aligned singleton resource storage, preserve the single storage allocation, and leave descriptor metadata intact; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource-payload proof included. This was byte storage only: no payload decoding, source fixture, systems, queries, CLI behavior, Core changes, ELF/codegen changes, or generated executable behavior was added. Implementation commit: `8a97272`. |
+| M8-004 | Retrieve Time.delta payload | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml retrieves_time_delta_resource_payload` passed, proving `ArcheWorld` can read raw singleton resource payload bytes and decode `Demo.Time.delta` as little-endian IEEE-754 `1.0f32` using resource descriptor metadata; missing storage and missing fields return `ResourceStorageError`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource-retrieval proof included. This was runtime retrieval only: no source fixture, systems, queries, CLI behavior, Core changes, ELF/codegen changes, generated executable behavior, or debug inspection text was added. Implementation commit will be recorded after push. |
 
 ### Backlog
 
 Dependency ordered:
 
 ```text
-M8-005 Add runtime resource inspection
 M8-006 Add resource source fixture
 ```
 
@@ -1164,19 +1164,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M8-003 stayed runtime resource payload storage only | 99/100 |
-| `stores_time_delta_resource_payload` proves exact little-endian `Time.delta` bytes are copied into aligned storage | 99/100 |
+| M8-004 stayed runtime resource retrieval only | 99/100 |
+| `retrieves_time_delta_resource_payload` proves raw readback and little-endian `Time.delta` decoding | 99/100 |
 | Existing M0-M8 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M8-003 complete and controlled M8 progress | 99/100 |
-| Active inventory is limited to M8-004 ready plus M8-005 through M8-006 backlog | 98/100 |
+| Board state reflects M8-004 complete and controlled M8 progress | 99/100 |
+| Active inventory is limited to M8-005 ready plus M8-006 backlog | 98/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M8-004` in `Ready`.
+- The active board has only `M8-005` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, M8-001, M8-002, and M8-003.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, M8-001, M8-002, M8-003, and M8-004.
 - Detailed active inventory includes M8-001 through M8-006 only.
 - Later milestones remain proof targets only.
-- M7 spawn entities is complete; singleton resource descriptors, aligned storage allocation, and raw `Time.delta` payload storage are complete; retrieval/decoding starts with M8-004.
+- M7 spawn entities is complete; singleton resource descriptors, aligned storage allocation, raw `Time.delta` payload storage, and retrieval/decoding are complete; runtime resource inspection starts with M8-005.
