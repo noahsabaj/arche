@@ -90,7 +90,10 @@ pub struct ScheduleDecl {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ScheduleItem {
-    Run { system_name: String },
+    Run {
+        system_name: String,
+        system_span: Span,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -408,8 +411,12 @@ impl Parser<'_> {
 
     fn parse_schedule_item(&mut self) -> Result<ScheduleItem, ParseError> {
         if self.match_keyword(Keyword::Run) {
-            let system_name = self.parse_identifier("expected system name after `run`")?;
-            return Ok(ScheduleItem::Run { system_name });
+            let (system_name, system_span) =
+                self.parse_identifier_with_span("expected system name after `run`")?;
+            return Ok(ScheduleItem::Run {
+                system_name,
+                system_span,
+            });
         }
 
         Err(ParseError {
@@ -678,19 +685,26 @@ impl Parser<'_> {
     }
 
     fn parse_identifier(&mut self, message: &str) -> Result<String, ParseError> {
+        let (name, _) = self.parse_identifier_with_span(message)?;
+
+        Ok(name)
+    }
+
+    fn parse_identifier_with_span(&mut self, message: &str) -> Result<(String, Span), ParseError> {
         let token = self.peek();
+        let span = token.span;
         let name = match &token.kind {
             TokenKind::Identifier(name) => name.clone(),
             _ => {
                 return Err(ParseError {
-                    span: token.span,
+                    span,
                     message: message.to_string(),
                 })
             }
         };
         self.advance();
 
-        Ok(name)
+        Ok((name, span))
     }
 
     fn parse_type_name(&mut self, message: &str) -> Result<TypeName, ParseError> {
@@ -927,7 +941,7 @@ impl fmt::Display for Program {
 
             for item in &schedule.items {
                 match item {
-                    ScheduleItem::Run { system_name } => {
+                    ScheduleItem::Run { system_name, .. } => {
                         writeln!(formatter)?;
                         write!(formatter, "    run {system_name}")?;
                     }

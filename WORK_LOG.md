@@ -121,7 +121,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M12-001 | Reject unknown schedule run target | `--check` rejects a schedule item that references an unknown system. |
+| M12-002 | Reject unknown system resource parameter | `--check` rejects a system `read` parameter whose resource is not declared. |
 
 ### Doing
 
@@ -207,6 +207,7 @@ Board rules:
 | M11-004 | Build sequential schedule plan | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml builds_sequential_schedule_plan` passed, proving `ArcheWorld` can build a deterministic `Demo.Main` schedule plan with one ordered entry for registered `Demo.Move` and reject a schedule item that references an unregistered system with an `unknown system` error; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted runtime schedule planning proof included. This was runtime planning only: no schedule execution, `Move` invocation, startup `run Main`, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `2493f43`. |
 | M11-005 | Execute runtime schedule plan | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_runtime_schedule_plan` passed, proving `ArcheWorld` can execute a `Demo.Main` schedule plan by invoking the bootstrap `Demo.Move` runtime path, reading `Demo.Time.delta`, iterating `Demo.Move.movers`, and updating one `Position + Velocity` row from `Position { x: 1.0, y: 2.0 }` to `Position { x: 4.0, y: 6.0 }` while preserving `Velocity` and entity liveness; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted runtime schedule execution proof included. This was runtime-only: no parser/Core changes, startup `run Main`, source-driven schedule execution, CLI behavior, or generated executable behavior was added. Implementation commit: `986a996`. |
 | M11-006 | Add schedule source fixture using startup run | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast` printed the exact AST for `startup { run Main; exit 0 }`, including `run Main` before the existing exit statement; `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_move_system_to_core_metadata` and `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_schedule_to_core_metadata` passed, proving current Core metadata tests still treat startup `run` as deferred; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the updated source fixture assertion included. This was source/AST-only: no source-driven schedule execution, runtime assembly, generated executable behavior, or real Core startup schedule semantics was added. M11 schedules are complete. Implementation commit: `1fa6d4a`. |
+| M12-001 | Reject unknown schedule run target | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_unknown_schedule_run.arc --check` exited nonzero with `error[CHECK001]` at `bad_unknown_schedule_run.arc:7:9` and message ``unknown system `Missing` in schedule``; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the negative checker assertion included. This was checker-only: no Core, runtime, parser surface beyond diagnostic span plumbing, codegen, or executable behavior was added. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -214,7 +215,6 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M12-002 | Reject unknown system resource parameter | `--check` rejects a system `read` parameter whose resource is not declared. |
 | M12-003 | Reject unknown query component | `--check` rejects a query term whose component is not declared. |
 | M12-004 | Reject conflicting query access | `--check` rejects conflicting mutable/read component access within a system. |
 
@@ -1477,18 +1477,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M11-006 stayed source/AST-only | 99/100 |
-| `move_system.arc --emit-ast` proves startup `run Main` representation | 99/100 |
-| Existing M0-M11 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state marks M11 complete and starts controlled M12 verification work | 98/100 |
-| Active inventory promotes only M12-001 and keeps M12 backlog limited to M12-002 through M12-004 | 98/100 |
+| M12-001 stayed checker-only | 99/100 |
+| `bad_unknown_schedule_run.arc --check` proves unknown schedule run targets are rejected | 99/100 |
+| Existing M0-M12 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
+| Board state promotes M12-002 and keeps M12 backlog limited to M12-003 through M12-004 | 98/100 |
+| Active inventory keeps only one Ready issue and no Doing work | 99/100 |
 
 Weighted confidence: 99/100.
 
 Verification pass:
 
-- The active board has only `M12-001` in `Ready`.
+- The active board has only `M12-002` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, and completed M11.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, and M12-001.
 - Detailed active inventory includes M11-001 through M11-006 and M12-001 through M12-004 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, and M11 schedules are complete. M12 begins ECS semantic verification, starting with unknown schedule run targets.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, and M11 schedules are complete. M12 ECS semantic verification is underway, with unknown schedule run targets rejected and unknown system resource parameters next.

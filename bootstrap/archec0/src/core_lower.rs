@@ -79,7 +79,7 @@ fn lower_schedule_item(
     item: &ScheduleItem,
 ) -> Result<CoreScheduleItem, CoreLowerError> {
     match item {
-        ScheduleItem::Run { system_name } => {
+        ScheduleItem::Run { system_name, .. } => {
             resolve_system(&program.systems, system_name)?;
             Ok(CoreScheduleItem::Run {
                 system_id: runtime::stable_system_id(&program.world.name, system_name).0,

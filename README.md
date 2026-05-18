@@ -45,8 +45,9 @@ The proof chain currently demonstrates:
 - Runtime sequential schedule plan construction for `Demo.Main`.
 - Runtime schedule plan execution for `Demo.Main`, invoking the bootstrap `Move` path.
 - Source-level parsing for startup `run Main`.
+- ECS semantic checking, starting with rejection of unknown schedule run targets.
 
-M11 schedules are complete. The active board is currently on M12 ECS semantic verification. The next proof is rejecting an unknown schedule run target.
+M12 ECS semantic verification is underway. The next proof is rejecting an unknown system resource parameter.
 
 ## What This Is Not Yet
 

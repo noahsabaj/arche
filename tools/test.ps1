@@ -1046,6 +1046,16 @@ try {
     Assert-OutputContains -Name "bad arithmetic diagnostic code" -Output $badArithmeticOutput -ExpectedText "error[CHECK001]"
     Assert-OutputContains -Name "bad arithmetic diagnostic message" -Output $badArithmeticOutput -ExpectedText "expected i32 binding for arithmetic expression"
 
+    $badUnknownScheduleRunOutput = @(Invoke-CommandExpectFailure `
+        -Name "archec0 tests/e2e/bad_unknown_schedule_run.arc rejects unknown schedule run target" `
+        -Executable "cargo" `
+        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\tests\e2e\bad_unknown_schedule_run.arc", "--check"))
+
+    Assert-OutputContains -Name "bad unknown schedule run diagnostic path" -Output $badUnknownScheduleRunOutput -ExpectedText "bad_unknown_schedule_run.arc"
+    Assert-OutputContains -Name "bad unknown schedule run diagnostic location" -Output $badUnknownScheduleRunOutput -ExpectedText "7:9"
+    Assert-OutputContains -Name "bad unknown schedule run diagnostic code" -Output $badUnknownScheduleRunOutput -ExpectedText "error[CHECK001]"
+    Assert-OutputContains -Name "bad unknown schedule run diagnostic message" -Output $badUnknownScheduleRunOutput -ExpectedText 'unknown system `Missing` in schedule'
+
     $e2eTests = @(Get-ChildItem -LiteralPath $e2eDir -Filter "*.ps1" -File | Sort-Object FullName)
     Write-Host "$($e2eTests.Count) e2e tests discovered"
 

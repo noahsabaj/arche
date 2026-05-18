@@ -1,7 +1,7 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::lexer::Span;
-use crate::parser::{BinaryOperator, Expression, Program, Statement};
+use crate::parser::{BinaryOperator, Expression, Program, ScheduleItem, Statement};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckError {
@@ -17,9 +17,39 @@ enum Type {
 pub fn check_program(program: &Program) -> Result<(), CheckError> {
     let mut bindings = HashMap::new();
 
+    check_schedules(program)?;
+
     if let Some(startup) = &program.startup {
         for statement in &startup.statements {
             check_statement(statement, &mut bindings)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn check_schedules(program: &Program) -> Result<(), CheckError> {
+    let systems = program
+        .systems
+        .iter()
+        .map(|system| system.name.as_str())
+        .collect::<HashSet<_>>();
+
+    for schedule in &program.schedules {
+        for item in &schedule.items {
+            match item {
+                ScheduleItem::Run {
+                    system_name,
+                    system_span,
+                } => {
+                    if !systems.contains(system_name.as_str()) {
+                        return Err(CheckError {
+                            span: *system_span,
+                            message: format!("unknown system `{system_name}` in schedule"),
+                        });
+                    }
+                }
+            }
         }
     }
 
