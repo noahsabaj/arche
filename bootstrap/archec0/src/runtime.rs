@@ -253,6 +253,27 @@ impl ResourceStorage {
     pub fn storage_ptr(&self) -> *mut u8 {
         self.storage.as_ptr()
     }
+
+    pub fn store_payload(&mut self, payload_bytes: &[u8]) -> Result<(), ResourceStorageError> {
+        if payload_bytes.len() != self.byte_size {
+            return Err(ResourceStorageError {
+                message: format!(
+                    "resource payload size {} does not match storage size {}",
+                    payload_bytes.len(),
+                    self.byte_size
+                ),
+            });
+        }
+
+        unsafe {
+            ptr::copy_nonoverlapping(
+                payload_bytes.as_ptr(),
+                self.storage.as_ptr(),
+                payload_bytes.len(),
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Drop for ResourceStorage {
@@ -586,6 +607,22 @@ impl ArcheWorld {
             .find(|storage| storage.resource_id == id)
     }
 
+    pub fn store_resource_payload(
+        &mut self,
+        id: ResourceId,
+        payload_bytes: &[u8],
+    ) -> Result<(), ResourceStorageError> {
+        let storage = self
+            .resource_storages
+            .iter_mut()
+            .find(|storage| storage.resource_id == id)
+            .ok_or_else(|| ResourceStorageError {
+                message: format!("resource storage 0x{:016x} is not allocated", id.0),
+            })?;
+
+        storage.store_payload(payload_bytes)
+    }
+
     pub fn resource_storage_count(&self) -> usize {
         self.resource_storages.len()
     }
@@ -896,6 +933,49 @@ mod tests {
             .allocate_resource_storage(&time)
             .expect("duplicate resource storage allocation check should not fail"));
         assert_eq!(world.resource_storage_count(), 1);
+    }
+
+    #[test]
+    fn stores_time_delta_resource_payload() {
+        let time_id = stable_resource_id("Demo", "Time");
+        let time = ResourceDescriptor {
+            id: time_id,
+            name: "Demo.Time".to_string(),
+            size: 4,
+            align: 4,
+            fields: vec![ResourceFieldDescriptor {
+                name: "delta".to_string(),
+                type_name: "f32".to_string(),
+                offset: 0,
+            }],
+        };
+        let mut world = ArcheWorld::create();
+        let payload = [0x00, 0x00, 0x80, 0x3f];
+
+        assert!(world.register_resource_descriptor(time.clone()));
+        assert!(world
+            .allocate_resource_storage(&time)
+            .expect("Demo.Time resource storage allocation should succeed"));
+
+        world
+            .store_resource_payload(time_id, &payload)
+            .expect("Demo.Time payload store should succeed");
+
+        let storage = world
+            .resource_storage(time_id)
+            .expect("Demo.Time resource storage should be allocated");
+        let stored_bytes =
+            unsafe { std::slice::from_raw_parts(storage.storage_ptr(), storage.byte_size()) };
+
+        assert_eq!(stored_bytes, &payload);
+        assert_eq!(world.resource_storage_count(), 1);
+        assert_eq!(world.resource_descriptors().get(time_id), Some(&time));
+
+        let wrong_size = world.store_resource_payload(time_id, &[0x00, 0x00]);
+        assert!(wrong_size.is_err());
+
+        let missing = world.store_resource_payload(ResourceId(0xffffffffffffffff), &payload);
+        assert!(missing.is_err());
     }
 
     #[test]
