@@ -11,7 +11,7 @@ This file is not a second design document. It is the build map for proving that 
 - Git repository initialized on `main`.
 - Private remote: `https://github.com/noahsabaj/arche`.
 - Generated proof/build artifacts are intentionally ignored via `.gitignore`, including `build/` and `bootstrap/archec0/target/`.
-- Current board remains `M7-005` Ready; this repository setup does not advance a milestone issue.
+- Repository setup does not advance milestone issues; the current board is tracked below.
 - `README.md` provides GitHub orientation for the repository; it does not advance the milestone board.
 
 ## Operating Model
@@ -66,7 +66,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M7-005 | Insert entity into archetype table | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml inserts_entity_into_position_archetype` proves an allocated entity row is inserted into the `Position` archetype table. |
+| M7-006 | Copy component payload into column | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml copies_position_payload_into_column` proves `Position` payload bytes for `x = 1.0` and `y = 2.0` are copied into the `Position` column. |
 
 ### Doing
 
@@ -125,13 +125,13 @@ Board rules:
 | M7-002 | Parse component literals | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\spawn_position.arc --emit-ast` printed the exact parsed component-literal AST for `Position { x: 1.0, y: 2.0 }`, including `field x` / `float 1.0` and `field y` / `float 2.0`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the updated `spawn_position.arc --emit-ast` assertion included. This remained parser/AST output only: no Core lowering, runtime insertion, payload copying, executable generation, or world inspection was added. No commit was made because this workspace is not currently a Git repository. |
 | M7-003 | Lower spawn to Core | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_spawn_position_to_core` passed, proving parsed `spawn_position.arc` lowers into Core with a `Spawn` instruction carrying `Demo.Position`, component ID `0x002202c6aeb4f27b`, `x` as `f32` bits `0x3f800000`, `y` as `f32` bits `0x40000000`, then `i32.const 0` and `exit %0`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted Core-lowering proof included. This was Core-only: no runtime archetype lookup, row insertion, payload copying, executable spawn behavior, or `--emit-core` CLI support for spawn was added. No commit was made because this workspace is not currently a Git repository. |
 | M7-004 | Implement runtime archetype lookup/create | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml world_gets_or_creates_position_archetype` passed, proving `ArcheWorld` can look up an archetype by canonical `ArchetypeKey`, create the `Demo.Position` archetype table when absent, and reuse that same table when called again with duplicate component IDs normalized to the same key; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted runtime lookup/create proof included. This was runtime-only: no entity row insertion, component payload copying, spawn execution, parser/Core changes, generated ELF behavior, or descriptor auto-registration was added. No commit was made because this workspace is not currently a Git repository. |
+| M7-005 | Insert entity into archetype table | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml inserts_entity_into_position_archetype` passed, proving `ArcheWorld` can allocate an `ArcheEntity`, get or create the `Demo.Position` archetype table, insert that entity as row `0`, read the row back, and keep the entity alive in the world entity table; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted row-insertion proof included. This was runtime-only: no component payload bytes, component column row writes, source-level spawn execution, parser/Core changes, or generated ELF behavior were added. Commit hash will be recorded after push. |
 
 ### Backlog
 
 Dependency ordered:
 
 ```text
-M7-006 Copy component payload into column
 M7-007 Add runtime debug inspection for world state
 ```
 
@@ -1094,19 +1094,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M7-004 stayed runtime archetype lookup/create only | 99/100 |
-| `world_gets_or_creates_position_archetype` proves create-on-miss and reuse-on-normalized-key behavior | 99/100 |
+| M7-005 stayed runtime entity-row insertion only | 99/100 |
+| `inserts_entity_into_position_archetype` proves allocation, row insertion, readback, and liveness | 99/100 |
 | Existing M0-M7 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M7-004 complete and controlled M7 progress | 99/100 |
-| Active inventory is limited to M7-005 ready plus M7-006 through M7-007 backlog | 98/100 |
+| Board state reflects M7-005 complete and controlled M7 progress | 99/100 |
+| Active inventory is limited to M7-006 ready plus M7-007 backlog | 98/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M7-005` in `Ready`.
+- The active board has only `M7-006` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, M7-001, M7-002, M7-003, and M7-004.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, M7-001, M7-002, M7-003, M7-004, and M7-005.
 - Detailed active inventory includes M7-001 through M7-007 only.
 - Later milestones remain proof targets only.
-- M6 runtime kernel skeleton is complete; runtime archetype lookup/create is complete; entity row insertion remains M7-005.
+- M6 runtime kernel skeleton is complete; runtime archetype lookup/create and entity row insertion are complete; component payload copying remains M7-006.

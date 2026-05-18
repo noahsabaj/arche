@@ -171,6 +171,16 @@ impl ArchetypeTable {
         self.entities.len()
     }
 
+    pub fn insert_entity(&mut self, entity: ArcheEntity) -> usize {
+        let row = self.entities.len();
+        self.entities.push(entity);
+        row
+    }
+
+    pub fn entity(&self, row: usize) -> Option<ArcheEntity> {
+        self.entities.get(row).copied()
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entities.is_empty()
     }
@@ -322,6 +332,10 @@ impl ArcheWorld {
 
     pub fn entities(&self) -> &EntityTable {
         &self.entities
+    }
+
+    pub fn alloc_entity(&mut self) -> ArcheEntity {
+        self.entities.alloc()
     }
 
     pub fn component_descriptors(&self) -> &ComponentDescriptorTable {
@@ -541,6 +555,36 @@ mod tests {
         }
 
         assert_eq!(world.archetype_count(), 1);
+    }
+
+    #[test]
+    fn inserts_entity_into_position_archetype() {
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let position_key = ArchetypeKey::new(vec![position_id]);
+        let mut world = ArcheWorld::create();
+        let entity = world.alloc_entity();
+
+        assert!(world.entities().is_alive(entity));
+
+        {
+            let table = world.get_or_create_archetype(position_key.clone());
+            let row = table.insert_entity(entity);
+
+            assert_eq!(row, 0);
+            assert_eq!(table.entity_count(), 1);
+            assert!(!table.is_empty());
+            assert_eq!(table.entity(0), Some(entity));
+            assert_eq!(table.entity(1), None);
+        }
+
+        assert!(world.entities().is_alive(entity));
+        assert_eq!(world.entities().len(), 1);
+
+        let table = world
+            .archetype(&position_key)
+            .expect("Position archetype table should exist");
+        assert_eq!(table.entity_count(), 1);
+        assert_eq!(table.entity(0), Some(entity));
     }
 
     #[test]

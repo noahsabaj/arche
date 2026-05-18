@@ -554,6 +554,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "world_gets_or_creates_position_archetype")
 
     Invoke-CheckedCommand `
+        -Name "inserts_entity_into_position_archetype" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "inserts_entity_into_position_archetype")
+
+    Invoke-CheckedCommand `
         -Name "allocates_position_component_column" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "allocates_position_component_column")

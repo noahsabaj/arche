@@ -18,8 +18,9 @@ The proof chain currently demonstrates:
 - Runtime kernel skeleton pieces: entity handles, entity table, component descriptor table, archetype table, component columns, world create/destroy, and native startup/shutdown wrapper bytes.
 - Spawn source parsing and spawn lowering into Core.
 - Runtime archetype lookup/create for a normalized `Position` component set.
+- Runtime insertion of an allocated entity row into the `Position` archetype table.
 
-The active board is currently on M7 spawn entities. The next proof is inserting an allocated entity row into the `Position` archetype table.
+The active board is currently on M7 spawn entities. The next proof is copying the parsed `Position` payload into its component column.
 
 ## What This Is Not Yet
 
