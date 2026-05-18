@@ -812,6 +812,25 @@ try {
             "      integer 0"
         )
 
+    $moveSystemAstOutput = @(Invoke-CheckedCommandWithOutput `
+        -Name "archec0 examples/move_system.arc --emit-ast" `
+        -Executable "cargo" `
+        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system.arc", "--emit-ast"))
+
+    Assert-LinesEqual `
+        -Name "move_system AST" `
+        -Actual $moveSystemAstOutput `
+        -Expected @(
+            "Program",
+            "  world Demo",
+            "  system Move",
+            "    params 0",
+            "    body empty",
+            "  startup",
+            "    exit",
+            "      integer 0"
+        )
+
     $positionInspectOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/position.arc --inspect-components" `
         -Executable "cargo" `

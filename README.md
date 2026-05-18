@@ -27,8 +27,9 @@ The proof chain currently demonstrates:
 - Runtime retrieval and decoding of `Time.delta` as `1.0f32`.
 - Runtime debug inspection of stored singleton resource state.
 - Source-level parsing for a `Demo.Time` resource fixture with `Time { delta: 1.0 }`.
+- Source-level parsing for named system declarations, starting with `system Move() {}`.
 
-M8 resources are complete. The active board is currently on M9 systems. The next proof is parsing system declarations.
+M8 resources are complete. The active board is currently on M9 systems. The next proof is parsing system resource parameters.
 
 ## What This Is Not Yet
 
@@ -71,6 +72,7 @@ cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- --help
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\math.arc --emit-ast
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\math.arc --emit-core
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\time_delta.arc --emit-ast
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\position.arc --inspect-components
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\exit42.arc -o .\build\exit42
 ```

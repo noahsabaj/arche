@@ -7,6 +7,7 @@ pub struct Program {
     pub world: WorldDecl,
     pub components: Vec<ComponentDecl>,
     pub resources: Vec<ResourceDecl>,
+    pub systems: Vec<SystemDecl>,
     pub startup: Option<StartupBlock>,
 }
 
@@ -37,6 +38,11 @@ pub struct ResourceDecl {
 pub struct ResourceField {
     pub name: String,
     pub type_name: TypeName,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemDecl {
+    pub name: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -142,6 +148,7 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, ParseError> {
     let world = parser.parse_world_declaration()?;
     let mut components = Vec::new();
     let mut resources = Vec::new();
+    let mut systems = Vec::new();
     loop {
         if parser.match_keyword(Keyword::Component) {
             components.push(parser.parse_component_declaration()?);
@@ -150,6 +157,11 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, ParseError> {
 
         if parser.match_keyword(Keyword::Resource) {
             resources.push(parser.parse_resource_declaration()?);
+            continue;
+        }
+
+        if parser.match_keyword(Keyword::System) {
+            systems.push(parser.parse_system_declaration()?);
             continue;
         }
 
@@ -166,6 +178,7 @@ pub fn parse_program(tokens: &[Token]) -> Result<Program, ParseError> {
         world,
         components,
         resources,
+        systems,
         startup,
     })
 }
@@ -252,6 +265,22 @@ impl Parser<'_> {
             "expected `}` to close resource declaration",
         )?;
         Ok(ResourceDecl { name, fields })
+    }
+
+    fn parse_system_declaration(&mut self) -> Result<SystemDecl, ParseError> {
+        let name = self.parse_identifier("expected system name after `system`")?;
+        self.expect(TokenKind::LeftParen, "expected `(` after system name")?;
+        self.expect(
+            TokenKind::RightParen,
+            "expected `)` after empty system parameter list",
+        )?;
+        self.expect(TokenKind::LeftBrace, "expected `{` after system signature")?;
+        self.expect(
+            TokenKind::RightBrace,
+            "expected `}` after empty system body",
+        )?;
+
+        Ok(SystemDecl { name })
     }
 
     fn parse_startup_block(&mut self) -> Result<StartupBlock, ParseError> {
@@ -624,6 +653,13 @@ impl fmt::Display for Program {
                     field.name, field.type_name.name
                 )?;
             }
+        }
+
+        for system in &self.systems {
+            writeln!(formatter)?;
+            writeln!(formatter, "  system {}", system.name)?;
+            writeln!(formatter, "    params 0")?;
+            write!(formatter, "    body empty")?;
         }
 
         if let Some(startup) = &self.startup {
