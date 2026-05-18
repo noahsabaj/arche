@@ -22,8 +22,9 @@ The proof chain currently demonstrates:
 - Runtime copying and readback of `Position { x: 1.0, y: 2.0 }` payload bytes into the `Position` component column.
 - Runtime debug inspection of a spawned-position world state.
 - Runtime resource descriptors for singleton world data, starting with `Demo.Time`.
+- Runtime aligned storage allocation for singleton resource payloads.
 
-The active board is currently on M8 resources. The next proof is allocating aligned storage for a `Demo.Time` resource payload.
+The active board is currently on M8 resources. The next proof is storing a `Time.delta` payload in runtime resource storage.
 
 ## What This Is Not Yet
 

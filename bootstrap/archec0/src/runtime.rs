@@ -192,6 +192,82 @@ pub fn stable_resource_id(world_name: &str, resource_name: &str) -> ResourceId {
     ResourceId(hash)
 }
 
+#[derive(Debug)]
+pub struct ResourceStorage {
+    resource_id: ResourceId,
+    byte_size: usize,
+    byte_align: usize,
+    storage: NonNull<u8>,
+    layout: Layout,
+}
+
+impl ResourceStorage {
+    fn allocate(descriptor: &ResourceDescriptor) -> Result<Self, ResourceStorageError> {
+        let byte_size = descriptor.size as usize;
+        let byte_align = descriptor.align as usize;
+
+        if byte_size == 0 {
+            return Err(ResourceStorageError {
+                message: "resource storage size must be greater than 0".to_string(),
+            });
+        }
+
+        let layout =
+            Layout::from_size_align(byte_size, byte_align).map_err(|_| ResourceStorageError {
+                message: format!(
+                    "invalid resource storage layout size {byte_size} align {byte_align}"
+                ),
+            })?;
+        let storage = {
+            let raw = unsafe { alloc(layout) };
+            NonNull::new(raw).ok_or_else(|| ResourceStorageError {
+                message: "resource storage allocation failed".to_string(),
+            })?
+        };
+
+        Ok(Self {
+            resource_id: descriptor.id,
+            byte_size,
+            byte_align,
+            storage,
+            layout,
+        })
+    }
+
+    pub fn resource_id(&self) -> ResourceId {
+        self.resource_id
+    }
+
+    pub fn byte_size(&self) -> usize {
+        self.byte_size
+    }
+
+    pub fn byte_align(&self) -> usize {
+        self.byte_align
+    }
+
+    pub fn storage_byte_size(&self) -> usize {
+        self.layout.size()
+    }
+
+    pub fn storage_ptr(&self) -> *mut u8 {
+        self.storage.as_ptr()
+    }
+}
+
+impl Drop for ResourceStorage {
+    fn drop(&mut self) {
+        unsafe {
+            dealloc(self.storage.as_ptr(), self.layout);
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResourceStorageError {
+    pub message: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArchetypeKey {
     component_ids: Vec<ComponentId>,
@@ -450,6 +526,7 @@ pub struct ArcheWorld {
     entities: EntityTable,
     component_descriptors: ComponentDescriptorTable,
     resource_descriptors: ResourceDescriptorTable,
+    resource_storages: Vec<ResourceStorage>,
     archetypes: Vec<ArchetypeTable>,
 }
 
@@ -459,6 +536,7 @@ impl ArcheWorld {
             entities: EntityTable::new(),
             component_descriptors: ComponentDescriptorTable::new(),
             resource_descriptors: ResourceDescriptorTable::new(),
+            resource_storages: Vec::new(),
             archetypes: Vec::new(),
         }
     }
@@ -489,6 +567,29 @@ impl ArcheWorld {
         &self.resource_descriptors
     }
 
+    pub fn allocate_resource_storage(
+        &mut self,
+        descriptor: &ResourceDescriptor,
+    ) -> Result<bool, ResourceStorageError> {
+        if self.resource_storage(descriptor.id).is_some() {
+            return Ok(false);
+        }
+
+        let storage = ResourceStorage::allocate(descriptor)?;
+        self.resource_storages.push(storage);
+        Ok(true)
+    }
+
+    pub fn resource_storage(&self, id: ResourceId) -> Option<&ResourceStorage> {
+        self.resource_storages
+            .iter()
+            .find(|storage| storage.resource_id == id)
+    }
+
+    pub fn resource_storage_count(&self) -> usize {
+        self.resource_storages.len()
+    }
+
     pub fn archetype_count(&self) -> usize {
         self.archetypes.len()
     }
@@ -512,6 +613,7 @@ impl ArcheWorld {
         self.entities.len() == 0
             && self.component_descriptors.len() == 0
             && self.resource_descriptors.len() == 0
+            && self.resource_storages.is_empty()
             && self.archetypes.is_empty()
     }
 }
@@ -755,6 +857,45 @@ mod tests {
 
         assert!(!world.register_resource_descriptor(duplicate));
         assert_eq!(world.resource_descriptors().get(time_id), Some(&time));
+    }
+
+    #[test]
+    fn allocates_time_delta_resource_storage() {
+        let time_id = stable_resource_id("Demo", "Time");
+        let time = ResourceDescriptor {
+            id: time_id,
+            name: "Demo.Time".to_string(),
+            size: 4,
+            align: 4,
+            fields: vec![ResourceFieldDescriptor {
+                name: "delta".to_string(),
+                type_name: "f32".to_string(),
+                offset: 0,
+            }],
+        };
+        let mut world = ArcheWorld::create();
+
+        assert!(world.register_resource_descriptor(time.clone()));
+        assert!(world
+            .allocate_resource_storage(&time)
+            .expect("Demo.Time resource storage allocation should succeed"));
+
+        assert_eq!(world.resource_storage_count(), 1);
+        assert!(!world.is_empty());
+
+        let storage = world
+            .resource_storage(time_id)
+            .expect("Demo.Time resource storage should be allocated");
+        assert_eq!(storage.resource_id(), time_id);
+        assert_eq!(storage.byte_size(), 4);
+        assert_eq!(storage.byte_align(), 4);
+        assert_eq!(storage.storage_byte_size(), 4);
+        assert_eq!((storage.storage_ptr() as usize) % storage.byte_align(), 0);
+
+        assert!(!world
+            .allocate_resource_storage(&time)
+            .expect("duplicate resource storage allocation check should not fail"));
+        assert_eq!(world.resource_storage_count(), 1);
     }
 
     #[test]
@@ -1009,6 +1150,7 @@ mod tests {
         assert_eq!(world.entities().len(), 0);
         assert_eq!(world.component_descriptors().len(), 0);
         assert_eq!(world.resource_descriptors().len(), 0);
+        assert_eq!(world.resource_storage_count(), 0);
         assert_eq!(world.archetype_count(), 0);
         assert!(world.is_empty());
 
