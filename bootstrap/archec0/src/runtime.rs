@@ -1542,6 +1542,84 @@ mod tests {
     }
 
     #[test]
+    fn reads_time_delta_during_query_iteration() {
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let time_id = stable_resource_id("Demo", "Time");
+        let time = ResourceDescriptor {
+            id: time_id,
+            name: "Demo.Time".to_string(),
+            size: 4,
+            align: 4,
+            fields: vec![ResourceFieldDescriptor {
+                name: "delta".to_string(),
+                type_name: "f32".to_string(),
+                offset: 0,
+            }],
+        };
+        let query = QueryDescriptor {
+            id: stable_query_id("Demo", "Move", "movers"),
+            name: "Demo.Move.movers".to_string(),
+            terms: vec![
+                QueryTermDescriptor {
+                    access: QueryAccess::Mut,
+                    component_id: position_id,
+                    name: "Demo.Position".to_string(),
+                },
+                QueryTermDescriptor {
+                    access: QueryAccess::Read,
+                    component_id: velocity_id,
+                    name: "Demo.Velocity".to_string(),
+                },
+            ],
+        };
+        let mut world = ArcheWorld::create();
+        let entity = world.alloc_entity();
+        let time_payload = [0x00, 0x00, 0x80, 0x3f];
+
+        assert!(world.register_resource_descriptor(time.clone()));
+        assert!(world
+            .allocate_resource_storage(&time)
+            .expect("Demo.Time resource storage allocation should succeed"));
+        world
+            .store_resource_payload(time_id, &time_payload)
+            .expect("Demo.Time payload store should succeed");
+
+        {
+            let table =
+                world.get_or_create_archetype(ArchetypeKey::new(vec![position_id, velocity_id]));
+            assert_eq!(table.insert_entity(entity), 0);
+        }
+
+        let plan = world.build_query_plan(&query);
+        let rows = world.iter_query_rows(&plan);
+
+        assert_eq!(
+            rows,
+            vec![QueryRow {
+                archetype_index: 0,
+                row: 0,
+                entity,
+            }]
+        );
+
+        let row_deltas: Vec<(QueryRow, f32)> = rows
+            .iter()
+            .map(|row| {
+                (
+                    *row,
+                    world
+                        .read_resource_f32_field(time_id, "delta")
+                        .expect("Demo.Time.delta decode should succeed"),
+                )
+            })
+            .collect();
+
+        assert_eq!(row_deltas, vec![(rows[0], 1.0)]);
+        assert!(world.entities().is_alive(entity));
+    }
+
+    #[test]
     fn allocates_time_delta_resource_storage() {
         let time_id = stable_resource_id("Demo", "Time");
         let time = ResourceDescriptor {

@@ -66,7 +66,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M10-005 | Read Time.delta during query iteration | A runtime unit test combines query iteration with decoded `Demo.Time.delta`. |
+| M10-006 | Apply Move system to Position rows | A runtime unit test updates `Position` using `Velocity` and `Time.delta` without generated executable system calls. |
 
 ### Doing
 
@@ -144,6 +144,7 @@ Board rules:
 | M10-002 | Match query descriptor to archetype keys | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml matches_position_velocity_query_to_archetype` passed, proving the runtime matches `Demo.Move.movers` against archetype keys containing both `Demo.Position` and `Demo.Velocity`, including duplicate-normalized and extra-component keys, and rejects keys missing either component or empty keys; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted query/archetype matching proof included. This was runtime matching only: no query planning, row iteration, resource reads, system execution, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `6b6f582`. |
 | M10-003 | Build query plan for Position/Velocity | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml builds_position_velocity_query_plan` passed, proving the runtime builds a deterministic `Demo.Move.movers` query plan by scanning archetypes in insertion order and returning the matching `Position + Velocity` archetype at index `1` with a cloned key snapshot; the same proof returns an empty plan for a query requiring a missing component. `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted query-plan proof included. This was runtime planning only: no row iteration, resource reads, system execution, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `48427f8`. |
 | M10-004 | Iterate query rows over matching archetype | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml iterates_position_velocity_query_rows` passed, proving the runtime can use a `Demo.Move.movers` query plan to enumerate one entity row from the matching `Position + Velocity` archetype at archetype index `1`, row `0`, with entity index `0` generation `0`, while empty plans produce no rows; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted query-row iteration proof included. This was runtime row identity iteration only: no component payload reads, `Time.delta` reads, `Move` execution, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `94aa468`. |
+| M10-005 | Read Time.delta during query iteration | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml reads_time_delta_during_query_iteration` passed, proving a `Demo.Move.movers` query row can be paired with decoded singleton resource state by reading `Demo.Time.delta == 1.0f32` during iteration; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted resource/query composition proof included. This was runtime composition only: no `Move` application, component payload reads or writes, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -151,7 +152,7 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M10-006 | Apply Move system to Position rows | A runtime unit test updates `Position` using `Velocity` and `Time.delta` without generated executable system calls. |
+| - | - | Empty. |
 
 ## Milestones
 
@@ -1304,18 +1305,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M10-004 stayed runtime row-identity iteration only | 99/100 |
-| `iterates_position_velocity_query_rows` proves deterministic row enumeration from a query plan | 99/100 |
+| M10-005 stayed runtime resource/query composition only | 99/100 |
+| `reads_time_delta_during_query_iteration` proves decoded `Time.delta` can be paired with query rows | 99/100 |
 | Existing M0-M10 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M10-004 complete and controlled M10 progress | 99/100 |
-| Active inventory promotes only M10-005 and limits M10 backlog through M10-006 | 98/100 |
+| Board state reflects M10-005 complete and controlled M10 progress | 99/100 |
+| Active inventory promotes only M10-006 and leaves the backlog empty | 98/100 |
 
 Weighted confidence: 99/100.
 
 Verification pass:
 
-- The active board has only `M10-005` in `Ready`.
+- The active board has only `M10-006` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, M10-001, M10-002, M10-003, and M10-004.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, M10-001, M10-002, M10-003, M10-004, and M10-005.
 - Detailed active inventory includes M10-001 through M10-006 only.
-- M7 spawn entities, M8 resources, and M9 system/resource access are complete; M10 now has runtime query descriptors, archetype-key matching, query plan construction, and query row iteration, and next combines iteration with `Time.delta` before row updates.
+- M7 spawn entities, M8 resources, and M9 system/resource access are complete; M10 now has runtime query descriptors, archetype-key matching, query plan construction, query row iteration, and `Time.delta` access during iteration. Next applies `Move` to update `Position` rows.
