@@ -19,8 +19,9 @@ The proof chain currently demonstrates:
 - Spawn source parsing and spawn lowering into Core.
 - Runtime archetype lookup/create for a normalized `Position` component set.
 - Runtime insertion of an allocated entity row into the `Position` archetype table.
+- Runtime copying and readback of `Position { x: 1.0, y: 2.0 }` payload bytes into the `Position` component column.
 
-The active board is currently on M7 spawn entities. The next proof is copying the parsed `Position` payload into its component column.
+The active board is currently on M7 spawn entities. The next proof is runtime debug inspection for the spawned-position world state.
 
 ## What This Is Not Yet
 

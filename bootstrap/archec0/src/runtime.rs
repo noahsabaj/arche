@@ -2,7 +2,7 @@
 
 use crate::layout::ComponentId;
 use std::alloc::{alloc, dealloc, Layout};
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ArcheEntity(pub u64);
@@ -199,6 +199,29 @@ impl ArchetypeTable {
         Ok(true)
     }
 
+    pub fn copy_component_payload(
+        &mut self,
+        component_id: ComponentId,
+        row: usize,
+        payload_bytes: &[u8],
+    ) -> Result<(), ComponentColumnError> {
+        if row >= self.entities.len() {
+            return Err(ComponentColumnError {
+                message: format!("entity row {row} does not exist"),
+            });
+        }
+
+        let column = self
+            .columns
+            .iter_mut()
+            .find(|column| column.component_id == component_id)
+            .ok_or_else(|| ComponentColumnError {
+                message: format!("component column 0x{:016x} does not exist", component_id.0),
+            })?;
+
+        column.copy_payload(row, payload_bytes)
+    }
+
     pub fn column(&self, id: ComponentId) -> Option<&ComponentColumn> {
         self.columns.iter().find(|column| column.component_id == id)
     }
@@ -296,6 +319,54 @@ impl ComponentColumn {
 
     pub fn storage_ptr(&self) -> *mut u8 {
         self.storage.as_ptr()
+    }
+
+    fn copy_payload(
+        &mut self,
+        row: usize,
+        payload_bytes: &[u8],
+    ) -> Result<(), ComponentColumnError> {
+        if row >= self.row_capacity {
+            return Err(ComponentColumnError {
+                message: format!(
+                    "component row {row} exceeds column capacity {}",
+                    self.row_capacity
+                ),
+            });
+        }
+
+        if payload_bytes.len() != self.element_size {
+            return Err(ComponentColumnError {
+                message: format!(
+                    "component payload has {} bytes but expected {}",
+                    payload_bytes.len(),
+                    self.element_size
+                ),
+            });
+        }
+
+        let offset = row * self.element_size;
+        unsafe {
+            ptr::copy_nonoverlapping(
+                payload_bytes.as_ptr(),
+                self.storage.as_ptr().add(offset),
+                self.element_size,
+            );
+        }
+        self.row_count = self.row_count.max(row + 1);
+
+        Ok(())
+    }
+
+    pub fn row_bytes(&self, row: usize) -> Option<&[u8]> {
+        if row >= self.row_count {
+            return None;
+        }
+
+        let offset = row * self.element_size;
+        Some(unsafe {
+            std::slice::from_raw_parts(self.storage.as_ptr().add(offset), self.element_size)
+        })
     }
 }
 
@@ -585,6 +656,67 @@ mod tests {
             .expect("Position archetype table should exist");
         assert_eq!(table.entity_count(), 1);
         assert_eq!(table.entity(0), Some(entity));
+    }
+
+    #[test]
+    fn copies_position_payload_into_column() {
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let position_key = ArchetypeKey::new(vec![position_id]);
+        let position = ComponentDescriptor {
+            id: position_id,
+            name: "Demo.Position".to_string(),
+            size: 8,
+            align: 4,
+            fields: vec![
+                ComponentFieldDescriptor {
+                    name: "x".to_string(),
+                    type_name: "f32".to_string(),
+                    offset: 0,
+                },
+                ComponentFieldDescriptor {
+                    name: "y".to_string(),
+                    type_name: "f32".to_string(),
+                    offset: 4,
+                },
+            ],
+        };
+        let position_payload = [0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40];
+        let mut world = ArcheWorld::create();
+        let entity = world.alloc_entity();
+
+        {
+            let table = world.get_or_create_archetype(position_key.clone());
+            assert!(table
+                .allocate_component_column(&position, 1)
+                .expect("Position column allocation should succeed"));
+            let row = table.insert_entity(entity);
+
+            table
+                .copy_component_payload(position_id, row, &position_payload)
+                .expect("Position payload copy should succeed");
+
+            assert_eq!(row, 0);
+            assert_eq!(table.entity_count(), 1);
+            assert_eq!(table.entity(0), Some(entity));
+
+            let column = table
+                .column(position_id)
+                .expect("Position column should be allocated");
+            assert_eq!(column.row_count(), 1);
+            assert_eq!(column.row_bytes(0), Some(position_payload.as_slice()));
+            assert_eq!(column.row_bytes(1), None);
+        }
+
+        assert!(world.entities().is_alive(entity));
+
+        let table = world
+            .archetype(&position_key)
+            .expect("Position archetype table should exist");
+        let column = table
+            .column(position_id)
+            .expect("Position column should remain allocated");
+        assert_eq!(column.row_count(), 1);
+        assert_eq!(column.row_bytes(0), Some(position_payload.as_slice()));
     }
 
     #[test]
