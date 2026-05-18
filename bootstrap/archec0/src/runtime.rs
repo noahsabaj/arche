@@ -183,17 +183,95 @@ impl ResourceDescriptorTable {
     }
 }
 
-pub fn stable_resource_id(world_name: &str, resource_name: &str) -> ResourceId {
+fn stable_qualified_id(world_name: &str, item_name: &str) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
 
     let mut hash = FNV_OFFSET_BASIS;
-    for byte in format!("{world_name}.{resource_name}").bytes() {
+    for byte in format!("{world_name}.{item_name}").bytes() {
         hash ^= u64::from(byte);
         hash = hash.wrapping_mul(FNV_PRIME);
     }
 
-    ResourceId(hash)
+    hash
+}
+
+pub fn stable_resource_id(world_name: &str, resource_name: &str) -> ResourceId {
+    ResourceId(stable_qualified_id(world_name, resource_name))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SystemId(pub u64);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SystemAccess {
+    Read,
+    Mut,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemQueryTermDescriptor {
+    pub access: SystemAccess,
+    pub component_id: ComponentId,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SystemParamDescriptorKind {
+    ReadResource {
+        resource_id: ResourceId,
+        name: String,
+    },
+    Query {
+        terms: Vec<SystemQueryTermDescriptor>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemParamDescriptor {
+    pub name: String,
+    pub kind: SystemParamDescriptorKind,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemDescriptor {
+    pub id: SystemId,
+    pub name: String,
+    pub params: Vec<SystemParamDescriptor>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SystemDescriptorTable {
+    descriptors: Vec<SystemDescriptor>,
+}
+
+impl SystemDescriptorTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn len(&self) -> usize {
+        self.descriptors.len()
+    }
+
+    pub fn register(&mut self, descriptor: SystemDescriptor) -> bool {
+        if self.get(descriptor.id).is_some() {
+            return false;
+        }
+
+        self.descriptors.push(descriptor);
+        true
+    }
+
+    pub fn get(&self, id: SystemId) -> Option<&SystemDescriptor> {
+        self.descriptors
+            .iter()
+            .find(|descriptor| descriptor.id == id)
+    }
+}
+
+pub fn stable_system_id(world_name: &str, system_name: &str) -> SystemId {
+    SystemId(stable_qualified_id(world_name, system_name))
 }
 
 #[derive(Debug)]
@@ -555,6 +633,7 @@ pub struct ArcheWorld {
     entities: EntityTable,
     component_descriptors: ComponentDescriptorTable,
     resource_descriptors: ResourceDescriptorTable,
+    system_descriptors: SystemDescriptorTable,
     resource_storages: Vec<ResourceStorage>,
     archetypes: Vec<ArchetypeTable>,
 }
@@ -565,6 +644,7 @@ impl ArcheWorld {
             entities: EntityTable::new(),
             component_descriptors: ComponentDescriptorTable::new(),
             resource_descriptors: ResourceDescriptorTable::new(),
+            system_descriptors: SystemDescriptorTable::new(),
             resource_storages: Vec::new(),
             archetypes: Vec::new(),
         }
@@ -594,6 +674,14 @@ impl ArcheWorld {
 
     pub fn resource_descriptors(&self) -> &ResourceDescriptorTable {
         &self.resource_descriptors
+    }
+
+    pub fn register_system_descriptor(&mut self, descriptor: SystemDescriptor) -> bool {
+        self.system_descriptors.register(descriptor)
+    }
+
+    pub fn system_descriptors(&self) -> &SystemDescriptorTable {
+        &self.system_descriptors
     }
 
     pub fn allocate_resource_storage(
@@ -707,6 +795,7 @@ impl ArcheWorld {
         self.entities.len() == 0
             && self.component_descriptors.len() == 0
             && self.resource_descriptors.len() == 0
+            && self.system_descriptors.len() == 0
             && self.resource_storages.is_empty()
             && self.archetypes.is_empty()
     }
@@ -994,6 +1083,90 @@ mod tests {
 
         assert!(!world.register_resource_descriptor(duplicate));
         assert_eq!(world.resource_descriptors().get(time_id), Some(&time));
+    }
+
+    #[test]
+    fn registers_move_system_descriptor() {
+        let move_id = stable_system_id("Demo", "Move");
+        let move_system = SystemDescriptor {
+            id: move_id,
+            name: "Demo.Move".to_string(),
+            params: vec![
+                SystemParamDescriptor {
+                    name: "time".to_string(),
+                    kind: SystemParamDescriptorKind::ReadResource {
+                        resource_id: ResourceId(0x7924ce11db524521),
+                        name: "Demo.Time".to_string(),
+                    },
+                },
+                SystemParamDescriptor {
+                    name: "movers".to_string(),
+                    kind: SystemParamDescriptorKind::Query {
+                        terms: vec![
+                            SystemQueryTermDescriptor {
+                                access: SystemAccess::Mut,
+                                component_id: ComponentId(0x002202c6aeb4f27b),
+                                name: "Demo.Position".to_string(),
+                            },
+                            SystemQueryTermDescriptor {
+                                access: SystemAccess::Read,
+                                component_id: ComponentId(0x2cf8a68bcb7f913b),
+                                name: "Demo.Velocity".to_string(),
+                            },
+                        ],
+                    },
+                },
+            ],
+        };
+        let mut world = ArcheWorld::create();
+
+        assert_eq!(move_id, SystemId(0x723b6b52df270ed5));
+        assert!(world.register_system_descriptor(move_system.clone()));
+        assert_eq!(world.system_descriptors().len(), 1);
+        assert_eq!(world.system_descriptors().get(move_id), Some(&move_system));
+
+        let descriptor = world
+            .system_descriptors()
+            .get(move_id)
+            .expect("Demo.Move system descriptor should be registered");
+        assert_eq!(descriptor.id, SystemId(0x723b6b52df270ed5));
+        assert_eq!(descriptor.name, "Demo.Move");
+        assert_eq!(descriptor.params.len(), 2);
+        assert_eq!(descriptor.params[0].name, "time");
+        assert_eq!(
+            descriptor.params[0].kind,
+            SystemParamDescriptorKind::ReadResource {
+                resource_id: ResourceId(0x7924ce11db524521),
+                name: "Demo.Time".to_string(),
+            }
+        );
+        assert_eq!(descriptor.params[1].name, "movers");
+        assert_eq!(
+            descriptor.params[1].kind,
+            SystemParamDescriptorKind::Query {
+                terms: vec![
+                    SystemQueryTermDescriptor {
+                        access: SystemAccess::Mut,
+                        component_id: ComponentId(0x002202c6aeb4f27b),
+                        name: "Demo.Position".to_string(),
+                    },
+                    SystemQueryTermDescriptor {
+                        access: SystemAccess::Read,
+                        component_id: ComponentId(0x2cf8a68bcb7f913b),
+                        name: "Demo.Velocity".to_string(),
+                    },
+                ],
+            }
+        );
+
+        let duplicate = SystemDescriptor {
+            id: move_id,
+            name: "Demo.Move.Duplicate".to_string(),
+            params: Vec::new(),
+        };
+
+        assert!(!world.register_system_descriptor(duplicate));
+        assert_eq!(world.system_descriptors().get(move_id), Some(&move_system));
     }
 
     #[test]
@@ -1411,6 +1584,7 @@ mod tests {
         assert_eq!(world.entities().len(), 0);
         assert_eq!(world.component_descriptors().len(), 0);
         assert_eq!(world.resource_descriptors().len(), 0);
+        assert_eq!(world.system_descriptors().len(), 0);
         assert_eq!(world.resource_storage_count(), 0);
         assert_eq!(world.archetype_count(), 0);
         assert!(world.is_empty());

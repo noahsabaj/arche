@@ -554,6 +554,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_time_delta_resource_descriptor")
 
     Invoke-CheckedCommand `
+        -Name "registers_move_system_descriptor" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "registers_move_system_descriptor")
+
+    Invoke-CheckedCommand `
         -Name "allocates_time_delta_resource_storage" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "allocates_time_delta_resource_storage")

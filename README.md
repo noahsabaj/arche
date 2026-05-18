@@ -31,8 +31,9 @@ The proof chain currently demonstrates:
 - Source-level parsing for system read-resource parameters, starting with `time: read Time`.
 - Source-level parsing for system query parameters, starting with `movers: query[mut Position, Velocity]`.
 - Core metadata lowering for system declarations and parameters.
+- Runtime system descriptor registration for `Demo.Move` with deterministic resource/query metadata.
 
-M8 resources are complete. The active board is currently on M9 systems. The next proof is runtime system descriptor registration.
+M8 resources are complete. The active board is currently on M9 systems. The next proof is a system source fixture using `Time.delta`.
 
 ## What This Is Not Yet
 
