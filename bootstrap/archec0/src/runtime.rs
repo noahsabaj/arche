@@ -326,6 +326,38 @@ pub fn stable_schedule_id(world_name: &str, schedule_name: &str) -> ScheduleId {
     ScheduleId(stable_qualified_id(world_name, schedule_name))
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchedulePlanEntry {
+    pub system_id: SystemId,
+    pub system_name: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchedulePlan {
+    pub schedule_id: ScheduleId,
+    pub schedule_name: String,
+    pub entries: Vec<SchedulePlanEntry>,
+}
+
+impl SchedulePlan {
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn entries(&self) -> &[SchedulePlanEntry] {
+        &self.entries
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SchedulePlanError {
+    pub message: String,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct QueryId(pub u64);
 
@@ -848,6 +880,39 @@ impl ArcheWorld {
 
     pub fn schedule_descriptors(&self) -> &ScheduleDescriptorTable {
         &self.schedule_descriptors
+    }
+
+    pub fn build_schedule_plan(
+        &self,
+        schedule: &ScheduleDescriptor,
+    ) -> Result<SchedulePlan, SchedulePlanError> {
+        let mut entries = Vec::new();
+
+        for item in &schedule.items {
+            match item {
+                ScheduleItemDescriptor::Run {
+                    system_id,
+                    system_name,
+                } => {
+                    if self.system_descriptors.get(*system_id).is_none() {
+                        return Err(SchedulePlanError {
+                            message: format!("unknown system `{system_name}`"),
+                        });
+                    }
+
+                    entries.push(SchedulePlanEntry {
+                        system_id: *system_id,
+                        system_name: system_name.clone(),
+                    });
+                }
+            }
+        }
+
+        Ok(SchedulePlan {
+            schedule_id: schedule.id,
+            schedule_name: schedule.name.clone(),
+            entries,
+        })
     }
 
     pub fn register_query_descriptor(&mut self, descriptor: QueryDescriptor) -> bool {
@@ -1441,6 +1506,62 @@ mod tests {
         assert_eq!(
             world.schedule_descriptors().get(main_id),
             Some(&main_schedule)
+        );
+    }
+
+    #[test]
+    fn builds_sequential_schedule_plan() {
+        let move_id = SystemId(0x723b6b52df270ed5);
+        let main_id = ScheduleId(0xed3d905325519b05);
+        let move_system = SystemDescriptor {
+            id: move_id,
+            name: "Demo.Move".to_string(),
+            params: Vec::new(),
+        };
+        let main_schedule = ScheduleDescriptor {
+            id: main_id,
+            name: "Demo.Main".to_string(),
+            items: vec![ScheduleItemDescriptor::Run {
+                system_id: move_id,
+                system_name: "Demo.Move".to_string(),
+            }],
+        };
+        let mut world = ArcheWorld::create();
+
+        assert!(world.register_system_descriptor(move_system));
+
+        let plan = world
+            .build_schedule_plan(&main_schedule)
+            .expect("Demo.Main schedule should build a plan");
+
+        assert_eq!(plan.schedule_id, main_id);
+        assert_eq!(plan.schedule_name, "Demo.Main");
+        assert_eq!(plan.len(), 1);
+        assert!(!plan.is_empty());
+        assert_eq!(
+            plan.entries(),
+            &[SchedulePlanEntry {
+                system_id: move_id,
+                system_name: "Demo.Move".to_string(),
+            }]
+        );
+
+        let missing_schedule = ScheduleDescriptor {
+            id: main_id,
+            name: "Demo.Main".to_string(),
+            items: vec![ScheduleItemDescriptor::Run {
+                system_id: SystemId(0xffff000000000003),
+                system_name: "Demo.Missing".to_string(),
+            }],
+        };
+        let error = world
+            .build_schedule_plan(&missing_schedule)
+            .expect_err("missing systems should fail schedule planning");
+
+        assert!(
+            error.message.contains("unknown system"),
+            "unexpected schedule plan error: {}",
+            error.message
         );
     }
 

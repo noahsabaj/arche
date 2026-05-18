@@ -122,7 +122,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M11-004 | Build sequential schedule plan | Runtime schedule metadata builds a deterministic sequential plan. |
+| M11-005 | Execute runtime schedule plan | A runtime schedule plan invokes the existing `Move` application path in order. |
 
 ### Doing
 
@@ -205,6 +205,7 @@ Board rules:
 | M11-001 | Parse schedule declarations | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast` printed a top-level `schedule Main` with `run Move` after `system Move` and before `startup`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the exact schedule AST assertion included. This was parser/AST-only: no Core schedule metadata, runtime schedule descriptors, schedule planning, source-level startup run, or executable behavior was added. Implementation commit: `b520d0d`. |
 | M11-002 | Lower schedule declarations to Core metadata | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_schedule_to_core_metadata` passed, proving parsed `schedule Main { run Move }` lowers into Core metadata as `CoreSchedule { name: "Main" }` with a `run Demo.Move` item using stable system ID `0x723b6b52df270ed5`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted schedule Core proof included. This was Core-only: no runtime schedule descriptors, schedule planning, startup `run Main`, schedule execution, `--emit-core` schedule output assertion, or native executable behavior was added. Implementation commit: `ef00595`. |
 | M11-003 | Add runtime schedule descriptor table | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml registers_main_schedule_descriptor` passed, proving `ArcheWorld` can register and retrieve `Demo.Main` with stable `ScheduleId(0xed3d905325519b05)` and one ordered `run Demo.Move` item with `SystemId(0x723b6b52df270ed5)`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted runtime schedule descriptor proof included. This was runtime descriptor registration only: no schedule planning, schedule execution, startup `run Main`, parser/Core changes, ELF/codegen changes, or validation against registered system descriptors was added. Implementation commit: `2ebb76f`. |
+| M11-004 | Build sequential schedule plan | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml builds_sequential_schedule_plan` passed, proving `ArcheWorld` can build a deterministic `Demo.Main` schedule plan with one ordered entry for registered `Demo.Move` and reject a schedule item that references an unregistered system with an `unknown system` error; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted runtime schedule planning proof included. This was runtime planning only: no schedule execution, `Move` invocation, startup `run Main`, parser/Core changes, or ELF/codegen behavior was added. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -212,7 +213,6 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M11-005 | Execute runtime schedule plan | A runtime schedule plan invokes the existing `Move` application path in order. |
 | M11-006 | Add schedule source fixture using startup run | Source AST represents `run Main` from startup without generated executable schedule behavior. |
 
 ## Milestones
@@ -1426,18 +1426,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M11-003 stayed runtime descriptor-only | 99/100 |
-| `registers_main_schedule_descriptor` proves deterministic schedule registration | 99/100 |
+| M11-004 stayed runtime planning-only | 99/100 |
+| `builds_sequential_schedule_plan` proves deterministic schedule plan construction | 99/100 |
 | Existing M0-M11 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state reflects M11-003 complete and controlled M11 progress | 99/100 |
-| Active inventory promotes only M11-004 and keeps M11 backlog limited to M11-005 through M11-006 | 98/100 |
+| Board state reflects M11-004 complete and controlled M11 progress | 99/100 |
+| Active inventory promotes only M11-005 and keeps M11 backlog limited to M11-006 | 98/100 |
 
 Weighted confidence: 99/100.
 
 Verification pass:
 
-- The active board has only `M11-004` in `Ready`.
+- The active board has only `M11-005` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, M11-001, M11-002, and M11-003.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, M11-001, M11-002, M11-003, and M11-004.
 - Detailed active inventory includes M10-001 through M10-006 and M11-001 through M11-006 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, and M10 first query loop are complete. M11 now has source-level schedule declaration parsing, Core schedule metadata lowering, and runtime schedule descriptors; next builds a sequential schedule plan.
+- M7 spawn entities, M8 resources, M9 system/resource access, and M10 first query loop are complete. M11 now has source-level schedule declaration parsing, Core schedule metadata lowering, runtime schedule descriptors, and sequential schedule planning; next executes a runtime schedule plan.
