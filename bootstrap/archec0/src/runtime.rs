@@ -297,6 +297,14 @@ pub struct QueryDescriptor {
     pub terms: Vec<QueryTermDescriptor>,
 }
 
+impl QueryDescriptor {
+    pub fn matches_archetype_key(&self, key: &ArchetypeKey) -> bool {
+        self.terms
+            .iter()
+            .all(|term| key.component_ids().contains(&term.component_id))
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct QueryDescriptorTable {
     descriptors: Vec<QueryDescriptor>,
@@ -1296,6 +1304,44 @@ mod tests {
 
         assert!(!world.register_query_descriptor(duplicate));
         assert_eq!(world.query_descriptors().get(query_id), Some(&query));
+    }
+
+    #[test]
+    fn matches_position_velocity_query_to_archetype() {
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let extra_id = ComponentId(0xffff000000000001);
+        let query = QueryDescriptor {
+            id: stable_query_id("Demo", "Move", "movers"),
+            name: "Demo.Move.movers".to_string(),
+            terms: vec![
+                QueryTermDescriptor {
+                    access: QueryAccess::Mut,
+                    component_id: position_id,
+                    name: "Demo.Position".to_string(),
+                },
+                QueryTermDescriptor {
+                    access: QueryAccess::Read,
+                    component_id: velocity_id,
+                    name: "Demo.Velocity".to_string(),
+                },
+            ],
+        };
+
+        assert!(query.matches_archetype_key(&ArchetypeKey::new(vec![position_id, velocity_id])));
+        assert!(query.matches_archetype_key(&ArchetypeKey::new(vec![
+            velocity_id,
+            position_id,
+            position_id
+        ])));
+        assert!(query.matches_archetype_key(&ArchetypeKey::new(vec![
+            extra_id,
+            position_id,
+            velocity_id
+        ])));
+        assert!(!query.matches_archetype_key(&ArchetypeKey::new(vec![velocity_id])));
+        assert!(!query.matches_archetype_key(&ArchetypeKey::new(vec![position_id])));
+        assert!(!query.matches_archetype_key(&ArchetypeKey::new(Vec::new())));
     }
 
     #[test]
