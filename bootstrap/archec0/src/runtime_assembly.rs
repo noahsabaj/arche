@@ -1,10 +1,17 @@
 #![allow(dead_code)]
 
-use crate::layout::ComponentId;
+use crate::layout::{self, ComponentId};
+use crate::parser::{ComponentDecl, Program, ResourceDecl};
 use crate::runtime::{
-    ComponentDescriptor, QueryDescriptor, ResourceDescriptor, ResourceId, ScheduleDescriptor,
-    ScheduleId, SystemDescriptor,
+    stable_resource_id, ComponentDescriptor, ComponentFieldDescriptor, QueryDescriptor,
+    ResourceDescriptor, ResourceFieldDescriptor, ResourceId, ScheduleDescriptor, ScheduleId,
+    SystemDescriptor,
 };
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RuntimeAssemblyError {
+    pub message: String,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeProgramAssembly {
@@ -37,6 +44,123 @@ impl RuntimeProgramAssembly {
             && self.query_descriptors.is_empty()
             && self.schedule_descriptors.is_empty()
             && self.startup_operations.is_empty()
+    }
+}
+
+pub fn assemble_runtime_program_from_source(
+    program: &Program,
+) -> Result<RuntimeProgramAssembly, RuntimeAssemblyError> {
+    let mut assembly = RuntimeProgramAssembly::new(program.world.name.clone());
+    assembly.component_descriptors = program
+        .components
+        .iter()
+        .map(|component| assemble_component_descriptor(&program.world.name, component))
+        .collect::<Result<Vec<_>, _>>()?;
+    assembly.resource_descriptors = program
+        .resources
+        .iter()
+        .map(|resource| assemble_resource_descriptor(&program.world.name, resource))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(assembly)
+}
+
+fn assemble_component_descriptor(
+    world_name: &str,
+    component: &ComponentDecl,
+) -> Result<ComponentDescriptor, RuntimeAssemblyError> {
+    let component_layout = layout::compute_component_layout(component)
+        .map_err(|error| assembly_error(error.message))?;
+
+    Ok(ComponentDescriptor {
+        id: layout::stable_component_id(world_name, &component.name),
+        name: layout::component_qualified_name(world_name, &component.name),
+        size: component_layout.size,
+        align: component_layout.align,
+        fields: component_layout
+            .fields
+            .into_iter()
+            .map(|field| ComponentFieldDescriptor {
+                name: field.name,
+                type_name: field.type_name,
+                offset: field.offset,
+            })
+            .collect(),
+    })
+}
+
+fn assemble_resource_descriptor(
+    world_name: &str,
+    resource: &ResourceDecl,
+) -> Result<ResourceDescriptor, RuntimeAssemblyError> {
+    let resource_layout = compute_resource_layout(resource)?;
+
+    Ok(ResourceDescriptor {
+        id: stable_resource_id(world_name, &resource.name),
+        name: qualified_name(world_name, &resource.name),
+        size: resource_layout.size,
+        align: resource_layout.align,
+        fields: resource_layout.fields,
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ResourceLayout {
+    fields: Vec<ResourceFieldDescriptor>,
+    size: u32,
+    align: u32,
+}
+
+fn compute_resource_layout(
+    resource: &ResourceDecl,
+) -> Result<ResourceLayout, RuntimeAssemblyError> {
+    let mut fields = Vec::new();
+    let mut cursor = 0;
+    let mut resource_align = 1;
+
+    for field in &resource.fields {
+        let field_layout =
+            layout::primitive_type_layout(&field.type_name.name).ok_or_else(|| {
+                assembly_error(format!(
+                    "unknown primitive type `{}` for resource field `{}`",
+                    field.type_name.name, field.name
+                ))
+            })?;
+
+        cursor = align_to(cursor, field_layout.align);
+        resource_align = resource_align.max(field_layout.align);
+        fields.push(ResourceFieldDescriptor {
+            name: field.name.clone(),
+            type_name: field.type_name.name.clone(),
+            offset: cursor,
+        });
+        cursor += field_layout.size;
+    }
+
+    Ok(ResourceLayout {
+        fields,
+        size: align_to(cursor, resource_align),
+        align: resource_align,
+    })
+}
+
+fn qualified_name(world_name: &str, item_name: &str) -> String {
+    format!("{world_name}.{item_name}")
+}
+
+fn align_to(value: u32, align: u32) -> u32 {
+    debug_assert!(align > 0);
+    let remainder = value % align;
+    if remainder == 0 {
+        value
+    } else {
+        value + (align - remainder)
+    }
+}
+
+fn assembly_error(message: impl Into<String>) -> RuntimeAssemblyError {
+    RuntimeAssemblyError {
+        message: message.into(),
     }
 }
 
@@ -73,6 +197,7 @@ mod tests {
         ScheduleItemDescriptor, SystemAccess, SystemParamDescriptor, SystemParamDescriptorKind,
         SystemQueryTermDescriptor,
     };
+    use crate::{lexer, parser};
 
     #[test]
     fn defines_runtime_program_assembly_model() {
@@ -292,6 +417,47 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn assembles_component_and_resource_descriptors_from_source() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+
+        assert_eq!(
+            assembly,
+            RuntimeProgramAssembly {
+                world_name: "Demo".to_string(),
+                component_descriptors: vec![
+                    xy_component_descriptor(ComponentId(0x002202c6aeb4f27b), "Demo.Position"),
+                    xy_component_descriptor(ComponentId(0x2cf8a68bcb7f913b), "Demo.Velocity"),
+                ],
+                resource_descriptors: vec![ResourceDescriptor {
+                    id: ResourceId(0x7924ce11db524521),
+                    name: "Demo.Time".to_string(),
+                    size: 4,
+                    align: 4,
+                    fields: vec![ResourceFieldDescriptor {
+                        name: "delta".to_string(),
+                        type_name: "f32".to_string(),
+                        offset: 0,
+                    }],
+                }],
+                system_descriptors: Vec::new(),
+                query_descriptors: Vec::new(),
+                schedule_descriptors: Vec::new(),
+                startup_operations: Vec::new(),
+            }
+        );
+        assert!(!assembly.is_empty());
+        assert!(assembly.system_descriptors.is_empty());
+        assert!(assembly.query_descriptors.is_empty());
+        assert!(assembly.schedule_descriptors.is_empty());
+        assert!(assembly.startup_operations.is_empty());
     }
 
     fn xy_component_descriptor(id: ComponentId, name: &str) -> ComponentDescriptor {
