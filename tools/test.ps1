@@ -539,6 +539,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "encodes_position_component_metadata")
 
     Invoke-CheckedCommand `
+        -Name "defines_runtime_program_assembly_model" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_runtime_program_assembly_model")
+
+    Invoke-CheckedCommand `
         -Name "arche_entity_packs_index_and_generation" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "arche_entity_packs_index_and_generation")

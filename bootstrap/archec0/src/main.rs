@@ -13,6 +13,7 @@ mod lexer;
 mod machine;
 mod parser;
 mod runtime;
+mod runtime_assembly;
 
 use std::env;
 use std::fs;

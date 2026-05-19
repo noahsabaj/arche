@@ -49,8 +49,9 @@ The proof chain currently demonstrates:
 - ECS semantic checking for unknown system resource parameters.
 - ECS semantic checking for unknown query components.
 - ECS semantic checking for conflicting query access.
+- A non-executing runtime program assembly model for descriptor roots and startup operations.
 
-M12 ECS semantic verification is complete. The next proof is defining the source-driven runtime program assembly model.
+M13 source-driven runtime program assembly is underway. The next proof is assembling component and resource descriptors from source.
 
 ## What This Is Not Yet
 

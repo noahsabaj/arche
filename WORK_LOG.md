@@ -121,7 +121,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M13-001 | Define runtime program assembly model | A runtime assembly data model can represent source-derived descriptors and startup operations without executing them. |
+| M13-002 | Assemble component and resource descriptors from source | Source component/resource declarations produce runtime descriptor assembly records. |
 
 ### Doing
 
@@ -211,6 +211,7 @@ Board rules:
 | M12-002 | Reject unknown system resource parameter | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_unknown_resource_param.arc --check` exited nonzero with `error[CHECK001]` at `bad_unknown_resource_param.arc:3:24` and message ``unknown resource `MissingTime` in system parameter``; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the negative checker assertion included. This was checker-only: no Core, runtime, parser surface beyond diagnostic span plumbing, codegen, or executable behavior was added. Implementation commit: `3965c58`. |
 | M12-003 | Reject unknown query component | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_unknown_query_component.arc --check` exited nonzero with `error[CHECK001]` at `bad_unknown_query_component.arc:3:27` and message ``unknown component `MissingComponent` in query``; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the negative checker assertion included. This was checker-only: no Core, runtime, parser surface beyond diagnostic span plumbing, codegen, or executable behavior was added. Implementation commit: `a374ad2`. |
 | M12-004 | Reject conflicting query access | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_conflicting_query_access.arc --check` exited nonzero with `error[CHECK001]` at `bad_conflicting_query_access.arc:10:14` and message ``conflicting query access for component `Position``; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the negative checker assertion included. This was checker-only: no parser syntax changes, Core, runtime, scheduling, codegen, or executable behavior was added. M12 ECS semantic verification is complete. Implementation commit: `3509dc5`. |
+| M13-001 | Define runtime program assembly model | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_runtime_program_assembly_model` passed, proving a non-executing `Demo` runtime assembly model can hold component, resource, system, query, and schedule descriptors plus startup resource payload, spawn payload, and `run Demo.Main` operation records; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted assembly-model proof included. This was data-model only: no source assembly pass, world construction, descriptor registration into `ArcheWorld`, startup execution, Core changes, ELF/codegen changes, or generated executable behavior was added. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -218,7 +219,6 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M13-002 | Assemble component and resource descriptors from source | Source declarations become runtime descriptor assembly inputs. |
 | M13-003 | Assemble system, query, and schedule descriptors from source | Source ECS metadata becomes runtime descriptor assembly inputs. |
 | M13-004 | Assemble startup resource payload operation | Startup resource payload source becomes an assembly operation. |
 | M13-005 | Assemble startup spawn operation | Startup spawn source becomes an assembly operation. |
@@ -1551,18 +1551,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M12-004 stayed checker-only | 99/100 |
-| `bad_conflicting_query_access.arc --check` proves conflicting query access is rejected | 99/100 |
-| Existing M0-M12 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state marks M12 complete and starts controlled M13 assembly work | 98/100 |
-| Active inventory promotes only M13-001 and keeps the M13 backlog limited to M13-002 through M13-006 | 98/100 |
+| M13-001 stayed data-model only | 99/100 |
+| `defines_runtime_program_assembly_model` proves the runtime assembly model can hold descriptor roots and startup operations | 99/100 |
+| Existing M0-M13 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
+| Board state promotes M13-002 and keeps source assembly as the current focus | 98/100 |
+| Active inventory keeps the M13 backlog limited to M13-003 through M13-006 | 98/100 |
 
 Weighted confidence: 99/100.
 
 Verification pass:
 
-- The active board has only `M13-001` in `Ready`.
+- The active board has only `M13-002` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, and completed M12.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, and M13-001.
 - Detailed active inventory includes M12-001 through M12-004 and M13-001 through M13-006 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, and M12 ECS semantic verification are complete. M13 source-driven runtime program assembly begins with the runtime program model next.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, and M12 ECS semantic verification are complete. M13 source-driven runtime program assembly has a non-executing model; component/resource descriptor assembly from source is next.
