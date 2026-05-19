@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::lexer::Span;
 use crate::parser::{
-    BinaryOperator, Expression, Program, ScheduleItem, Statement, SystemParamKind,
+    BinaryOperator, Expression, Program, QueryAccess, ScheduleItem, Statement, SystemParamKind,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -72,6 +72,8 @@ fn check_system_params(program: &Program) -> Result<(), CheckError> {
         .collect::<HashSet<_>>();
 
     for system in &program.systems {
+        let mut query_accesses = HashMap::new();
+
         for param in &system.params {
             match &param.kind {
                 SystemParamKind::ReadResource {
@@ -97,6 +99,24 @@ fn check_system_params(program: &Program) -> Result<(), CheckError> {
                                     term.component_name
                                 ),
                             });
+                        }
+
+                        if let Some(previous_access) =
+                            query_accesses.get(term.component_name.as_str())
+                        {
+                            if *previous_access == QueryAccess::Mut
+                                || term.access == QueryAccess::Mut
+                            {
+                                return Err(CheckError {
+                                    span: term.component_span,
+                                    message: format!(
+                                        "conflicting query access for component `{}`",
+                                        term.component_name
+                                    ),
+                                });
+                            }
+                        } else {
+                            query_accesses.insert(term.component_name.as_str(), term.access);
                         }
                     }
                 }

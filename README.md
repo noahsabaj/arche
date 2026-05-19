@@ -48,8 +48,9 @@ The proof chain currently demonstrates:
 - ECS semantic checking, starting with rejection of unknown schedule run targets.
 - ECS semantic checking for unknown system resource parameters.
 - ECS semantic checking for unknown query components.
+- ECS semantic checking for conflicting query access.
 
-M12 ECS semantic verification is underway. The next proof is rejecting conflicting query access.
+M12 ECS semantic verification is complete. The next proof is defining the source-driven runtime program assembly model.
 
 ## What This Is Not Yet
 

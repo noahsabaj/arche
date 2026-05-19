@@ -1076,6 +1076,16 @@ try {
     Assert-OutputContains -Name "bad unknown query component diagnostic code" -Output $badUnknownQueryComponentOutput -ExpectedText "error[CHECK001]"
     Assert-OutputContains -Name "bad unknown query component diagnostic message" -Output $badUnknownQueryComponentOutput -ExpectedText 'unknown component `MissingComponent` in query'
 
+    $badConflictingQueryAccessOutput = @(Invoke-CommandExpectFailure `
+        -Name "archec0 tests/e2e/bad_conflicting_query_access.arc rejects conflicting query access" `
+        -Executable "cargo" `
+        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\tests\e2e\bad_conflicting_query_access.arc", "--check"))
+
+    Assert-OutputContains -Name "bad conflicting query access diagnostic path" -Output $badConflictingQueryAccessOutput -ExpectedText "bad_conflicting_query_access.arc"
+    Assert-OutputContains -Name "bad conflicting query access diagnostic location" -Output $badConflictingQueryAccessOutput -ExpectedText "10:14"
+    Assert-OutputContains -Name "bad conflicting query access diagnostic code" -Output $badConflictingQueryAccessOutput -ExpectedText "error[CHECK001]"
+    Assert-OutputContains -Name "bad conflicting query access diagnostic message" -Output $badConflictingQueryAccessOutput -ExpectedText 'conflicting query access for component `Position`'
+
     $e2eTests = @(Get-ChildItem -LiteralPath $e2eDir -Filter "*.ps1" -File | Sort-Object FullName)
     Write-Host "$($e2eTests.Count) e2e tests discovered"
 

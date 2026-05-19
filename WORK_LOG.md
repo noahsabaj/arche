@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M12 ECS semantic verification.
+**Current focus:** M13 source-driven runtime program assembly.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -121,7 +121,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M12-004 | Reject conflicting query access | `--check` rejects conflicting mutable/read component access within a system. |
+| M13-001 | Define runtime program assembly model | A runtime assembly data model can represent source-derived descriptors and startup operations without executing them. |
 
 ### Doing
 
@@ -210,6 +210,7 @@ Board rules:
 | M12-001 | Reject unknown schedule run target | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_unknown_schedule_run.arc --check` exited nonzero with `error[CHECK001]` at `bad_unknown_schedule_run.arc:7:9` and message ``unknown system `Missing` in schedule``; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the negative checker assertion included. This was checker-only: no Core, runtime, parser surface beyond diagnostic span plumbing, codegen, or executable behavior was added. Implementation commit: `9428010`. |
 | M12-002 | Reject unknown system resource parameter | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_unknown_resource_param.arc --check` exited nonzero with `error[CHECK001]` at `bad_unknown_resource_param.arc:3:24` and message ``unknown resource `MissingTime` in system parameter``; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the negative checker assertion included. This was checker-only: no Core, runtime, parser surface beyond diagnostic span plumbing, codegen, or executable behavior was added. Implementation commit: `3965c58`. |
 | M12-003 | Reject unknown query component | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_unknown_query_component.arc --check` exited nonzero with `error[CHECK001]` at `bad_unknown_query_component.arc:3:27` and message ``unknown component `MissingComponent` in query``; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the negative checker assertion included. This was checker-only: no Core, runtime, parser surface beyond diagnostic span plumbing, codegen, or executable behavior was added. Implementation commit: `a374ad2`. |
+| M12-004 | Reject conflicting query access | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_conflicting_query_access.arc --check` exited nonzero with `error[CHECK001]` at `bad_conflicting_query_access.arc:10:14` and message ``conflicting query access for component `Position``; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the negative checker assertion included. This was checker-only: no parser syntax changes, Core, runtime, scheduling, codegen, or executable behavior was added. M12 ECS semantic verification is complete. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -217,7 +218,11 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| - | - | Empty. |
+| M13-002 | Assemble component and resource descriptors from source | Source declarations become runtime descriptor assembly inputs. |
+| M13-003 | Assemble system, query, and schedule descriptors from source | Source ECS metadata becomes runtime descriptor assembly inputs. |
+| M13-004 | Assemble startup resource payload operation | Startup resource payload source becomes an assembly operation. |
+| M13-005 | Assemble startup spawn operation | Startup spawn source becomes an assembly operation. |
+| M13-006 | Assemble startup run operation | Startup `run Main` source becomes an assembly operation. |
 
 ## Milestones
 
@@ -1432,6 +1437,74 @@ cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\tests\e2e\bad_conf
 
 Done when `--check` rejects conflicting mutable/read component access within a system.
 
+### M13: Source-driven Runtime Program Assembly
+
+Purpose:
+
+```text
+Build a runtime program assembly model from parsed Arche source without executing it.
+```
+
+#### M13-001: Define runtime program assembly model
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_runtime_program_assembly_model
+```
+
+Done when runtime assembly data can represent source-derived descriptor roots and startup operation lists without constructing or executing a world.
+
+#### M13-002: Assemble component and resource descriptors from source
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml assembles_component_and_resource_descriptors_from_source
+```
+
+Done when source component/resource declarations produce runtime descriptor assembly records.
+
+#### M13-003: Assemble system, query, and schedule descriptors from source
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml assembles_system_query_and_schedule_descriptors_from_source
+```
+
+Done when source systems, queries, and schedules produce runtime descriptor assembly records.
+
+#### M13-004: Assemble startup resource payload operation
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml assembles_startup_resource_payload_operation
+```
+
+Done when startup resource literals produce assembly operations without executing them.
+
+#### M13-005: Assemble startup spawn operation
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml assembles_startup_spawn_operation
+```
+
+Done when startup spawn literals produce assembly operations without inserting rows.
+
+#### M13-006: Assemble startup run operation
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml assembles_startup_run_operation
+```
+
+Done when startup `run Main` source produces an assembly operation without schedule execution.
+
 ## Daily Workflow
 
 Each work session:
@@ -1478,18 +1551,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M12-003 stayed checker-only | 99/100 |
-| `bad_unknown_query_component.arc --check` proves unknown query components are rejected | 99/100 |
+| M12-004 stayed checker-only | 99/100 |
+| `bad_conflicting_query_access.arc --check` proves conflicting query access is rejected | 99/100 |
 | Existing M0-M12 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state promotes M12-004 and leaves Backlog empty | 98/100 |
-| Active inventory keeps only one Ready issue and no Doing work | 99/100 |
+| Board state marks M12 complete and starts controlled M13 assembly work | 98/100 |
+| Active inventory promotes only M13-001 and keeps the M13 backlog limited to M13-002 through M13-006 | 98/100 |
 
 Weighted confidence: 99/100.
 
 Verification pass:
 
-- The active board has only `M12-004` in `Ready`.
+- The active board has only `M13-001` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, M12-001, M12-002, and M12-003.
-- Detailed active inventory includes M11-001 through M11-006 and M12-001 through M12-004 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, and M11 schedules are complete. M12 ECS semantic verification is underway, with unknown schedule run targets, unknown system resource parameters, and unknown query components rejected; conflicting query access is next.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, and completed M12.
+- Detailed active inventory includes M12-001 through M12-004 and M13-001 through M13-006 only.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, and M12 ECS semantic verification are complete. M13 source-driven runtime program assembly begins with the runtime program model next.
