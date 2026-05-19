@@ -51,8 +51,9 @@ The proof chain currently demonstrates:
 - ECS semantic checking for conflicting query access.
 - A non-executing runtime program assembly model for descriptor roots and startup operations.
 - Source assembly for component and resource descriptors.
+- Source assembly for system, query, and schedule descriptors.
 
-M13 source-driven runtime program assembly is underway. The next proof is assembling system, query, and schedule descriptors from source.
+M13 source-driven runtime program assembly is underway. The next proof is assembling startup resource payload operations from source.
 
 ## What This Is Not Yet
 

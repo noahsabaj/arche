@@ -1,11 +1,16 @@
 #![allow(dead_code)]
 
 use crate::layout::{self, ComponentId};
-use crate::parser::{ComponentDecl, Program, ResourceDecl};
+use crate::parser::{
+    ComponentDecl, Program, QueryAccess as ParserQueryAccess, ResourceDecl, ScheduleDecl,
+    ScheduleItem, SystemDecl, SystemParam, SystemParamKind,
+};
 use crate::runtime::{
-    stable_resource_id, ComponentDescriptor, ComponentFieldDescriptor, QueryDescriptor,
+    stable_query_id, stable_resource_id, stable_schedule_id, stable_system_id, ComponentDescriptor,
+    ComponentFieldDescriptor, QueryAccess, QueryDescriptor, QueryTermDescriptor,
     ResourceDescriptor, ResourceFieldDescriptor, ResourceId, ScheduleDescriptor, ScheduleId,
-    SystemDescriptor,
+    ScheduleItemDescriptor, SystemAccess, SystemDescriptor, SystemParamDescriptor,
+    SystemParamDescriptorKind, SystemQueryTermDescriptor,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,6 +66,21 @@ pub fn assemble_runtime_program_from_source(
         .iter()
         .map(|resource| assemble_resource_descriptor(&program.world.name, resource))
         .collect::<Result<Vec<_>, _>>()?;
+    assembly.system_descriptors = program
+        .systems
+        .iter()
+        .map(|system| assemble_system_descriptor(&program.world.name, system))
+        .collect();
+    assembly.query_descriptors = program
+        .systems
+        .iter()
+        .flat_map(|system| assemble_query_descriptors(&program.world.name, system))
+        .collect();
+    assembly.schedule_descriptors = program
+        .schedules
+        .iter()
+        .map(|schedule| assemble_schedule_descriptor(&program.world.name, schedule))
+        .collect();
 
     Ok(assembly)
 }
@@ -102,6 +122,102 @@ fn assemble_resource_descriptor(
         align: resource_layout.align,
         fields: resource_layout.fields,
     })
+}
+
+fn assemble_system_descriptor(world_name: &str, system: &SystemDecl) -> SystemDescriptor {
+    SystemDescriptor {
+        id: stable_system_id(world_name, &system.name),
+        name: qualified_name(world_name, &system.name),
+        params: system
+            .params
+            .iter()
+            .map(|param| assemble_system_param_descriptor(world_name, param))
+            .collect(),
+    }
+}
+
+fn assemble_system_param_descriptor(
+    world_name: &str,
+    param: &SystemParam,
+) -> SystemParamDescriptor {
+    SystemParamDescriptor {
+        name: param.name.clone(),
+        kind: match &param.kind {
+            SystemParamKind::ReadResource { resource_name, .. } => {
+                SystemParamDescriptorKind::ReadResource {
+                    resource_id: stable_resource_id(world_name, resource_name),
+                    name: qualified_name(world_name, resource_name),
+                }
+            }
+            SystemParamKind::Query { terms } => SystemParamDescriptorKind::Query {
+                terms: terms
+                    .iter()
+                    .map(|term| SystemQueryTermDescriptor {
+                        access: assemble_system_access(term.access),
+                        component_id: layout::stable_component_id(world_name, &term.component_name),
+                        name: layout::component_qualified_name(world_name, &term.component_name),
+                    })
+                    .collect(),
+            },
+        },
+    }
+}
+
+fn assemble_query_descriptors(world_name: &str, system: &SystemDecl) -> Vec<QueryDescriptor> {
+    system
+        .params
+        .iter()
+        .filter_map(|param| match &param.kind {
+            SystemParamKind::Query { terms } => Some(QueryDescriptor {
+                id: stable_query_id(world_name, &system.name, &param.name),
+                name: format!(
+                    "{}.{}",
+                    qualified_name(world_name, &system.name),
+                    param.name
+                ),
+                terms: terms
+                    .iter()
+                    .map(|term| QueryTermDescriptor {
+                        access: assemble_query_access(term.access),
+                        component_id: layout::stable_component_id(world_name, &term.component_name),
+                        name: layout::component_qualified_name(world_name, &term.component_name),
+                    })
+                    .collect(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+fn assemble_schedule_descriptor(world_name: &str, schedule: &ScheduleDecl) -> ScheduleDescriptor {
+    ScheduleDescriptor {
+        id: stable_schedule_id(world_name, &schedule.name),
+        name: qualified_name(world_name, &schedule.name),
+        items: schedule
+            .items
+            .iter()
+            .map(|item| match item {
+                ScheduleItem::Run { system_name, .. } => ScheduleItemDescriptor::Run {
+                    system_id: stable_system_id(world_name, system_name),
+                    system_name: qualified_name(world_name, system_name),
+                },
+            })
+            .collect(),
+    }
+}
+
+fn assemble_system_access(access: ParserQueryAccess) -> SystemAccess {
+    match access {
+        ParserQueryAccess::Read => SystemAccess::Read,
+        ParserQueryAccess::Mut => SystemAccess::Mut,
+    }
+}
+
+fn assemble_query_access(access: ParserQueryAccess) -> QueryAccess {
+    match access {
+        ParserQueryAccess::Read => QueryAccess::Read,
+        ParserQueryAccess::Mut => QueryAccess::Mut,
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -428,16 +544,60 @@ mod tests {
         let assembly =
             assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
 
+        assert_eq!(assembly.world_name, "Demo");
+        assert_eq!(
+            assembly.component_descriptors,
+            vec![
+                xy_component_descriptor(ComponentId(0x002202c6aeb4f27b), "Demo.Position"),
+                xy_component_descriptor(ComponentId(0x2cf8a68bcb7f913b), "Demo.Velocity"),
+            ]
+        );
+        assert_eq!(
+            assembly.resource_descriptors,
+            vec![ResourceDescriptor {
+                id: ResourceId(0x7924ce11db524521),
+                name: "Demo.Time".to_string(),
+                size: 4,
+                align: 4,
+                fields: vec![ResourceFieldDescriptor {
+                    name: "delta".to_string(),
+                    type_name: "f32".to_string(),
+                    offset: 0,
+                }],
+            }]
+        );
+        assert!(!assembly.is_empty());
+        assert_eq!(assembly.system_descriptors.len(), 1);
+        assert_eq!(assembly.query_descriptors.len(), 1);
+        assert_eq!(assembly.schedule_descriptors.len(), 1);
+        assert!(assembly.startup_operations.is_empty());
+    }
+
+    #[test]
+    fn assembles_system_query_and_schedule_descriptors_from_source() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let time_id = ResourceId(0x7924ce11db524521);
+        let move_id = stable_system_id("Demo", "Move");
+        let movers_id = stable_query_id("Demo", "Move", "movers");
+        let main_id = stable_schedule_id("Demo", "Main");
+
         assert_eq!(
             assembly,
             RuntimeProgramAssembly {
                 world_name: "Demo".to_string(),
                 component_descriptors: vec![
-                    xy_component_descriptor(ComponentId(0x002202c6aeb4f27b), "Demo.Position"),
-                    xy_component_descriptor(ComponentId(0x2cf8a68bcb7f913b), "Demo.Velocity"),
+                    xy_component_descriptor(position_id, "Demo.Position"),
+                    xy_component_descriptor(velocity_id, "Demo.Velocity"),
                 ],
                 resource_descriptors: vec![ResourceDescriptor {
-                    id: ResourceId(0x7924ce11db524521),
+                    id: time_id,
                     name: "Demo.Time".to_string(),
                     size: 4,
                     align: 4,
@@ -447,16 +607,64 @@ mod tests {
                         offset: 0,
                     }],
                 }],
-                system_descriptors: Vec::new(),
-                query_descriptors: Vec::new(),
-                schedule_descriptors: Vec::new(),
+                system_descriptors: vec![SystemDescriptor {
+                    id: move_id,
+                    name: "Demo.Move".to_string(),
+                    params: vec![
+                        SystemParamDescriptor {
+                            name: "time".to_string(),
+                            kind: SystemParamDescriptorKind::ReadResource {
+                                resource_id: time_id,
+                                name: "Demo.Time".to_string(),
+                            },
+                        },
+                        SystemParamDescriptor {
+                            name: "movers".to_string(),
+                            kind: SystemParamDescriptorKind::Query {
+                                terms: vec![
+                                    SystemQueryTermDescriptor {
+                                        access: SystemAccess::Mut,
+                                        component_id: position_id,
+                                        name: "Demo.Position".to_string(),
+                                    },
+                                    SystemQueryTermDescriptor {
+                                        access: SystemAccess::Read,
+                                        component_id: velocity_id,
+                                        name: "Demo.Velocity".to_string(),
+                                    },
+                                ],
+                            },
+                        },
+                    ],
+                }],
+                query_descriptors: vec![QueryDescriptor {
+                    id: movers_id,
+                    name: "Demo.Move.movers".to_string(),
+                    terms: vec![
+                        QueryTermDescriptor {
+                            access: QueryAccess::Mut,
+                            component_id: position_id,
+                            name: "Demo.Position".to_string(),
+                        },
+                        QueryTermDescriptor {
+                            access: QueryAccess::Read,
+                            component_id: velocity_id,
+                            name: "Demo.Velocity".to_string(),
+                        },
+                    ],
+                }],
+                schedule_descriptors: vec![ScheduleDescriptor {
+                    id: main_id,
+                    name: "Demo.Main".to_string(),
+                    items: vec![ScheduleItemDescriptor::Run {
+                        system_id: move_id,
+                        system_name: "Demo.Move".to_string(),
+                    }],
+                }],
                 startup_operations: Vec::new(),
             }
         );
         assert!(!assembly.is_empty());
-        assert!(assembly.system_descriptors.is_empty());
-        assert!(assembly.query_descriptors.is_empty());
-        assert!(assembly.schedule_descriptors.is_empty());
         assert!(assembly.startup_operations.is_empty());
     }
 

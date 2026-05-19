@@ -549,6 +549,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_component_and_resource_descriptors_from_source")
 
     Invoke-CheckedCommand `
+        -Name "assembles_system_query_and_schedule_descriptors_from_source" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_system_query_and_schedule_descriptors_from_source")
+
+    Invoke-CheckedCommand `
         -Name "arche_entity_packs_index_and_generation" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "arche_entity_packs_index_and_generation")
