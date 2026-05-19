@@ -30,6 +30,7 @@ schedule Main {
 }
 
 startup {
+    resource Time { delta: 1.0 }
     run Main
     exit 0
 }

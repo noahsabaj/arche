@@ -52,8 +52,9 @@ The proof chain currently demonstrates:
 - A non-executing runtime program assembly model for descriptor roots and startup operations.
 - Source assembly for component and resource descriptors.
 - Source assembly for system, query, and schedule descriptors.
+- Source assembly for startup resource payload operations.
 
-M13 source-driven runtime program assembly is underway. The next proof is assembling startup resource payload operations from source.
+M13 source-driven runtime program assembly is underway. The next proof is assembling startup spawn operations from source.
 
 ## What This Is Not Yet
 

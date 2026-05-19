@@ -554,6 +554,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_system_query_and_schedule_descriptors_from_source")
 
     Invoke-CheckedCommand `
+        -Name "assembles_startup_resource_payload_operation" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_startup_resource_payload_operation")
+
+    Invoke-CheckedCommand `
         -Name "arche_entity_packs_index_and_generation" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "arche_entity_packs_index_and_generation")
@@ -930,6 +935,9 @@ try {
             "  schedule Main",
             "    run Move",
             "  startup",
+            "    resource Time",
+            "      field delta",
+            "        float 1.0",
             "    run Main",
             "    exit",
             "      integer 0"
