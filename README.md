@@ -77,8 +77,9 @@ The proof chain currently demonstrates:
 - Core text emission for the lowered `Demo.Move` query loop in `move_system.arc --emit-core`.
 - A generated-native query-loop observable for the supported `Demo.Move` Core body.
 - A generated-native row-scan skeleton for the bootstrap `Demo.Position + Demo.Velocity` row.
+- Generated-native field loading and `f32` multiplication for `Velocity * Time.delta`.
 
-M18 native codegen for compiled query loops is underway. The next proof is native field loading and `f32` multiplication from startup row state.
+M18 native codegen for compiled query loops is underway. The next proof is native `Position` field stores from computed query-loop products.
 
 ## What This Is Not Yet
 
