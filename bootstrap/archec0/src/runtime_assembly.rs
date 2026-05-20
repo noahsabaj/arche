@@ -3,8 +3,8 @@
 use crate::layout::{self, ComponentId};
 use crate::parser::{
     ComponentDecl, ComponentLiteralValue, Program, QueryAccess as ParserQueryAccess, ResourceDecl,
-    ResourceStatement, ScheduleDecl, ScheduleItem, SpawnStatement, Statement, SystemDecl,
-    SystemParam, SystemParamKind,
+    ResourceStatement, RunStatement, ScheduleDecl, ScheduleItem, SpawnStatement, Statement,
+    SystemDecl, SystemParam, SystemParamKind,
 };
 use crate::runtime::{
     stable_query_id, stable_resource_id, stable_schedule_id, stable_system_id, ComponentDescriptor,
@@ -87,6 +87,7 @@ pub fn assemble_runtime_program_from_source(
             &program.world.name,
             &assembly.component_descriptors,
             &assembly.resource_descriptors,
+            &assembly.schedule_descriptors,
             &startup.statements,
         )?;
     }
@@ -233,6 +234,7 @@ fn assemble_startup_operations(
     world_name: &str,
     components: &[ComponentDescriptor],
     resources: &[ResourceDescriptor],
+    schedules: &[ScheduleDescriptor],
     statements: &[Statement],
 ) -> Result<Vec<StartupOperation>, RuntimeAssemblyError> {
     let mut operations = Vec::new();
@@ -246,6 +248,9 @@ fn assemble_startup_operations(
             }
             Statement::Spawn(spawn) => {
                 operations.push(assemble_spawn_operation(world_name, components, spawn)?);
+            }
+            Statement::Run(run) => {
+                operations.push(assemble_run_schedule_operation(world_name, schedules, run)?);
             }
             _ => {}
         }
@@ -375,6 +380,23 @@ fn assemble_spawn_operation(
 
     Ok(StartupOperation::Spawn {
         components: operation_components,
+    })
+}
+
+fn assemble_run_schedule_operation(
+    world_name: &str,
+    schedules: &[ScheduleDescriptor],
+    run: &RunStatement,
+) -> Result<StartupOperation, RuntimeAssemblyError> {
+    let schedule_name = qualified_name(world_name, &run.schedule_name);
+    let descriptor = schedules
+        .iter()
+        .find(|descriptor| descriptor.name == schedule_name)
+        .ok_or_else(|| assembly_error(format!("unknown schedule `{}`", run.schedule_name)))?;
+
+    Ok(StartupOperation::RunSchedule {
+        schedule_id: descriptor.id,
+        schedule_name,
     })
 }
 
@@ -836,14 +858,53 @@ mod tests {
                 payload_bytes: vec![0x00, 0x00, 0x80, 0x3f],
             })
         );
-        assert!(!assembly
-            .startup_operations
-            .iter()
-            .any(|operation| matches!(operation, StartupOperation::RunSchedule { .. })));
+        assert_eq!(assembly.startup_operations.len(), 3);
     }
 
     #[test]
     fn assembles_startup_spawn_operation() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+
+        assert_eq!(assembly.component_descriptors.len(), 2);
+        assert_eq!(assembly.resource_descriptors.len(), 1);
+        assert_eq!(assembly.system_descriptors.len(), 1);
+        assert_eq!(assembly.query_descriptors.len(), 1);
+        assert_eq!(assembly.schedule_descriptors.len(), 1);
+        assert_eq!(assembly.startup_operations.len(), 3);
+        assert_eq!(
+            &assembly.startup_operations[0],
+            &StartupOperation::ResourcePayload {
+                resource_id: ResourceId(0x7924ce11db524521),
+                resource_name: "Demo.Time".to_string(),
+                payload_bytes: vec![0x00, 0x00, 0x80, 0x3f],
+            }
+        );
+        assert_eq!(
+            &assembly.startup_operations[1],
+            &StartupOperation::Spawn {
+                components: vec![
+                    StartupSpawnComponent {
+                        component_id: ComponentId(0x002202c6aeb4f27b),
+                        component_name: "Demo.Position".to_string(),
+                        payload_bytes: vec![0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40,],
+                    },
+                    StartupSpawnComponent {
+                        component_id: ComponentId(0x2cf8a68bcb7f913b),
+                        component_name: "Demo.Velocity".to_string(),
+                        payload_bytes: vec![0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40,],
+                    },
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn assembles_startup_run_operation() {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
         let program = parser::parse_program(&tokens).expect("move_system.arc parses");
@@ -877,6 +938,10 @@ mod tests {
                             payload_bytes: vec![0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40,],
                         },
                     ],
+                },
+                StartupOperation::RunSchedule {
+                    schedule_id: ScheduleId(0xed3d905325519b05),
+                    schedule_name: "Demo.Main".to_string(),
                 },
             ]
         );
