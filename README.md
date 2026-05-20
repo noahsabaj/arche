@@ -73,8 +73,9 @@ The proof chain currently demonstrates:
 - A non-executing Core system body model for the future `Demo.Move` query loop.
 - Core lowering for query-loop skeletons, starting with `for (pos, vel) in movers`.
 - Core lowering for query-loop field expressions and `f32` multiplication, starting with `vel * time.delta`.
+- Core lowering for add-assign/update statements inside query loops, starting with `pos.x += vel.x * time.delta`.
 
-M16 native executable source-level ECS startup is complete. M17 Core system-body lowering is underway; the next proof is lowering add-assign/update statements.
+M16 native executable source-level ECS startup is complete. M17 Core system-body lowering is underway; the next proof is emitting the Core query loop for `move_system`.
 
 ## What This Is Not Yet
 

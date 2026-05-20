@@ -7,7 +7,7 @@ use crate::core::{
     CoreQueryAccess, CoreQueryLoop, CoreQueryLoopBinding, CoreQueryTerm, CoreSchedule,
     CoreScheduleItem, CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreSystem,
     CoreSystemBinaryOp, CoreSystemBody, CoreSystemExpression, CoreSystemParam, CoreSystemParamKind,
-    CoreSystemStatement, CoreTerminator, CoreType, CoreWorld, LocalId, ValueId,
+    CoreSystemPlace, CoreSystemStatement, CoreTerminator, CoreType, CoreWorld, LocalId, ValueId,
 };
 use crate::layout;
 use crate::parser::{
@@ -122,6 +122,11 @@ fn lower_system_body(
     for statement in &system.body.statements {
         match statement {
             SystemBodyStatement::Expression(_) => {}
+            SystemBodyStatement::AddAssign(_) => {
+                return Err(lower_error(
+                    "top-level system add-assign lowering is not supported yet",
+                ));
+            }
             SystemBodyStatement::QueryLoop(query_loop) => {
                 statements.push(CoreSystemStatement::QueryLoop(lower_system_query_loop(
                     params, query_loop,
@@ -194,6 +199,12 @@ fn lower_system_query_loop_body(
                 lowered.push(CoreSystemStatement::Expression(lower_system_expression(
                     params, bindings, expression,
                 )?));
+            }
+            SystemBodyStatement::AddAssign(add_assign) => {
+                lowered.push(CoreSystemStatement::AddAssign {
+                    target: lower_system_place(bindings, &add_assign.target)?,
+                    value: lower_system_expression(params, bindings, &add_assign.value)?,
+                });
             }
             SystemBodyStatement::QueryLoop(_) => {
                 return Err(lower_error(
@@ -278,6 +289,40 @@ fn lower_system_field_access(
     Err(lower_error(format!(
         "unknown system body field target `{name}`"
     )))
+}
+
+fn lower_system_place(
+    bindings: &[CoreQueryLoopBinding],
+    expression: &Expression,
+) -> Result<CoreSystemPlace, CoreLowerError> {
+    let Expression::FieldAccess {
+        target, field_name, ..
+    } = expression
+    else {
+        return Err(lower_error("add-assign target must be a component field"));
+    };
+    let Expression::Identifier { name, .. } = &**target else {
+        return Err(lower_error(
+            "add-assign target must be a direct component binding field",
+        ));
+    };
+
+    let binding = bindings
+        .iter()
+        .find(|binding| binding.name == *name)
+        .ok_or_else(|| lower_error(format!("unknown add-assign target `{name}`")))?;
+    if binding.access != CoreQueryAccess::Mut {
+        return Err(lower_error(format!(
+            "add-assign target `{name}` is not mutable"
+        )));
+    }
+
+    Ok(CoreSystemPlace::ComponentField {
+        binding: binding.name.clone(),
+        component_id: binding.component_id,
+        component_name: binding.component_name.clone(),
+        field_name: field_name.clone(),
+    })
 }
 
 fn lower_system_param(
@@ -585,7 +630,7 @@ mod tests {
         CoreQueryAccess, CoreQueryLoopBinding, CoreQueryTerm, CoreSchedule, CoreScheduleItem,
         CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemBinaryOp,
         CoreSystemBody, CoreSystemExpression, CoreSystemParam, CoreSystemParamKind,
-        CoreSystemStatement,
+        CoreSystemPlace, CoreSystemStatement,
     };
     use crate::lexer;
     use crate::parser;
@@ -913,6 +958,102 @@ startup {
             startup.terminator,
             CoreTerminator::Exit { value: ValueId(0) }
         );
+    }
+
+    #[test]
+    fn lowers_query_loop_add_assign_to_core_body() {
+        let source = r#"
+world Demo
+
+component Position {
+    x: f32
+    y: f32
+}
+
+component Velocity {
+    x: f32
+    y: f32
+}
+
+resource Time {
+    delta: f32
+}
+
+system Move(
+    time: read Time,
+    movers: query[mut Position, Velocity]
+) {
+    for (pos, vel) in movers {
+        pos.x += vel.x * time.delta
+        pos.y += vel.y * time.delta
+    }
+}
+
+startup {
+    exit 0
+}
+"#;
+        let tokens = lexer::lex(source).expect("query-loop update fixture lexes");
+        let ast = parser::parse_program(&tokens).expect("query-loop update fixture parses");
+        let actual = lower_program_to_core(&ast).expect("query-loop update fixture lowers to Core");
+
+        assert_eq!(actual.systems.len(), 1);
+        let system = &actual.systems[0];
+        assert_eq!(system.body.statements.len(), 1);
+        let CoreSystemStatement::QueryLoop(query_loop) = &system.body.statements[0] else {
+            panic!("expected query loop");
+        };
+
+        assert_eq!(query_loop.query_param, "movers");
+        assert_eq!(
+            query_loop.bindings,
+            vec![
+                CoreQueryLoopBinding {
+                    name: "pos".to_string(),
+                    component_id: 0x002202c6aeb4f27b,
+                    component_name: "Demo.Position".to_string(),
+                    access: CoreQueryAccess::Mut,
+                },
+                CoreQueryLoopBinding {
+                    name: "vel".to_string(),
+                    component_id: 0x2cf8a68bcb7f913b,
+                    component_name: "Demo.Velocity".to_string(),
+                    access: CoreQueryAccess::Read,
+                },
+            ]
+        );
+        assert_eq!(
+            query_loop.body,
+            vec![
+                move_position_add_assign("x", "x"),
+                move_position_add_assign("y", "y"),
+            ]
+        );
+
+        let startup = &actual.functions[0].blocks[0];
+        assert_eq!(
+            startup.instructions,
+            vec![CoreInstruction::I32Const {
+                result: ValueId(0),
+                value: 0,
+            }]
+        );
+        assert_eq!(
+            startup.terminator,
+            CoreTerminator::Exit { value: ValueId(0) }
+        );
+    }
+
+    fn move_position_add_assign(position_field: &str, velocity_field: &str) -> CoreSystemStatement {
+        CoreSystemStatement::AddAssign {
+            target: CoreSystemPlace::ComponentField {
+                binding: "pos".to_string(),
+                component_id: 0x002202c6aeb4f27b,
+                component_name: "Demo.Position".to_string(),
+                field_name: position_field.to_string(),
+            },
+            value: move_velocity_delta_expression(velocity_field),
+        }
     }
 
     fn move_velocity_delta_expression(velocity_field: &str) -> CoreSystemExpression {

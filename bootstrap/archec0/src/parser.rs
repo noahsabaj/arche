@@ -87,6 +87,7 @@ pub struct SystemBody {
 pub enum SystemBodyStatement {
     Expression(Expression),
     QueryLoop(SystemQueryLoopStatement),
+    AddAssign(SystemAddAssignStatement),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -101,6 +102,12 @@ pub struct SystemQueryLoopStatement {
 pub struct SystemQueryLoopBinding {
     pub name: String,
     pub span: Span,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemAddAssignStatement {
+    pub target: Expression,
+    pub value: Expression,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -412,7 +419,18 @@ impl Parser<'_> {
                 .map(SystemBodyStatement::QueryLoop);
         }
 
-        let expression = self.parse_expression_with_message("expected system body expression")?;
+        let expression = self.parse_field_access_expression("expected system body expression")?;
+        if self.peek().kind == TokenKind::Plus && self.peek_next().kind == TokenKind::Equal {
+            self.advance();
+            self.advance();
+            let value = self.parse_expression_with_message("expected expression after `+=`")?;
+            return Ok(SystemBodyStatement::AddAssign(SystemAddAssignStatement {
+                target: expression,
+                value,
+            }));
+        }
+
+        let expression = self.parse_expression_tail(expression)?;
         Ok(SystemBodyStatement::Expression(expression))
     }
 
@@ -827,7 +845,10 @@ impl Parser<'_> {
 
     fn parse_expression_with_message(&mut self, message: &str) -> Result<Expression, ParseError> {
         let left = self.parse_field_access_expression(message)?;
+        self.parse_expression_tail(left)
+    }
 
+    fn parse_expression_tail(&mut self, left: Expression) -> Result<Expression, ParseError> {
         if let Some(operator) = self.match_binary_operator() {
             let message = format!("expected expression after `{operator}`");
             let right = self.parse_field_access_expression(&message)?;
@@ -965,6 +986,13 @@ impl Parser<'_> {
     fn peek(&self) -> &Token {
         self.tokens
             .get(self.current)
+            .or_else(|| self.tokens.last())
+            .expect("lexer always emits EOF token")
+    }
+
+    fn peek_next(&self) -> &Token {
+        self.tokens
+            .get(self.current + 1)
             .or_else(|| self.tokens.last())
             .expect("lexer always emits EOF token")
     }
@@ -1259,6 +1287,15 @@ fn write_system_body_statement(
                 }
                 Ok(())
             }
+        }
+        SystemBodyStatement::AddAssign(add_assign) => {
+            writeln!(formatter)?;
+            writeln!(formatter, "{indent}add_assign")?;
+            writeln!(formatter, "{indent}  target")?;
+            write_expression(formatter, &add_assign.target, &format!("{indent}    "))?;
+            writeln!(formatter)?;
+            writeln!(formatter, "{indent}  value")?;
+            write_expression(formatter, &add_assign.value, &format!("{indent}    "))
         }
     }
 }
