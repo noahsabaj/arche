@@ -51,7 +51,8 @@ const ECS_METADATA_FAILURE_EXIT_CODE: u8 = 16;
 const ECS_STARTUP_STATE_FAILURE_EXIT_CODE: u8 = 17;
 const ECS_QUERY_LOOP_SCAN_FAILURE_EXIT_CODE: u8 = 18;
 const ECS_QUERY_LOOP_FIELD_MATH_FAILURE_EXIT_CODE: u8 = 19;
-const ECS_QUERY_LOOP_FIELD_MATH_SUCCESS_EXIT_CODE: u8 = 45;
+const ECS_QUERY_LOOP_POSITION_STORE_FAILURE_EXIT_CODE: u8 = 20;
+const ECS_QUERY_LOOP_POSITION_STORE_SUCCESS_EXIT_CODE: u8 = 46;
 const ECS_STARTUP_SECTION_DIRECTORY_OFFSET: usize = 16 + 5 * 16;
 const ECS_SECTION_OFFSET_FIELD_OFFSET: usize = 4;
 const ECS_SECTION_RECORD_COUNT_FIELD_OFFSET: usize = 12;
@@ -535,6 +536,7 @@ fn ecs_metadata_decoder_body(
     let mut jump_to_startup_state_failure_offsets = Vec::new();
     let mut jump_to_query_loop_scan_failure_offsets = Vec::new();
     let mut jump_to_query_loop_field_math_failure_offsets = Vec::new();
+    let mut jump_to_query_loop_position_store_failure_offsets = Vec::new();
 
     bytes.extend_from_slice(&[0x48, 0x8d, 0x35, 0x00, 0x00, 0x00, 0x00]); // lea rsi, [rip + metadata]
 
@@ -639,7 +641,15 @@ fn ecs_metadata_decoder_body(
         &mut jump_to_query_loop_field_math_failure_offsets,
     );
 
-    move_edi_exit_code(&mut bytes, ECS_QUERY_LOOP_FIELD_MATH_SUCCESS_EXIT_CODE);
+    emit_query_loop_position_stores(&mut bytes);
+    compare_stack_slot_to_u64(
+        &mut bytes,
+        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+        u64::from_le_bytes(query_loop_observable.target_position_payload),
+        &mut jump_to_query_loop_position_store_failure_offsets,
+    );
+
+    move_edi_exit_code(&mut bytes, ECS_QUERY_LOOP_POSITION_STORE_SUCCESS_EXIT_CODE);
 
     let jump_to_done_offset = bytes.len();
     bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
@@ -661,6 +671,11 @@ fn ecs_metadata_decoder_body(
 
     let query_loop_field_math_failure_offset = bytes.len();
     move_edi_exit_code(&mut bytes, ECS_QUERY_LOOP_FIELD_MATH_FAILURE_EXIT_CODE);
+    let jump_from_query_loop_field_math_failure_to_done_offset = bytes.len();
+    bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
+
+    let query_loop_position_store_failure_offset = bytes.len();
+    move_edi_exit_code(&mut bytes, ECS_QUERY_LOOP_POSITION_STORE_FAILURE_EXIT_CODE);
     let done_offset = bytes.len();
 
     for jump_offset in jump_to_metadata_failure_offsets {
@@ -695,6 +710,14 @@ fn ecs_metadata_decoder_body(
             jump_offset + 6,
         );
     }
+    for jump_offset in jump_to_query_loop_position_store_failure_offsets {
+        patch_rel32(
+            &mut bytes,
+            jump_offset + 2,
+            query_loop_position_store_failure_offset,
+            jump_offset + 6,
+        );
+    }
     patch_rel32(
         &mut bytes,
         jump_to_done_offset + 1,
@@ -718,6 +741,12 @@ fn ecs_metadata_decoder_body(
         jump_from_query_loop_scan_failure_to_done_offset + 1,
         done_offset,
         jump_from_query_loop_scan_failure_to_done_offset + 5,
+    );
+    patch_rel32(
+        &mut bytes,
+        jump_from_query_loop_field_math_failure_to_done_offset + 1,
+        done_offset,
+        jump_from_query_loop_field_math_failure_to_done_offset + 5,
     );
 
     let metadata_displacement = (bytes.len() + RUNTIME_DESTROY_SUFFIX.len() - 7) as i32;
@@ -757,6 +786,18 @@ fn emit_query_loop_field_multiply(bytes: &mut Vec<u8>) {
     emit_movss_stack_from_xmm(bytes, ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT + 4, 0);
 }
 
+fn emit_query_loop_position_stores(bytes: &mut Vec<u8>) {
+    emit_movss_xmm_from_stack(bytes, 0, ECS_POSITION_PAYLOAD_STORAGE_SLOT);
+    emit_movss_xmm_from_stack(bytes, 1, ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT);
+    emit_addss_xmm(bytes, 0, 1);
+    emit_movss_stack_from_xmm(bytes, ECS_POSITION_PAYLOAD_STORAGE_SLOT, 0);
+
+    emit_movss_xmm_from_stack(bytes, 0, ECS_POSITION_PAYLOAD_STORAGE_SLOT + 4);
+    emit_movss_xmm_from_stack(bytes, 1, ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT + 4);
+    emit_addss_xmm(bytes, 0, 1);
+    emit_movss_stack_from_xmm(bytes, ECS_POSITION_PAYLOAD_STORAGE_SLOT + 4, 0);
+}
+
 fn emit_movss_xmm_from_stack(bytes: &mut Vec<u8>, xmm_register: u8, stack_slot: u8) {
     bytes.extend_from_slice(&[0xf3, 0x0f, 0x10]);
     bytes.push(0x44 | (xmm_register << 3));
@@ -771,6 +812,11 @@ fn emit_movss_stack_from_xmm(bytes: &mut Vec<u8>, stack_slot: u8, xmm_register: 
 
 fn emit_mulss_xmm(bytes: &mut Vec<u8>, destination_xmm_register: u8, source_xmm_register: u8) {
     bytes.extend_from_slice(&[0xf3, 0x0f, 0x59]);
+    bytes.push(0xc0 | (destination_xmm_register << 3) | source_xmm_register);
+}
+
+fn emit_addss_xmm(bytes: &mut Vec<u8>, destination_xmm_register: u8, source_xmm_register: u8) {
+    bytes.extend_from_slice(&[0xf3, 0x0f, 0x58]);
     bytes.push(0xc0 | (destination_xmm_register << 3) | source_xmm_register);
 }
 
@@ -1151,19 +1197,6 @@ mod tests {
                 &text,
                 &[
                     0xbf,
-                    ECS_QUERY_LOOP_FIELD_MATH_SUCCESS_EXIT_CODE,
-                    0x00,
-                    0x00,
-                    0x00
-                ],
-            ),
-            "generated text should expose the M18-003 field-math success code"
-        );
-        assert!(
-            contains_subsequence(
-                &text,
-                &[
-                    0xbf,
                     ECS_QUERY_LOOP_FIELD_MATH_FAILURE_EXIT_CODE,
                     0x00,
                     0x00,
@@ -1171,6 +1204,107 @@ mod tests {
                 ],
             ),
             "generated text should expose a field-math failure code"
+        );
+    }
+
+    #[test]
+    fn emits_native_query_loop_position_stores() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xf3,
+                    0x0f,
+                    0x10,
+                    0x44,
+                    0x24,
+                    ECS_POSITION_PAYLOAD_STORAGE_SLOT, // movss xmm0, dword ptr [rsp + 56]
+                    0xf3,
+                    0x0f,
+                    0x10,
+                    0x4c,
+                    0x24,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT, // movss xmm1, dword ptr [rsp + 88]
+                    0xf3,
+                    0x0f,
+                    0x58,
+                    0xc1, // addss xmm0, xmm1
+                    0xf3,
+                    0x0f,
+                    0x11,
+                    0x44,
+                    0x24,
+                    ECS_POSITION_PAYLOAD_STORAGE_SLOT, // movss dword ptr [rsp + 56], xmm0
+                ],
+            ),
+            "generated text should update Position.x from its computed product"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xf3,
+                    0x0f,
+                    0x10,
+                    0x44,
+                    0x24,
+                    ECS_POSITION_PAYLOAD_STORAGE_SLOT + 4, // movss xmm0, dword ptr [rsp + 60]
+                    0xf3,
+                    0x0f,
+                    0x10,
+                    0x4c,
+                    0x24,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT + 4, // movss xmm1, dword ptr [rsp + 92]
+                    0xf3,
+                    0x0f,
+                    0x58,
+                    0xc1, // addss xmm0, xmm1
+                    0xf3,
+                    0x0f,
+                    0x11,
+                    0x44,
+                    0x24,
+                    ECS_POSITION_PAYLOAD_STORAGE_SLOT + 4, // movss dword ptr [rsp + 60], xmm0
+                ],
+            ),
+            "generated text should update Position.y from its computed product"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_QUERY_LOOP_POSITION_STORE_SUCCESS_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "generated text should expose the M18-004 Position-store success code"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_QUERY_LOOP_POSITION_STORE_FAILURE_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "generated text should expose a Position-store failure code"
         );
     }
 

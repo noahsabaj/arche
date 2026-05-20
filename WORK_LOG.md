@@ -52,9 +52,9 @@ Source file -> parsed ECS program -> Arche Core -> runtime world -> schedule -> 
 
 Current missing links:
 
-- Native executable startup can validate embedded `ARCHEECS` metadata, register descriptor counts, apply the `Demo.Time` resource payload, create one bootstrap-native spawn row, expose a deterministic query-loop target observable, walk the bootstrap row count, and compute `Velocity * Time.delta`, but does not yet store `Position`, execute schedules, or run full query loops.
+- Native executable startup can validate embedded `ARCHEECS` metadata, register descriptor counts, apply the `Demo.Time` resource payload, create one bootstrap-native spawn row, expose a deterministic query-loop target observable, walk the bootstrap row count, compute `Velocity * Time.delta`, and store updated `Position`, but does not yet execute schedules or run full query loops.
 - `move_system.arc --emit-core` can print the lowered `Demo.Move` query-loop body.
-- Native generated row scan, field math, and field stores instead of runtime-only helper proofs.
+- The compiled native query-loop proof still needs to replace the temporary bootstrap `Move` helper path.
 
 ## Integration Debt
 
@@ -62,9 +62,9 @@ These are intentional gaps created by narrow proof milestones.
 
 Current gaps:
 
-- Generated native binaries can carry complete decoded `ARCHEECS` metadata, and native startup can validate its envelope, register descriptor counts, apply the first resource payload, create one spawn row, expose a Core-derived query-loop target observable, walk the bootstrap row count, and compute query-loop field products, but native startup does not yet execute schedule startup operations from it.
+- Generated native binaries can carry complete decoded `ARCHEECS` metadata, and native startup can validate its envelope, register descriptor counts, apply the first resource payload, create one spawn row, expose a Core-derived query-loop target observable, walk the bootstrap row count, compute query-loop field products, and store updated `Position`, but native startup does not yet execute schedule startup operations from it.
 - Source-level startup resource, spawn, and schedule execution now drives runtime ECS state, but not generated executable ECS state.
-- System declarations, query metadata, Core query-loop bodies, a native query-loop observable, a native row-scan skeleton, and native field product computation exist, but system bodies are not yet lowered into executable native store code.
+- System declarations, query metadata, Core query-loop bodies, a native query-loop observable, a native row-scan skeleton, native field product computation, and native `Position` stores exist, but the generated native proof still has not replaced the bootstrap helper path.
 - M10/M14 Move behavior is proven through a runtime application path, not a compiled source system body.
 - Runtime schedule execution is source-driven in tests, but not yet native executable behavior.
 
@@ -114,13 +114,13 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M18-004 | Emit native Position field stores | Native code can write updated `Position` fields into bootstrap row state. |
+| M18-005 | Replace bootstrap Move helper with compiled query loop proof | The native proof uses compiled query-loop code for `Demo.Move` instead of the bootstrap helper path. |
 
 ### Backlog
 
 | Issue | Title | Done when |
 |---|---|---|
-| M18-005 | Replace bootstrap Move helper with compiled query loop proof | The native proof uses compiled query-loop code for `Demo.Move` instead of the bootstrap helper path. |
+| - | - | Empty. |
 
 ### Doing
 
@@ -239,6 +239,7 @@ Board rules:
 | M18-001 | Define native query-loop codegen observable | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_native_move_query_loop_observable` passed, proving codegen can derive the supported `Demo.Move` query-loop observable from lowered Core, including `movers`, `pos -> mut Demo.Position`, `vel -> read Demo.Velocity`, `time -> Demo.Time`, the two supported `pos += vel * time.delta` updates, and target post-Move `Position` bytes `00 00 80 40 00 00 C0 40`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted unit proof and generated `move_system` now exiting `43` after startup-state validation while corrupt metadata still exits `16` and corrupt startup payloads still exit `17`. This was a native query-loop observable only: no row scan, field math emission, field stores, schedule execution, or bootstrap Move replacement was added. Implementation commit: `1281818b`. |
 | M18-002 | Emit native Position/Velocity row scan skeleton | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml emits_native_query_loop_row_scan_skeleton` passed, proving generated rich-ECS native text copies the bootstrap row count from `[rsp + 48]` into the scan-count slot `[rsp + 80]`, checks that exactly one row was scanned, and exposes row-scan success/failure exit codes; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted unit proof and generated `move_system` now exiting `44` after startup-state validation and row-scan skeleton completion while corrupt metadata still exits `16` and corrupt startup payloads still exit `17`. This was a native row-scan skeleton only: no field loads, `f32` multiply, `Position` stores, schedule execution, runtime/Core behavior, or bootstrap Move replacement was added. Implementation commit: `945fd460`. |
 | M18-003 | Emit native field load and f32 multiply | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml emits_native_query_loop_field_multiply` passed, proving generated rich-ECS native text loads `Demo.Velocity.x`, `Demo.Velocity.y`, and `Demo.Time.delta` from bootstrap stack state, uses two `mulss` operations to compute `Velocity * Time.delta`, stores the products in the scratch slot `[rsp + 88]`, and exposes field-math success/failure exit codes; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted unit proof and generated `move_system` now exiting `45` after startup-state validation, row-scan skeleton completion, and field-product verification while corrupt metadata still exits `16` and corrupt startup payloads still exit `17`. This was native field math only: no `Position` stores, schedule execution, runtime/Core behavior, or bootstrap Move replacement was added. Implementation commit: `55ef8850`. |
+| M18-004 | Emit native Position field stores | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml emits_native_query_loop_position_stores` passed, proving generated rich-ECS native text loads `Demo.Position` fields and computed products from bootstrap stack state, uses two `addss` operations, stores updated `Position.x` and `Position.y` back into `[rsp + 56]`, and exposes position-store success/failure exit codes; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted unit proof and generated `move_system` now exiting `46` after startup-state validation, row-scan skeleton completion, field-product verification, and updated `Position` verification while corrupt metadata still exits `16` and corrupt startup payloads still exit `17`. This was native `Position` store code only: no schedule execution, runtime/Core behavior, metadata format change, or full bootstrap Move helper replacement was added. Implementation commit: `PENDING`. |
 
 ## Milestones
 
@@ -1737,19 +1738,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M18-003 stayed native field-math only | 99/100 |
-| `tools/test.ps1` includes `emits_native_query_loop_field_multiply`, valid `move_system` exit `45`, and unchanged corrupt metadata/payload failure proofs | 99/100 |
+| M18-004 stayed native Position-store only | 99/100 |
+| `tools/test.ps1` includes `emits_native_query_loop_position_stores`, valid `move_system` exit `46`, and unchanged corrupt metadata/payload failure proofs | 99/100 |
 | Existing M0-M17 parser, runtime unit, layout, Core, executable, component metadata, ECS metadata, diagnostic, native startup, and e2e proofs remain passing | 98/100 |
-| Board state marks M18-003 complete and promotes M18-004 as the next proof | 98/100 |
-| M18 backlog remains constrained to native store and replacement proofs only | 97/100 |
+| Board state marks M18-004 complete and promotes M18-005 as the next proof | 98/100 |
+| M18 backlog is empty except for the active replacement proof now in Ready | 97/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M18-004` in `Ready`.
+- The active board has only `M18-005` in `Ready`.
 - `Doing` is empty.
-- `Backlog` contains only M18-005.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, and M18-001 through M18-003.
+- `Backlog` is empty.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, and M18-001 through M18-004.
 - Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, M16-001 through M16-005, M17-001 through M17-005, and M18-001 through M18-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, M18-001 native query-loop observable, M18-002 native row-scan skeleton, and M18-003 native field loading and `f32` multiply are complete. M18-004 native `Position` field stores are next.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, M18-001 native query-loop observable, M18-002 native row-scan skeleton, M18-003 native field loading and `f32` multiply, and M18-004 native `Position` field stores are complete. M18-005 replacing the bootstrap Move helper path is next.

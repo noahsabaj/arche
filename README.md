@@ -78,8 +78,9 @@ The proof chain currently demonstrates:
 - A generated-native query-loop observable for the supported `Demo.Move` Core body.
 - A generated-native row-scan skeleton for the bootstrap `Demo.Position + Demo.Velocity` row.
 - Generated-native field loading and `f32` multiplication for `Velocity * Time.delta`.
+- Generated-native `Position` field stores for the bootstrap `Demo.Move` query-loop body.
 
-M18 native codegen for compiled query loops is underway. The next proof is native `Position` field stores from computed query-loop products.
+M18 native codegen for compiled query loops is underway. The next proof is replacing the bootstrap `Move` helper path with the compiled query-loop proof.
 
 ## What This Is Not Yet
 
