@@ -31,8 +31,14 @@ pub struct CodegenError {
 
 const ECS_METADATA_ENVELOPE_SIZE: usize = 112;
 const ECS_METADATA_FAILURE_EXIT_CODE: u8 = 16;
+const ECS_STARTUP_SECTION_DIRECTORY_OFFSET: usize = 16 + 5 * 16;
+const ECS_SECTION_OFFSET_FIELD_OFFSET: usize = 4;
+const ECS_SECTION_RECORD_COUNT_FIELD_OFFSET: usize = 12;
+const ECS_STARTUP_OP_RESOURCE_PAYLOAD: u32 = 1;
 const ECS_DESCRIPTOR_RECORD_COUNT_OFFSETS: [u8; 5] = [28, 44, 60, 76, 92];
 const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [0, 8, 16, 24, 32];
+const ECS_RESOURCE_PAYLOAD_STORAGE_SLOT: u8 = 40;
+const ECS_RESOURCE_PAYLOAD_HIGH_BYTE_SLOT: u8 = ECS_RESOURCE_PAYLOAD_STORAGE_SLOT + 3;
 
 pub fn startup_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> {
     let startup = program.startup.as_ref().ok_or_else(unsupported_shape)?;
@@ -70,7 +76,11 @@ pub fn ecs_metadata_decoder_text_payload(
         });
     }
 
-    let startup_body = ecs_metadata_decoder_body(&metadata_payload[..ECS_METADATA_ENVELOPE_SIZE]);
+    let resource_payload_offset = first_startup_resource_payload_offset(metadata_payload)?;
+    let startup_body = ecs_metadata_decoder_body(
+        &metadata_payload[..ECS_METADATA_ENVELOPE_SIZE],
+        resource_payload_offset,
+    );
     Ok(runtime_wrapped_payload(&startup_body))
 }
 
@@ -90,7 +100,85 @@ fn require_metadata_decoder_exit(program: &Program) -> Result<(), CodegenError> 
     Ok(())
 }
 
-fn ecs_metadata_decoder_body(envelope: &[u8]) -> Vec<u8> {
+fn first_startup_resource_payload_offset(metadata_payload: &[u8]) -> Result<i32, CodegenError> {
+    let startup_section_offset = read_metadata_u32(
+        metadata_payload,
+        ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_OFFSET_FIELD_OFFSET,
+    )? as usize;
+    let startup_record_count = read_metadata_u32(
+        metadata_payload,
+        ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_RECORD_COUNT_FIELD_OFFSET,
+    )?;
+
+    if startup_record_count == 0 {
+        return Err(metadata_resource_payload_error());
+    }
+
+    let mut offset = startup_section_offset;
+    let operation_kind = read_metadata_u32(metadata_payload, offset)?;
+    offset += 4;
+
+    if operation_kind != ECS_STARTUP_OP_RESOURCE_PAYLOAD {
+        return Err(metadata_resource_payload_error());
+    }
+
+    checked_metadata_range(metadata_payload, offset, 8)?;
+    offset += 8;
+    skip_metadata_string(metadata_payload, &mut offset)?;
+
+    let payload_len = read_metadata_u32(metadata_payload, offset)? as usize;
+    offset += 4;
+
+    if payload_len != 4 {
+        return Err(metadata_resource_payload_error());
+    }
+
+    checked_metadata_range(metadata_payload, offset, payload_len)?;
+    if offset > i32::MAX as usize {
+        return Err(CodegenError {
+            message: "ECS metadata resource payload offset must fit in signed 32-bit displacement"
+                .to_string(),
+        });
+    }
+
+    Ok(offset as i32)
+}
+
+fn read_metadata_u32(metadata_payload: &[u8], offset: usize) -> Result<u32, CodegenError> {
+    checked_metadata_range(metadata_payload, offset, 4)?;
+    Ok(u32::from_le_bytes([
+        metadata_payload[offset],
+        metadata_payload[offset + 1],
+        metadata_payload[offset + 2],
+        metadata_payload[offset + 3],
+    ]))
+}
+
+fn skip_metadata_string(metadata_payload: &[u8], offset: &mut usize) -> Result<(), CodegenError> {
+    let byte_len = read_metadata_u32(metadata_payload, *offset)? as usize;
+    *offset += 4;
+    checked_metadata_range(metadata_payload, *offset, byte_len)?;
+    *offset += byte_len;
+    Ok(())
+}
+
+fn checked_metadata_range(
+    metadata_payload: &[u8],
+    offset: usize,
+    byte_len: usize,
+) -> Result<(), CodegenError> {
+    let Some(end) = offset.checked_add(byte_len) else {
+        return Err(metadata_resource_payload_error());
+    };
+
+    if end > metadata_payload.len() {
+        return Err(metadata_resource_payload_error());
+    }
+
+    Ok(())
+}
+
+fn ecs_metadata_decoder_body(envelope: &[u8], resource_payload_offset: i32) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut jump_to_failure_offsets = Vec::new();
 
@@ -114,10 +202,27 @@ fn ecs_metadata_decoder_body(envelope: &[u8]) -> Vec<u8> {
         store_rax_to_stack_slot(&mut bytes, stack_slot);
     }
 
+    bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
+    bytes.extend_from_slice(&resource_payload_offset.to_le_bytes());
+    bytes.extend_from_slice(&[
+        0x89,
+        0x44,
+        0x24,
+        ECS_RESOURCE_PAYLOAD_STORAGE_SLOT, // mov dword ptr [rsp + 40], eax
+    ]);
+
     bytes.extend_from_slice(&[0x8b, 0x3c, 0x24]); // mov edi, dword ptr [rsp]
     for stack_slot in ECS_DESCRIPTOR_REGISTRY_SLOTS.iter().skip(1) {
         bytes.extend_from_slice(&[0x03, 0x7c, 0x24, *stack_slot]); // add edi, dword ptr [rsp + slot]
     }
+    bytes.extend_from_slice(&[
+        0x0f,
+        0xb6,
+        0x44,
+        0x24,
+        ECS_RESOURCE_PAYLOAD_HIGH_BYTE_SLOT, // movzx eax, byte ptr [rsp + 43]
+    ]);
+    bytes.extend_from_slice(&[0x01, 0xc7]); // add edi, eax
 
     let jump_to_done_offset = bytes.len();
     bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
@@ -291,5 +396,12 @@ fn unsupported_shape() -> CodegenError {
 fn metadata_decoder_error() -> CodegenError {
     CodegenError {
         message: "ECS metadata decoder executable requires final `exit 0`".to_string(),
+    }
+}
+
+fn metadata_resource_payload_error() -> CodegenError {
+    CodegenError {
+        message: "ECS metadata decoder executable requires first startup operation to be a 4-byte resource payload"
+            .to_string(),
     }
 }

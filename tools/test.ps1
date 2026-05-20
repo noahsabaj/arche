@@ -714,6 +714,25 @@ function Test-CorruptEcsMetadataMagic {
     Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 16
 }
 
+function Test-CorruptEcsResourcePayload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_resource_payload"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $payloadHighByteOffset = $metadataStart + 609
+    Assert-Equal -Name "ECS resource payload high byte before corruption" -Actual $bytes[$payloadHighByteOffset] -Expected 0x3f
+    $bytes[$payloadHighByteOffset] = 0x40
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 70
+}
+
 function Test-Elf64Executable {
     param(
         [Parameter(Mandatory = $true)]
@@ -1415,8 +1434,9 @@ try {
         -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system.arc", "-o", ".\build\move_system")
 
     Test-EcsMetadataPayload -Path ".\build\move_system"
-    Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 6
+    Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 69
     Test-CorruptEcsMetadataMagic -Path ".\build\move_system"
+    Test-CorruptEcsResourcePayload -Path ".\build\move_system"
 
     Remove-Item -LiteralPath ".\build\bad" -Force -ErrorAction SilentlyContinue
 
