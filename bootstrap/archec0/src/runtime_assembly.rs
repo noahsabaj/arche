@@ -147,6 +147,47 @@ pub fn register_assembly_descriptors_into_world(
     Ok(())
 }
 
+pub fn execute_startup_resource_payload_operation(
+    operation: &StartupOperation,
+    world: &mut ArcheWorld,
+) -> Result<(), RuntimeAssemblyError> {
+    let (resource_id, resource_name, payload_bytes) = match operation {
+        StartupOperation::ResourcePayload {
+            resource_id,
+            resource_name,
+            payload_bytes,
+        } => (*resource_id, resource_name, payload_bytes),
+        _ => {
+            return Err(assembly_error(
+                "startup operation is not a resource payload",
+            ));
+        }
+    };
+
+    let descriptor = world
+        .resource_descriptors()
+        .get(resource_id)
+        .cloned()
+        .ok_or_else(|| {
+            assembly_error(format!(
+                "resource descriptor `{resource_name}` is not registered"
+            ))
+        })?;
+
+    let allocated = world
+        .allocate_resource_storage(&descriptor)
+        .map_err(|error| assembly_error(error.message))?;
+    if !allocated {
+        return Err(assembly_error(format!(
+            "resource storage `{resource_name}` is already allocated"
+        )));
+    }
+
+    world
+        .store_resource_payload(resource_id, payload_bytes)
+        .map_err(|error| assembly_error(error.message))
+}
+
 fn assemble_component_descriptor(
     world_name: &str,
     component: &ComponentDecl,
@@ -1110,6 +1151,51 @@ mod tests {
         );
         assert_eq!(world.entities().len(), 0);
         assert_eq!(world.resource_storage_count(), 0);
+        assert_eq!(world.archetype_count(), 0);
+        assert_eq!(assembly.startup_operations.len(), 3);
+        assert!(matches!(
+            assembly.startup_operations[0],
+            StartupOperation::ResourcePayload { .. }
+        ));
+        assert!(matches!(
+            assembly.startup_operations[1],
+            StartupOperation::Spawn { .. }
+        ));
+        assert!(matches!(
+            assembly.startup_operations[2],
+            StartupOperation::RunSchedule { .. }
+        ));
+    }
+
+    #[test]
+    fn executes_startup_resource_payload_operation() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+        let mut world = ArcheWorld::create();
+
+        register_assembly_descriptors_into_world(&assembly, &mut world)
+            .expect("assembly descriptors register into world");
+        execute_startup_resource_payload_operation(&assembly.startup_operations[0], &mut world)
+            .expect("startup resource payload executes");
+
+        let time_id = ResourceId(0x7924ce11db524521);
+        assert_eq!(world.resource_storage_count(), 1);
+        assert_eq!(
+            world
+                .resource_payload(time_id)
+                .expect("time payload exists"),
+            &[0x00, 0x00, 0x80, 0x3f]
+        );
+        assert_eq!(
+            world
+                .read_resource_f32_field(time_id, "delta")
+                .expect("delta decodes"),
+            1.0
+        );
+        assert_eq!(world.entities().len(), 0);
         assert_eq!(world.archetype_count(), 0);
         assert_eq!(assembly.startup_operations.len(), 3);
         assert!(matches!(
