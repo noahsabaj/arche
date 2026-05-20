@@ -4,16 +4,17 @@ use std::collections::HashMap;
 
 use crate::core::{
     BlockId, CoreBinaryOp, CoreBlock, CoreFunction, CoreInstruction, CoreLocal, CoreProgram,
-    CoreQueryAccess, CoreQueryTerm, CoreSchedule, CoreScheduleItem, CoreSpawnComponent,
-    CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemBody, CoreSystemParam,
-    CoreSystemParamKind, CoreTerminator, CoreType, CoreWorld, LocalId, ValueId,
+    CoreQueryAccess, CoreQueryLoop, CoreQueryLoopBinding, CoreQueryTerm, CoreSchedule,
+    CoreScheduleItem, CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreSystem,
+    CoreSystemBody, CoreSystemParam, CoreSystemParamKind, CoreSystemStatement, CoreTerminator,
+    CoreType, CoreWorld, LocalId, ValueId,
 };
 use crate::layout;
 use crate::parser::{
     BinaryOperator, ComponentDecl, ComponentLiteralValue, Expression, Program,
     QueryAccess as ParserQueryAccess, ResourceDecl, ScheduleDecl, ScheduleItem,
     SpawnComponentField, SpawnComponentLiteral, SpawnStatement, StartupBlock, Statement,
-    SystemDecl, SystemParam, SystemParamKind,
+    SystemBodyStatement, SystemDecl, SystemParam, SystemParamKind, SystemQueryLoopStatement,
 };
 use crate::runtime;
 
@@ -103,11 +104,79 @@ fn lower_system(program: &Program, system: &SystemDecl) -> Result<CoreSystem, Co
         .iter()
         .map(|param| lower_system_param(program, param))
         .collect::<Result<Vec<_>, _>>()?;
+    let body = lower_system_body(&params, system)?;
 
     Ok(CoreSystem {
         name: system.name.clone(),
         params,
-        body: CoreSystemBody { statements: vec![] },
+        body,
+    })
+}
+
+fn lower_system_body(
+    params: &[CoreSystemParam],
+    system: &SystemDecl,
+) -> Result<CoreSystemBody, CoreLowerError> {
+    let mut statements = Vec::new();
+
+    for statement in &system.body.statements {
+        match statement {
+            SystemBodyStatement::Expression(_) => {}
+            SystemBodyStatement::QueryLoop(query_loop) => {
+                statements.push(CoreSystemStatement::QueryLoop(lower_system_query_loop(
+                    params, query_loop,
+                )?));
+            }
+        }
+    }
+
+    Ok(CoreSystemBody { statements })
+}
+
+fn lower_system_query_loop(
+    params: &[CoreSystemParam],
+    query_loop: &SystemQueryLoopStatement,
+) -> Result<CoreQueryLoop, CoreLowerError> {
+    let param = params
+        .iter()
+        .find(|param| param.name == query_loop.query_param)
+        .ok_or_else(|| {
+            lower_error(format!(
+                "unknown query parameter `{}`",
+                query_loop.query_param
+            ))
+        })?;
+    let CoreSystemParamKind::Query { terms } = &param.kind else {
+        return Err(lower_error(format!(
+            "query loop target `{}` is not a query parameter",
+            query_loop.query_param
+        )));
+    };
+
+    if query_loop.bindings.len() != terms.len() {
+        return Err(lower_error(format!(
+            "query loop binding count {} does not match query term count {}",
+            query_loop.bindings.len(),
+            terms.len()
+        )));
+    }
+
+    let bindings = query_loop
+        .bindings
+        .iter()
+        .zip(terms.iter())
+        .map(|(binding, term)| CoreQueryLoopBinding {
+            name: binding.name.clone(),
+            component_id: term.component_id,
+            component_name: term.name.clone(),
+            access: term.access,
+        })
+        .collect();
+
+    Ok(CoreQueryLoop {
+        query_param: query_loop.query_param.clone(),
+        bindings,
+        body: vec![],
     })
 }
 
@@ -413,9 +482,9 @@ fn lower_error(message: impl Into<String>) -> CoreLowerError {
 mod tests {
     use super::*;
     use crate::core::{
-        CoreQueryAccess, CoreQueryTerm, CoreSchedule, CoreScheduleItem, CoreSpawnComponent,
-        CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemBody, CoreSystemParam,
-        CoreSystemParamKind,
+        CoreQueryAccess, CoreQueryLoopBinding, CoreQueryTerm, CoreSchedule, CoreScheduleItem,
+        CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemBody,
+        CoreSystemParam, CoreSystemParamKind, CoreSystemStatement,
     };
     use crate::lexer;
     use crate::parser;
@@ -551,6 +620,112 @@ mod tests {
                     system_name: "Demo.Move".to_string(),
                 }],
             }]
+        );
+    }
+
+    #[test]
+    fn lowers_query_loop_skeleton_to_core_body() {
+        let source = r#"
+world Demo
+
+component Position {
+    x: f32
+    y: f32
+}
+
+component Velocity {
+    x: f32
+    y: f32
+}
+
+resource Time {
+    delta: f32
+}
+
+system Move(
+    time: read Time,
+    movers: query[mut Position, Velocity]
+) {
+    for (pos, vel) in movers {
+    }
+}
+
+startup {
+    exit 0
+}
+"#;
+        let tokens = lexer::lex(source).expect("query-loop fixture lexes");
+        let ast = parser::parse_program(&tokens).expect("query-loop fixture parses");
+        let actual = lower_program_to_core(&ast).expect("query-loop fixture lowers to Core");
+
+        assert_eq!(actual.systems.len(), 1);
+        let system = &actual.systems[0];
+        assert_eq!(system.name, "Move");
+        assert_eq!(
+            system.params,
+            vec![
+                CoreSystemParam {
+                    name: "time".to_string(),
+                    kind: CoreSystemParamKind::ReadResource {
+                        resource_id: 0x7924ce11db524521,
+                        name: "Demo.Time".to_string(),
+                    },
+                },
+                CoreSystemParam {
+                    name: "movers".to_string(),
+                    kind: CoreSystemParamKind::Query {
+                        terms: vec![
+                            CoreQueryTerm {
+                                access: CoreQueryAccess::Mut,
+                                component_id: 0x002202c6aeb4f27b,
+                                name: "Demo.Position".to_string(),
+                            },
+                            CoreQueryTerm {
+                                access: CoreQueryAccess::Read,
+                                component_id: 0x2cf8a68bcb7f913b,
+                                name: "Demo.Velocity".to_string(),
+                            },
+                        ],
+                    },
+                },
+            ]
+        );
+
+        assert_eq!(system.body.statements.len(), 1);
+        let CoreSystemStatement::QueryLoop(query_loop) = &system.body.statements[0] else {
+            panic!("expected query loop skeleton");
+        };
+        assert_eq!(query_loop.query_param, "movers");
+        assert_eq!(
+            query_loop.bindings,
+            vec![
+                CoreQueryLoopBinding {
+                    name: "pos".to_string(),
+                    component_id: 0x002202c6aeb4f27b,
+                    component_name: "Demo.Position".to_string(),
+                    access: CoreQueryAccess::Mut,
+                },
+                CoreQueryLoopBinding {
+                    name: "vel".to_string(),
+                    component_id: 0x2cf8a68bcb7f913b,
+                    component_name: "Demo.Velocity".to_string(),
+                    access: CoreQueryAccess::Read,
+                },
+            ]
+        );
+        assert!(query_loop.body.is_empty());
+
+        let startup = &actual.functions[0].blocks[0];
+        assert_eq!(
+            startup.instructions,
+            vec![CoreInstruction::I32Const {
+                result: ValueId(0),
+                value: 0,
+            }]
+        );
+        assert_eq!(
+            startup.terminator,
+            CoreTerminator::Exit { value: ValueId(0) }
         );
     }
 

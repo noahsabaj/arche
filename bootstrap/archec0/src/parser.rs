@@ -84,8 +84,23 @@ pub struct SystemBody {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SystemBodyStatement {
-    pub expression: Expression,
+pub enum SystemBodyStatement {
+    Expression(Expression),
+    QueryLoop(SystemQueryLoopStatement),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemQueryLoopStatement {
+    pub query_param: String,
+    pub query_span: Span,
+    pub bindings: Vec<SystemQueryLoopBinding>,
+    pub body: Vec<SystemBodyStatement>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SystemQueryLoopBinding {
+    pub name: String,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -383,13 +398,83 @@ impl Parser<'_> {
                 });
             }
 
-            let expression =
-                self.parse_expression_with_message("expected system body expression")?;
-            statements.push(SystemBodyStatement { expression });
+            statements.push(self.parse_system_body_statement()?);
         }
 
         self.expect(TokenKind::RightBrace, "expected `}` to close system body")?;
         Ok(SystemBody { statements })
+    }
+
+    fn parse_system_body_statement(&mut self) -> Result<SystemBodyStatement, ParseError> {
+        if self.match_keyword(Keyword::For) {
+            return self
+                .parse_system_query_loop_statement()
+                .map(SystemBodyStatement::QueryLoop);
+        }
+
+        let expression = self.parse_expression_with_message("expected system body expression")?;
+        Ok(SystemBodyStatement::Expression(expression))
+    }
+
+    fn parse_system_query_loop_statement(
+        &mut self,
+    ) -> Result<SystemQueryLoopStatement, ParseError> {
+        self.expect(TokenKind::LeftParen, "expected `(` after `for`")?;
+
+        let mut bindings = Vec::new();
+        if self.peek().kind == TokenKind::RightParen {
+            return Err(ParseError {
+                span: self.peek().span,
+                message: "expected query loop binding".to_string(),
+            });
+        }
+
+        loop {
+            let (name, span) =
+                self.parse_identifier_with_span("expected query loop binding name")?;
+            bindings.push(SystemQueryLoopBinding { name, span });
+
+            if self.peek().kind != TokenKind::Comma {
+                break;
+            }
+
+            self.advance();
+        }
+
+        self.expect(
+            TokenKind::RightParen,
+            "expected `)` after query loop bindings",
+        )?;
+        self.expect(
+            TokenKind::Keyword(Keyword::In),
+            "expected `in` after query loop bindings",
+        )?;
+        let (query_param, query_span) =
+            self.parse_identifier_with_span("expected query parameter name after `in`")?;
+        self.expect(TokenKind::LeftBrace, "expected `{` after query loop target")?;
+
+        let mut body = Vec::new();
+        while self.peek().kind != TokenKind::RightBrace {
+            if self.peek().kind == TokenKind::Eof {
+                return Err(ParseError {
+                    span: self.peek().span,
+                    message: "expected `}` to close query loop body".to_string(),
+                });
+            }
+
+            body.push(self.parse_system_body_statement()?);
+        }
+
+        self.expect(
+            TokenKind::RightBrace,
+            "expected `}` to close query loop body",
+        )?;
+        Ok(SystemQueryLoopStatement {
+            query_param,
+            query_span,
+            bindings,
+            body,
+        })
     }
 
     fn parse_schedule_declaration(&mut self) -> Result<ScheduleDecl, ParseError> {
@@ -940,9 +1025,7 @@ impl fmt::Display for Program {
             } else {
                 write!(formatter, "    body")?;
                 for statement in &system.body.statements {
-                    writeln!(formatter)?;
-                    writeln!(formatter, "      expr")?;
-                    write_expression(formatter, &statement.expression, "        ")?;
+                    write_system_body_statement(formatter, statement, "      ")?;
                 }
             }
         }
@@ -1144,6 +1227,39 @@ fn format_query_access(access: QueryAccess) -> &'static str {
     match access {
         QueryAccess::Read => "read",
         QueryAccess::Mut => "mut",
+    }
+}
+
+fn write_system_body_statement(
+    formatter: &mut fmt::Formatter<'_>,
+    statement: &SystemBodyStatement,
+    indent: &str,
+) -> fmt::Result {
+    match statement {
+        SystemBodyStatement::Expression(expression) => {
+            writeln!(formatter)?;
+            writeln!(formatter, "{indent}expr")?;
+            write_expression(formatter, expression, &format!("{indent}  "))
+        }
+        SystemBodyStatement::QueryLoop(query_loop) => {
+            writeln!(formatter)?;
+            writeln!(formatter, "{indent}for")?;
+            writeln!(formatter, "{indent}  bindings")?;
+            for binding in &query_loop.bindings {
+                writeln!(formatter, "{indent}    binding {}", binding.name)?;
+            }
+            writeln!(formatter, "{indent}  in {}", query_loop.query_param)?;
+
+            if query_loop.body.is_empty() {
+                write!(formatter, "{indent}  body empty")
+            } else {
+                write!(formatter, "{indent}  body")?;
+                for statement in &query_loop.body {
+                    write_system_body_statement(formatter, statement, &format!("{indent}    "))?;
+                }
+                Ok(())
+            }
+        }
     }
 }
 

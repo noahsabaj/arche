@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M16 native executable source-level ECS startup.
+**Current focus:** M17 Core system-body lowering.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -114,13 +114,12 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M17-002 | Lower query loop skeleton | Parsed `for (pos, vel) in movers` can lower to a Core query-loop skeleton without field math. |
+| M17-003 | Lower field expressions and arithmetic | Core can represent field reads and `vel * time.delta` arithmetic inside the query loop. |
 
 ### Backlog
 
 | Issue | Title | Done when |
 |---|---|---|
-| M17-003 | Lower field expressions and arithmetic | Core can represent field reads and `vel * time.delta` arithmetic inside the query loop. |
 | M17-004 | Lower assignment/update statements | Core can represent `pos.x += ...` and `pos.y += ...` updates without executing them. |
 | M17-005 | Emit Core query loop for move_system | `--emit-core` can print the lowered `Demo.Move` query-loop body. |
 
@@ -234,6 +233,7 @@ Board rules:
 | M16-004 | Execute native startup spawn operations | `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed; it built `.\examples\move_system.arc` to `.\build\move_system`, decoded the trailing 717-byte `ARCHEECS` payload host-side, ran the generated Linux ELF through WSL and observed exit code `198`, corrupted the embedded metadata magic byte and observed native startup exit code `16`, corrupted the embedded `Demo.Time` payload high byte and observed exit code `199`, then corrupted the embedded `Demo.Velocity.y` payload high byte and observed exit code `199`. This proves generated native startup validates the embedded `ARCHEECS` envelope, registers descriptor counts, copies the `Demo.Time` payload, copies one `Demo.Position + Demo.Velocity` spawn row into bootstrap native row slots, marks one row present, and derives the process observable from that row state. This was native startup-spawn only: no schedule execution, query loop execution, Core changes, parser changes, or full native `ArcheWorld` was added. Implementation commit: `5114365c`. |
 | M16-005 | Add observable native ECS startup proof | `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed; it built `.\examples\move_system.arc` to `.\build\move_system`, decoded the trailing 717-byte `ARCHEECS` payload host-side, ran the generated Linux ELF through WSL and observed exit code `42`, corrupted the embedded metadata magic byte and observed native startup exit code `16`, corrupted the embedded `Demo.Time` payload high byte and observed exit code `17`, then corrupted the embedded `Demo.Velocity.y` payload high byte and observed exit code `17`. This proves generated native startup validates the embedded `ARCHEECS` envelope, registers descriptor counts, applies the `Demo.Time` payload, creates one bootstrap-native `Demo.Position + Demo.Velocity` spawn row, verifies stack-resident startup state against embedded expected source values, and exposes the deterministic startup-world observable `42`. This was native startup observation only: no schedule execution, query-loop execution, parser/Core/runtime behavior changes, full native `ArcheWorld`, or generated `Move` system execution was added. M16 native executable source-level ECS startup is complete. Implementation commit: `9763126e`. |
 | M17-001 | Define Core system body model | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml core_represents_move_system_body_model` passed, proving Core can represent the future `Demo.Move` structured body shape for `for (pos, vel) in movers`, `pos.x += vel.x * time.delta`, and `pos.y += vel.y * time.delta` with exact `Demo.Position`, `Demo.Velocity`, and `Demo.Time` IDs/names; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted Core system-body model proof included. This was Core representation only: parsed system bodies still lower to empty Core bodies, `--emit-core` output is unchanged, and no runtime, native executable, parser syntax, query-loop lowering, or execution behavior was added. Implementation commit: `b915f643`. |
+| M17-002 | Lower query loop skeleton | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_query_loop_skeleton_to_core_body` passed, proving an inline `Demo.Move` fixture with `for (pos, vel) in movers {}` lowers to a `CoreSystemStatement::QueryLoop` skeleton with `pos -> mut Demo.Position`, `vel -> read Demo.Velocity`, an empty Core loop body, and normal `startup { exit 0 }` lowering; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted Core query-loop skeleton proof included. This was Core-only skeleton lowering: existing expression-only system bodies still lower empty, `--emit-core` output is unchanged, and no field math, add-assign lowering, runtime behavior, native behavior, or fixture-level `Move` execution was added. Implementation commit: `PENDING`. |
 
 ## Milestones
 
@@ -1732,19 +1732,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M17-001 stayed Core representation only | 99/100 |
-| `tools/test.ps1` includes `core_represents_move_system_body_model` and the full proof runner remains passing | 99/100 |
+| M17-002 stayed Core query-loop skeleton lowering only | 99/100 |
+| `tools/test.ps1` includes `lowers_query_loop_skeleton_to_core_body` and the full proof runner remains passing | 99/100 |
 | Existing M0-M16 parser, runtime unit, layout, Core, executable, component metadata, ECS metadata, diagnostic, native startup, and e2e proofs remain passing | 98/100 |
-| Board state marks M17-001 complete and promotes M17-002 as the next proof | 98/100 |
+| Board state marks M17-002 complete and promotes M17-003 as the next proof | 98/100 |
 | M17 backlog remains constrained to Core system-body lowering only | 97/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M17-002` in `Ready`.
+- The active board has only `M17-003` in `Ready`.
 - `Doing` is empty.
-- `Backlog` contains M17-003 through M17-005.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, and completed M16.
+- `Backlog` contains M17-004 through M17-005.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, and M17-001 through M17-002.
 - Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, M16-001 through M16-005, and M17-001 through M17-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, and M17-001 Core system body model are complete. M17-002 query-loop skeleton lowering is next.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17-001 Core system body model, and M17-002 query-loop skeleton lowering are complete. M17-003 field expression and arithmetic lowering is next.
