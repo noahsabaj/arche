@@ -43,26 +43,29 @@ pub struct CodegenError {
 
 const ECS_METADATA_ENVELOPE_SIZE: usize = 112;
 const ECS_METADATA_FAILURE_EXIT_CODE: u8 = 16;
+const ECS_STARTUP_STATE_FAILURE_EXIT_CODE: u8 = 17;
+const ECS_STARTUP_STATE_SUCCESS_EXIT_CODE: u8 = 42;
 const ECS_STARTUP_SECTION_DIRECTORY_OFFSET: usize = 16 + 5 * 16;
 const ECS_SECTION_OFFSET_FIELD_OFFSET: usize = 4;
 const ECS_SECTION_RECORD_COUNT_FIELD_OFFSET: usize = 12;
 const ECS_STARTUP_OP_RESOURCE_PAYLOAD: u32 = 1;
 const ECS_STARTUP_OP_SPAWN: u32 = 2;
+const ECS_EXPECTED_DESCRIPTOR_COUNTS: [u64; 5] = [2, 1, 1, 1, 1];
 const ECS_DESCRIPTOR_RECORD_COUNT_OFFSETS: [u8; 5] = [28, 44, 60, 76, 92];
 const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [0, 8, 16, 24, 32];
 const ECS_RESOURCE_PAYLOAD_STORAGE_SLOT: u8 = 40;
-const ECS_RESOURCE_PAYLOAD_HIGH_BYTE_SLOT: u8 = ECS_RESOURCE_PAYLOAD_STORAGE_SLOT + 3;
 const ECS_SPAWN_ROW_COUNT_SLOT: u8 = 48;
 const ECS_POSITION_PAYLOAD_STORAGE_SLOT: u8 = 56;
-const ECS_POSITION_Y_HIGH_BYTE_SLOT: u8 = ECS_POSITION_PAYLOAD_STORAGE_SLOT + 7;
 const ECS_VELOCITY_PAYLOAD_STORAGE_SLOT: u8 = 64;
-const ECS_VELOCITY_Y_HIGH_BYTE_SLOT: u8 = ECS_VELOCITY_PAYLOAD_STORAGE_SLOT + 7;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct EcsStartupPayloadOffsets {
-    resource_payload: i32,
-    position_payload: i32,
-    velocity_payload: i32,
+struct EcsStartupPayloads {
+    resource_payload_offset: i32,
+    resource_payload: [u8; 4],
+    position_payload_offset: i32,
+    position_payload: [u8; 8],
+    velocity_payload_offset: i32,
+    velocity_payload: [u8; 8],
 }
 
 pub fn startup_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> {
@@ -101,10 +104,10 @@ pub fn ecs_metadata_decoder_text_payload(
         });
     }
 
-    let startup_payload_offsets = startup_payload_offsets(metadata_payload)?;
+    let startup_payloads = startup_payloads(metadata_payload)?;
     let startup_body = ecs_metadata_decoder_body(
         &metadata_payload[..ECS_METADATA_ENVELOPE_SIZE],
-        startup_payload_offsets,
+        startup_payloads,
     );
     Ok(runtime_wrapped_payload(&startup_body))
 }
@@ -125,9 +128,7 @@ fn require_metadata_decoder_exit(program: &Program) -> Result<(), CodegenError> 
     Ok(())
 }
 
-fn startup_payload_offsets(
-    metadata_payload: &[u8],
-) -> Result<EcsStartupPayloadOffsets, CodegenError> {
+fn startup_payloads(metadata_payload: &[u8]) -> Result<EcsStartupPayloads, CodegenError> {
     let startup_section_offset = read_metadata_u32(
         metadata_payload,
         ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_OFFSET_FIELD_OFFSET,
@@ -146,17 +147,20 @@ fn startup_payload_offsets(
     let (position_payload, velocity_payload) =
         parse_spawn_operation(metadata_payload, &mut offset)?;
 
-    Ok(EcsStartupPayloadOffsets {
-        resource_payload,
-        position_payload,
-        velocity_payload,
+    Ok(EcsStartupPayloads {
+        resource_payload_offset: resource_payload.0,
+        resource_payload: resource_payload.1,
+        position_payload_offset: position_payload.0,
+        position_payload: position_payload.1,
+        velocity_payload_offset: velocity_payload.0,
+        velocity_payload: velocity_payload.1,
     })
 }
 
 fn parse_resource_payload_operation(
     metadata_payload: &[u8],
     offset: &mut usize,
-) -> Result<i32, CodegenError> {
+) -> Result<(i32, [u8; 4]), CodegenError> {
     let operation_kind = read_metadata_u32(metadata_payload, *offset)?;
     *offset += 4;
 
@@ -168,13 +172,13 @@ fn parse_resource_payload_operation(
     *offset += 8;
     skip_metadata_string(metadata_payload, offset)?;
 
-    parse_payload_offset(metadata_payload, offset, 4)
+    parse_payload_offset_and_bytes(metadata_payload, offset)
 }
 
 fn parse_spawn_operation(
     metadata_payload: &[u8],
     offset: &mut usize,
-) -> Result<(i32, i32), CodegenError> {
+) -> Result<((i32, [u8; 8]), (i32, [u8; 8])), CodegenError> {
     let operation_kind = read_metadata_u32(metadata_payload, *offset)?;
     *offset += 4;
 
@@ -198,22 +202,21 @@ fn parse_spawn_operation(
 fn parse_spawn_component_payload(
     metadata_payload: &[u8],
     offset: &mut usize,
-) -> Result<i32, CodegenError> {
+) -> Result<(i32, [u8; 8]), CodegenError> {
     checked_metadata_range(metadata_payload, *offset, 8)?;
     *offset += 8;
     skip_metadata_string(metadata_payload, offset)?;
-    parse_payload_offset(metadata_payload, offset, 8)
+    parse_payload_offset_and_bytes(metadata_payload, offset)
 }
 
-fn parse_payload_offset(
+fn parse_payload_offset_and_bytes<const N: usize>(
     metadata_payload: &[u8],
     offset: &mut usize,
-    expected_payload_len: usize,
-) -> Result<i32, CodegenError> {
+) -> Result<(i32, [u8; N]), CodegenError> {
     let payload_len = read_metadata_u32(metadata_payload, *offset)? as usize;
     *offset += 4;
 
-    if payload_len != expected_payload_len {
+    if payload_len != N {
         return Err(metadata_startup_payload_error());
     }
 
@@ -228,7 +231,10 @@ fn parse_payload_offset(
         });
     }
 
-    Ok(payload_offset as i32)
+    let mut payload = [0; N];
+    payload.copy_from_slice(&metadata_payload[payload_offset..*offset]);
+
+    Ok((payload_offset as i32, payload))
 }
 
 fn read_metadata_u32(metadata_payload: &[u8], offset: usize) -> Result<u32, CodegenError> {
@@ -265,12 +271,10 @@ fn checked_metadata_range(
     Ok(())
 }
 
-fn ecs_metadata_decoder_body(
-    envelope: &[u8],
-    startup_payload_offsets: EcsStartupPayloadOffsets,
-) -> Vec<u8> {
+fn ecs_metadata_decoder_body(envelope: &[u8], startup_payloads: EcsStartupPayloads) -> Vec<u8> {
     let mut bytes = Vec::new();
-    let mut jump_to_failure_offsets = Vec::new();
+    let mut jump_to_metadata_failure_offsets = Vec::new();
+    let mut jump_to_startup_state_failure_offsets = Vec::new();
 
     bytes.extend_from_slice(&[0x48, 0x8d, 0x35, 0x00, 0x00, 0x00, 0x00]); // lea rsi, [rip + metadata]
 
@@ -281,7 +285,7 @@ fn ecs_metadata_decoder_body(
 
         let jump_offset = bytes.len();
         bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
-        jump_to_failure_offsets.push(jump_offset);
+        jump_to_metadata_failure_offsets.push(jump_offset);
     }
 
     for (count_offset, stack_slot) in ECS_DESCRIPTOR_RECORD_COUNT_OFFSETS
@@ -293,7 +297,7 @@ fn ecs_metadata_decoder_body(
     }
 
     bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
-    bytes.extend_from_slice(&startup_payload_offsets.resource_payload.to_le_bytes());
+    bytes.extend_from_slice(&startup_payloads.resource_payload_offset.to_le_bytes());
     bytes.extend_from_slice(&[
         0x89,
         0x44,
@@ -305,58 +309,78 @@ fn ecs_metadata_decoder_body(
     store_rax_to_stack_slot(&mut bytes, ECS_SPAWN_ROW_COUNT_SLOT);
 
     bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
-    bytes.extend_from_slice(&startup_payload_offsets.position_payload.to_le_bytes());
+    bytes.extend_from_slice(&startup_payloads.position_payload_offset.to_le_bytes());
     store_rax_to_stack_slot(&mut bytes, ECS_POSITION_PAYLOAD_STORAGE_SLOT);
 
     bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
-    bytes.extend_from_slice(&startup_payload_offsets.velocity_payload.to_le_bytes());
+    bytes.extend_from_slice(&startup_payloads.velocity_payload_offset.to_le_bytes());
     store_rax_to_stack_slot(&mut bytes, ECS_VELOCITY_PAYLOAD_STORAGE_SLOT);
 
-    bytes.extend_from_slice(&[0x8b, 0x3c, 0x24]); // mov edi, dword ptr [rsp]
-    for stack_slot in ECS_DESCRIPTOR_REGISTRY_SLOTS.iter().skip(1) {
-        bytes.extend_from_slice(&[0x03, 0x7c, 0x24, *stack_slot]); // add edi, dword ptr [rsp + slot]
+    for (expected_count, stack_slot) in ECS_EXPECTED_DESCRIPTOR_COUNTS
+        .iter()
+        .zip(ECS_DESCRIPTOR_REGISTRY_SLOTS)
+    {
+        compare_stack_slot_to_u64(
+            &mut bytes,
+            stack_slot,
+            *expected_count,
+            &mut jump_to_startup_state_failure_offsets,
+        );
     }
-    bytes.extend_from_slice(&[0x03, 0x7c, 0x24, ECS_SPAWN_ROW_COUNT_SLOT]); // add edi, dword ptr [rsp + 48]
-    bytes.extend_from_slice(&[
-        0x0f,
-        0xb6,
-        0x44,
-        0x24,
-        ECS_RESOURCE_PAYLOAD_HIGH_BYTE_SLOT, // movzx eax, byte ptr [rsp + 43]
-    ]);
-    bytes.extend_from_slice(&[0x01, 0xc7]); // add edi, eax
-    bytes.extend_from_slice(&[
-        0x0f,
-        0xb6,
-        0x44,
-        0x24,
-        ECS_POSITION_Y_HIGH_BYTE_SLOT, // movzx eax, byte ptr [rsp + 63]
-    ]);
-    bytes.extend_from_slice(&[0x01, 0xc7]); // add edi, eax
-    bytes.extend_from_slice(&[
-        0x0f,
-        0xb6,
-        0x44,
-        0x24,
-        ECS_VELOCITY_Y_HIGH_BYTE_SLOT, // movzx eax, byte ptr [rsp + 71]
-    ]);
-    bytes.extend_from_slice(&[0x01, 0xc7]); // add edi, eax
+    compare_stack_slot_to_u64(
+        &mut bytes,
+        ECS_RESOURCE_PAYLOAD_STORAGE_SLOT,
+        u64::from(u32::from_le_bytes(startup_payloads.resource_payload)),
+        &mut jump_to_startup_state_failure_offsets,
+    );
+    compare_stack_slot_to_u64(
+        &mut bytes,
+        ECS_SPAWN_ROW_COUNT_SLOT,
+        1,
+        &mut jump_to_startup_state_failure_offsets,
+    );
+    compare_stack_slot_to_u64(
+        &mut bytes,
+        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+        u64::from_le_bytes(startup_payloads.position_payload),
+        &mut jump_to_startup_state_failure_offsets,
+    );
+    compare_stack_slot_to_u64(
+        &mut bytes,
+        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+        u64::from_le_bytes(startup_payloads.velocity_payload),
+        &mut jump_to_startup_state_failure_offsets,
+    );
+
+    move_edi_exit_code(&mut bytes, ECS_STARTUP_STATE_SUCCESS_EXIT_CODE);
 
     let jump_to_done_offset = bytes.len();
     bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
 
-    let failure_offset = bytes.len();
-    bytes.extend_from_slice(&[
-        0xbf,
-        ECS_METADATA_FAILURE_EXIT_CODE,
-        0x00,
-        0x00,
-        0x00, // mov edi, failure
-    ]);
+    let metadata_failure_offset = bytes.len();
+    move_edi_exit_code(&mut bytes, ECS_METADATA_FAILURE_EXIT_CODE);
+    let jump_from_metadata_failure_to_done_offset = bytes.len();
+    bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
+
+    let startup_state_failure_offset = bytes.len();
+    move_edi_exit_code(&mut bytes, ECS_STARTUP_STATE_FAILURE_EXIT_CODE);
     let done_offset = bytes.len();
 
-    for jump_offset in jump_to_failure_offsets {
-        patch_rel32(&mut bytes, jump_offset + 2, failure_offset, jump_offset + 6);
+    for jump_offset in jump_to_metadata_failure_offsets {
+        patch_rel32(
+            &mut bytes,
+            jump_offset + 2,
+            metadata_failure_offset,
+            jump_offset + 6,
+        );
+    }
+    for jump_offset in jump_to_startup_state_failure_offsets {
+        patch_rel32(
+            &mut bytes,
+            jump_offset + 2,
+            startup_state_failure_offset,
+            jump_offset + 6,
+        );
     }
     patch_rel32(
         &mut bytes,
@@ -364,11 +388,40 @@ fn ecs_metadata_decoder_body(
         done_offset,
         jump_to_done_offset + 5,
     );
+    patch_rel32(
+        &mut bytes,
+        jump_from_metadata_failure_to_done_offset + 1,
+        done_offset,
+        jump_from_metadata_failure_to_done_offset + 5,
+    );
 
     let metadata_displacement = (bytes.len() + RUNTIME_DESTROY_SUFFIX.len() - 7) as i32;
     patch_i32(&mut bytes, 3, metadata_displacement);
 
     bytes
+}
+
+fn compare_stack_slot_to_u64(
+    bytes: &mut Vec<u8>,
+    stack_slot: u8,
+    expected: u64,
+    jump_offsets: &mut Vec<usize>,
+) {
+    bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
+    bytes.extend_from_slice(&expected.to_le_bytes());
+    if stack_slot == 0 {
+        bytes.extend_from_slice(&[0x48, 0x39, 0x04, 0x24]); // cmp qword ptr [rsp], rax
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x39, 0x44, 0x24, stack_slot]); // cmp qword ptr [rsp + slot], rax
+    }
+
+    let jump_offset = bytes.len();
+    bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
+    jump_offsets.push(jump_offset);
+}
+
+fn move_edi_exit_code(bytes: &mut Vec<u8>, exit_code: u8) {
+    bytes.extend_from_slice(&[0xbf, exit_code, 0x00, 0x00, 0x00]); // mov edi, exit_code
 }
 
 fn store_rax_to_stack_slot(bytes: &mut Vec<u8>, stack_slot: u8) {

@@ -742,7 +742,7 @@ function Test-CorruptEcsResourcePayload {
     $bytes[$payloadHighByteOffset] = 0x40
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 199
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
 }
 
 function Test-CorruptEcsSpawnPayload {
@@ -761,7 +761,7 @@ function Test-CorruptEcsSpawnPayload {
     $bytes[$payloadHighByteOffset] = 0x41
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 199
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
 }
 
 function Test-Elf64Executable {
@@ -1465,7 +1465,7 @@ try {
         -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system.arc", "-o", ".\build\move_system")
 
     Test-EcsMetadataPayload -Path ".\build\move_system"
-    Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 198
+    Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 42
     Test-CorruptEcsMetadataMagic -Path ".\build\move_system"
     Test-CorruptEcsResourcePayload -Path ".\build\move_system"
     Test-CorruptEcsSpawnPayload -Path ".\build\move_system"

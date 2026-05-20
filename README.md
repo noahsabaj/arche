@@ -69,8 +69,9 @@ The proof chain currently demonstrates:
 - Native startup descriptor-count registration from embedded `ARCHEECS` metadata.
 - Native startup resource payload application from embedded `ARCHEECS` metadata.
 - Native startup spawn-row application from embedded `ARCHEECS` metadata.
+- Final observable native startup proof for the source-described `Demo.Time` and one `Demo.Position + Demo.Velocity` row.
 
-M16 native executable source-level ECS startup is underway. The next proof is the final observable native ECS startup proof.
+M16 native executable source-level ECS startup is complete. The next proof is Core system-body lowering.
 
 ## What This Is Not Yet
 
