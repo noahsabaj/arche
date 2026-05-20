@@ -1,6 +1,6 @@
 use crate::core::{
-    CoreProgram, CoreQueryAccess, CoreSystemBinaryOp, CoreSystemExpression, CoreSystemParamKind,
-    CoreSystemPlace, CoreSystemStatement,
+    CoreProgram, CoreQueryAccess, CoreScheduleItem, CoreSystemBinaryOp, CoreSystemExpression,
+    CoreSystemParamKind, CoreSystemPlace, CoreSystemStatement,
 };
 use crate::core_lower;
 use crate::parser::{BinaryOperator, Expression, Program, Statement};
@@ -52,12 +52,14 @@ const ECS_STARTUP_STATE_FAILURE_EXIT_CODE: u8 = 17;
 const ECS_QUERY_LOOP_SCAN_FAILURE_EXIT_CODE: u8 = 18;
 const ECS_QUERY_LOOP_FIELD_MATH_FAILURE_EXIT_CODE: u8 = 19;
 const ECS_QUERY_LOOP_POSITION_STORE_FAILURE_EXIT_CODE: u8 = 20;
-const ECS_QUERY_LOOP_POSITION_STORE_SUCCESS_EXIT_CODE: u8 = 46;
+const ECS_RUN_SCHEDULE_DISPATCH_FAILURE_EXIT_CODE: u8 = 21;
+const ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE: u8 = 47;
 const ECS_STARTUP_SECTION_DIRECTORY_OFFSET: usize = 16 + 5 * 16;
 const ECS_SECTION_OFFSET_FIELD_OFFSET: usize = 4;
 const ECS_SECTION_RECORD_COUNT_FIELD_OFFSET: usize = 12;
 const ECS_STARTUP_OP_RESOURCE_PAYLOAD: u32 = 1;
 const ECS_STARTUP_OP_SPAWN: u32 = 2;
+const ECS_STARTUP_OP_RUN_SCHEDULE: u32 = 3;
 const ECS_EXPECTED_DESCRIPTOR_COUNTS: [u64; 5] = [2, 1, 1, 1, 1];
 const ECS_DESCRIPTOR_RECORD_COUNT_OFFSETS: [u8; 5] = [28, 44, 60, 76, 92];
 const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [0, 8, 16, 24, 32];
@@ -72,6 +74,8 @@ const ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT: u8 = 88;
 const DEMO_POSITION_COMPONENT_ID: u64 = 0x002202c6aeb4f27b;
 const DEMO_VELOCITY_COMPONENT_ID: u64 = 0x2cf8a68bcb7f913b;
 const DEMO_TIME_RESOURCE_ID: u64 = 0x7924ce11db524521;
+const DEMO_MOVE_SYSTEM_ID: u64 = 0x723b6b52df270ed5;
+const DEMO_MAIN_SCHEDULE_ID: u64 = 0xed3d905325519b05;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EcsStartupPayloads {
@@ -81,11 +85,17 @@ struct EcsStartupPayloads {
     position_payload: [u8; 8],
     velocity_payload_offset: i32,
     velocity_payload: [u8; 8],
+    run_schedule_id_offset: i32,
+    run_schedule_id: u64,
 }
 
 #[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NativeMoveQueryLoopObservable {
+    schedule_name: String,
+    schedule_id: u64,
+    schedule_run_system_id: u64,
+    schedule_run_system_name: String,
     system_name: String,
     query_param: String,
     position_binding: String,
@@ -240,10 +250,31 @@ fn native_move_query_loop_observable_from_core(
         require_move_add_assign(&query_loop.body[0], "x", "x")?,
         require_move_add_assign(&query_loop.body[1], "y", "y")?,
     ];
+
+    let schedule = core
+        .schedules
+        .iter()
+        .find(|schedule| schedule.name == "Main")
+        .ok_or_else(native_move_query_loop_observable_error)?;
+    if startup_payloads.run_schedule_id != DEMO_MAIN_SCHEDULE_ID || schedule.items.len() != 1 {
+        return Err(native_move_query_loop_observable_error());
+    }
+    let CoreScheduleItem::Run {
+        system_id,
+        system_name,
+    } = &schedule.items[0];
+    if *system_id != DEMO_MOVE_SYSTEM_ID || system_name != "Demo.Move" {
+        return Err(native_move_query_loop_observable_error());
+    }
+
     let target_position_payload = target_position_payload(startup_payloads);
     let field_product_payload = field_product_payload(startup_payloads);
 
     Ok(NativeMoveQueryLoopObservable {
+        schedule_name: "Demo.Main".to_string(),
+        schedule_id: startup_payloads.run_schedule_id,
+        schedule_run_system_id: *system_id,
+        schedule_run_system_name: system_name.clone(),
         system_name: system.name.clone(),
         query_param: query_loop.query_param.clone(),
         position_binding: query_loop.bindings[0].name.clone(),
@@ -393,7 +424,7 @@ fn startup_payloads(metadata_payload: &[u8]) -> Result<EcsStartupPayloads, Codeg
         ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_RECORD_COUNT_FIELD_OFFSET,
     )?;
 
-    if startup_record_count < 2 {
+    if startup_record_count < 3 {
         return Err(metadata_startup_payload_error());
     }
 
@@ -401,6 +432,7 @@ fn startup_payloads(metadata_payload: &[u8]) -> Result<EcsStartupPayloads, Codeg
     let resource_payload = parse_resource_payload_operation(metadata_payload, &mut offset)?;
     let (position_payload, velocity_payload) =
         parse_spawn_operation(metadata_payload, &mut offset)?;
+    let run_schedule = parse_run_schedule_operation(metadata_payload, &mut offset)?;
 
     Ok(EcsStartupPayloads {
         resource_payload_offset: resource_payload.0,
@@ -409,6 +441,8 @@ fn startup_payloads(metadata_payload: &[u8]) -> Result<EcsStartupPayloads, Codeg
         position_payload: position_payload.1,
         velocity_payload_offset: velocity_payload.0,
         velocity_payload: velocity_payload.1,
+        run_schedule_id_offset: run_schedule.0,
+        run_schedule_id: run_schedule.1,
     })
 }
 
@@ -464,6 +498,46 @@ fn parse_spawn_component_payload(
     parse_payload_offset_and_bytes(metadata_payload, offset)
 }
 
+fn parse_run_schedule_operation(
+    metadata_payload: &[u8],
+    offset: &mut usize,
+) -> Result<(i32, u64), CodegenError> {
+    let operation_kind = read_metadata_u32(metadata_payload, *offset)?;
+    *offset += 4;
+
+    if operation_kind != ECS_STARTUP_OP_RUN_SCHEDULE {
+        return Err(metadata_startup_payload_error());
+    }
+
+    checked_metadata_range(metadata_payload, *offset, 8)?;
+    let schedule_id_offset = *offset;
+    let schedule_id = u64::from_le_bytes([
+        metadata_payload[*offset],
+        metadata_payload[*offset + 1],
+        metadata_payload[*offset + 2],
+        metadata_payload[*offset + 3],
+        metadata_payload[*offset + 4],
+        metadata_payload[*offset + 5],
+        metadata_payload[*offset + 6],
+        metadata_payload[*offset + 7],
+    ]);
+    *offset += 8;
+
+    let schedule_name = read_metadata_string(metadata_payload, offset)?;
+    if schedule_id != DEMO_MAIN_SCHEDULE_ID || schedule_name != "Demo.Main" {
+        return Err(metadata_startup_payload_error());
+    }
+    if schedule_id_offset > i32::MAX as usize {
+        return Err(CodegenError {
+            message:
+                "ECS metadata startup run schedule offset must fit in signed 32-bit displacement"
+                    .to_string(),
+        });
+    }
+
+    Ok((schedule_id_offset as i32, schedule_id))
+}
+
 fn parse_payload_offset_and_bytes<const N: usize>(
     metadata_payload: &[u8],
     offset: &mut usize,
@@ -510,6 +584,20 @@ fn skip_metadata_string(metadata_payload: &[u8], offset: &mut usize) -> Result<(
     Ok(())
 }
 
+fn read_metadata_string(
+    metadata_payload: &[u8],
+    offset: &mut usize,
+) -> Result<String, CodegenError> {
+    let byte_len = read_metadata_u32(metadata_payload, *offset)? as usize;
+    *offset += 4;
+    checked_metadata_range(metadata_payload, *offset, byte_len)?;
+    let value = std::str::from_utf8(&metadata_payload[*offset..*offset + byte_len])
+        .map_err(|_| metadata_startup_payload_error())?
+        .to_string();
+    *offset += byte_len;
+    Ok(value)
+}
+
 fn checked_metadata_range(
     metadata_payload: &[u8],
     offset: usize,
@@ -537,6 +625,7 @@ fn ecs_metadata_decoder_body(
     let mut jump_to_query_loop_scan_failure_offsets = Vec::new();
     let mut jump_to_query_loop_field_math_failure_offsets = Vec::new();
     let mut jump_to_query_loop_position_store_failure_offsets = Vec::new();
+    let mut jump_to_run_schedule_dispatch_failure_offsets = Vec::new();
 
     bytes.extend_from_slice(&[0x48, 0x8d, 0x35, 0x00, 0x00, 0x00, 0x00]); // lea rsi, [rip + metadata]
 
@@ -624,32 +713,21 @@ fn ecs_metadata_decoder_body(
         &mut jump_to_startup_state_failure_offsets,
     );
 
-    load_stack_slot_to_rax(&mut bytes, ECS_SPAWN_ROW_COUNT_SLOT);
-    store_rax_to_stack_slot(&mut bytes, ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT);
-    compare_stack_slot_to_u64(
+    compare_metadata_slot_to_u64(
         &mut bytes,
-        ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT,
-        1,
+        startup_payloads.run_schedule_id_offset,
+        DEMO_MAIN_SCHEDULE_ID,
+        &mut jump_to_run_schedule_dispatch_failure_offsets,
+    );
+    emit_compiled_demo_move_query_loop(
+        &mut bytes,
+        &query_loop_observable,
         &mut jump_to_query_loop_scan_failure_offsets,
-    );
-
-    emit_query_loop_field_multiply(&mut bytes);
-    compare_stack_slot_to_u64(
-        &mut bytes,
-        ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
-        u64::from_le_bytes(query_loop_observable.field_product_payload),
         &mut jump_to_query_loop_field_math_failure_offsets,
-    );
-
-    emit_query_loop_position_stores(&mut bytes);
-    compare_stack_slot_to_u64(
-        &mut bytes,
-        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
-        u64::from_le_bytes(query_loop_observable.target_position_payload),
         &mut jump_to_query_loop_position_store_failure_offsets,
     );
 
-    move_edi_exit_code(&mut bytes, ECS_QUERY_LOOP_POSITION_STORE_SUCCESS_EXIT_CODE);
+    move_edi_exit_code(&mut bytes, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE);
 
     let jump_to_done_offset = bytes.len();
     bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
@@ -676,6 +754,11 @@ fn ecs_metadata_decoder_body(
 
     let query_loop_position_store_failure_offset = bytes.len();
     move_edi_exit_code(&mut bytes, ECS_QUERY_LOOP_POSITION_STORE_FAILURE_EXIT_CODE);
+    let jump_from_query_loop_position_store_failure_to_done_offset = bytes.len();
+    bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
+
+    let run_schedule_dispatch_failure_offset = bytes.len();
+    move_edi_exit_code(&mut bytes, ECS_RUN_SCHEDULE_DISPATCH_FAILURE_EXIT_CODE);
     let done_offset = bytes.len();
 
     for jump_offset in jump_to_metadata_failure_offsets {
@@ -718,6 +801,14 @@ fn ecs_metadata_decoder_body(
             jump_offset + 6,
         );
     }
+    for jump_offset in jump_to_run_schedule_dispatch_failure_offsets {
+        patch_rel32(
+            &mut bytes,
+            jump_offset + 2,
+            run_schedule_dispatch_failure_offset,
+            jump_offset + 6,
+        );
+    }
     patch_rel32(
         &mut bytes,
         jump_to_done_offset + 1,
@@ -748,6 +839,12 @@ fn ecs_metadata_decoder_body(
         done_offset,
         jump_from_query_loop_field_math_failure_to_done_offset + 5,
     );
+    patch_rel32(
+        &mut bytes,
+        jump_from_query_loop_position_store_failure_to_done_offset + 1,
+        done_offset,
+        jump_from_query_loop_position_store_failure_to_done_offset + 5,
+    );
 
     let metadata_displacement = (bytes.len() + RUNTIME_DESTROY_SUFFIX.len() - 7) as i32;
     patch_i32(&mut bytes, 3, metadata_displacement);
@@ -772,6 +869,55 @@ fn compare_stack_slot_to_u64(
     let jump_offset = bytes.len();
     bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
     jump_offsets.push(jump_offset);
+}
+
+fn compare_metadata_slot_to_u64(
+    bytes: &mut Vec<u8>,
+    metadata_offset: i32,
+    expected: u64,
+    jump_offsets: &mut Vec<usize>,
+) {
+    bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
+    bytes.extend_from_slice(&expected.to_le_bytes());
+    bytes.extend_from_slice(&[0x48, 0x39, 0x86]); // cmp qword ptr [rsi + offset], rax
+    bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+
+    let jump_offset = bytes.len();
+    bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
+    jump_offsets.push(jump_offset);
+}
+
+fn emit_compiled_demo_move_query_loop(
+    bytes: &mut Vec<u8>,
+    query_loop_observable: &NativeMoveQueryLoopObservable,
+    scan_failure_offsets: &mut Vec<usize>,
+    field_math_failure_offsets: &mut Vec<usize>,
+    position_store_failure_offsets: &mut Vec<usize>,
+) {
+    load_stack_slot_to_rax(bytes, ECS_SPAWN_ROW_COUNT_SLOT);
+    store_rax_to_stack_slot(bytes, ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT);
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT,
+        1,
+        scan_failure_offsets,
+    );
+
+    emit_query_loop_field_multiply(bytes);
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+        u64::from_le_bytes(query_loop_observable.field_product_payload),
+        field_math_failure_offsets,
+    );
+
+    emit_query_loop_position_stores(bytes);
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+        u64::from_le_bytes(query_loop_observable.target_position_payload),
+        position_store_failure_offsets,
+    );
 }
 
 fn emit_query_loop_field_multiply(bytes: &mut Vec<u8>) {
@@ -980,7 +1126,7 @@ fn metadata_decoder_error() -> CodegenError {
 
 fn metadata_startup_payload_error() -> CodegenError {
     CodegenError {
-        message: "ECS metadata decoder executable requires a 4-byte resource payload followed by a two-component spawn operation"
+        message: "ECS metadata decoder executable requires a 4-byte resource payload, a two-component spawn operation, and `run Demo.Main`"
             .to_string(),
     }
 }
@@ -1013,6 +1159,8 @@ mod tests {
             position_payload: [0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40],
             velocity_payload_offset: 687,
             velocity_payload: [0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40],
+            run_schedule_id_offset: 696,
+            run_schedule_id: DEMO_MAIN_SCHEDULE_ID,
         };
 
         let observable = native_move_query_loop_observable_from_core(&core, &startup_payloads)
@@ -1021,6 +1169,10 @@ mod tests {
         assert_eq!(
             observable,
             NativeMoveQueryLoopObservable {
+                schedule_name: "Demo.Main".to_string(),
+                schedule_id: DEMO_MAIN_SCHEDULE_ID,
+                schedule_run_system_id: DEMO_MOVE_SYSTEM_ID,
+                schedule_run_system_name: "Demo.Move".to_string(),
                 system_name: "Move".to_string(),
                 query_param: "movers".to_string(),
                 position_binding: "pos".to_string(),
@@ -1283,15 +1435,9 @@ mod tests {
         assert!(
             contains_subsequence(
                 &text,
-                &[
-                    0xbf,
-                    ECS_QUERY_LOOP_POSITION_STORE_SUCCESS_EXIT_CODE,
-                    0x00,
-                    0x00,
-                    0x00
-                ],
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
             ),
-            "generated text should expose the M18-004 Position-store success code"
+            "generated text should expose the compiled Move success code"
         );
         assert!(
             contains_subsequence(
@@ -1305,6 +1451,100 @@ mod tests {
                 ],
             ),
             "generated text should expose a Position-store failure code"
+        );
+    }
+
+    #[test]
+    fn replaces_bootstrap_move_helper_with_compiled_query_loop() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let core = core_lower::lower_program_to_core(&program).expect("move_system.arc lowers");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+        let startup_payloads = startup_payloads(&metadata).expect("startup payloads parse");
+        let observable = native_move_query_loop_observable_from_core(&core, &startup_payloads)
+            .expect("compiled Move query-loop proof is derived from Core");
+
+        assert_eq!(observable.schedule_name, "Demo.Main");
+        assert_eq!(observable.schedule_id, DEMO_MAIN_SCHEDULE_ID);
+        assert_eq!(observable.schedule_run_system_id, DEMO_MOVE_SYSTEM_ID);
+        assert_eq!(observable.schedule_run_system_name, "Demo.Move");
+        assert_eq!(observable.system_name, "Move");
+        assert_eq!(
+            observable.target_position_payload,
+            [0x00, 0x00, 0x80, 0x40, 0x00, 0x00, 0xc0, 0x40,]
+        );
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        let mut run_schedule_check = vec![0x48, 0xb8];
+        run_schedule_check.extend_from_slice(&DEMO_MAIN_SCHEDULE_ID.to_le_bytes());
+        run_schedule_check.extend_from_slice(&[0x48, 0x39, 0x86]);
+        run_schedule_check.extend_from_slice(&696_i32.to_le_bytes());
+        run_schedule_check.extend_from_slice(&[0x0f, 0x85]);
+        assert!(
+            contains_subsequence(&text, &run_schedule_check),
+            "generated text should read and validate startup run Demo.Main"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xf3,
+                    0x0f,
+                    0x59,
+                    0xc1, // mulss xmm0, xmm1
+                    0xf3,
+                    0x0f,
+                    0x11,
+                    0x44,
+                    0x24,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT, // movss dword ptr [rsp + 88], xmm0
+                ],
+            ),
+            "generated text should execute compiled Demo.Move field multiplication"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xf3,
+                    0x0f,
+                    0x58,
+                    0xc1, // addss xmm0, xmm1
+                    0xf3,
+                    0x0f,
+                    0x11,
+                    0x44,
+                    0x24,
+                    ECS_POSITION_PAYLOAD_STORAGE_SLOT, // movss dword ptr [rsp + 56], xmm0
+                ],
+            ),
+            "generated text should execute compiled Demo.Move Position store"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "generated text should expose compiled Move success"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_RUN_SCHEDULE_DISPATCH_FAILURE_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "generated text should expose run schedule dispatch failure"
         );
     }
 

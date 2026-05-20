@@ -79,8 +79,9 @@ The proof chain currently demonstrates:
 - A generated-native row-scan skeleton for the bootstrap `Demo.Position + Demo.Velocity` row.
 - Generated-native field loading and `f32` multiplication for `Velocity * Time.delta`.
 - Generated-native `Position` field stores for the bootstrap `Demo.Move` query-loop body.
+- Generated-native `run Demo.Main` dispatch into compiled `Demo.Move` query-loop code.
 
-M18 native codegen for compiled query loops is underway. The next proof is replacing the bootstrap `Move` helper path with the compiled query-loop proof.
+M18 native codegen for compiled query loops is complete. The next proof is defining native ECS execution state.
 
 ## What This Is Not Yet
 
