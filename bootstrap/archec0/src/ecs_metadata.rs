@@ -1,7 +1,10 @@
 #![allow(dead_code)]
 
 use crate::runtime::{
-    ComponentDescriptor, ComponentFieldDescriptor, ResourceDescriptor, ResourceFieldDescriptor,
+    ComponentDescriptor, ComponentFieldDescriptor, QueryAccess, QueryDescriptor,
+    QueryTermDescriptor, ResourceDescriptor, ResourceFieldDescriptor, ScheduleDescriptor,
+    ScheduleItemDescriptor, SystemAccess, SystemDescriptor, SystemParamDescriptorKind,
+    SystemQueryTermDescriptor,
 };
 use crate::runtime_assembly::RuntimeProgramAssembly;
 
@@ -14,6 +17,11 @@ const SECTION_SYSTEMS: u32 = 3;
 const SECTION_QUERIES: u32 = 4;
 const SECTION_SCHEDULES: u32 = 5;
 const SECTION_STARTUP_OPERATIONS: u32 = 6;
+const SYSTEM_PARAM_READ_RESOURCE: u32 = 1;
+const SYSTEM_PARAM_QUERY: u32 = 2;
+const DESCRIPTOR_ACCESS_READ: u32 = 1;
+const DESCRIPTOR_ACCESS_MUT: u32 = 2;
+const SCHEDULE_ITEM_RUN: u32 = 1;
 const SECTION_KINDS: [u32; 6] = [
     SECTION_COMPONENTS,
     SECTION_RESOURCES,
@@ -41,9 +49,21 @@ pub fn encode_ecs_metadata(assembly: &RuntimeProgramAssembly) -> Result<Vec<u8>,
             bytes: encode_resource_descriptors(&assembly.resource_descriptors),
             record_count: assembly.resource_descriptors.len() as u32,
         },
-        SectionPayload::empty(SECTION_SYSTEMS),
-        SectionPayload::empty(SECTION_QUERIES),
-        SectionPayload::empty(SECTION_SCHEDULES),
+        SectionPayload {
+            kind: SECTION_SYSTEMS,
+            bytes: encode_system_descriptors(&assembly.system_descriptors),
+            record_count: assembly.system_descriptors.len() as u32,
+        },
+        SectionPayload {
+            kind: SECTION_QUERIES,
+            bytes: encode_query_descriptors(&assembly.query_descriptors),
+            record_count: assembly.query_descriptors.len() as u32,
+        },
+        SectionPayload {
+            kind: SECTION_SCHEDULES,
+            bytes: encode_schedule_descriptors(&assembly.schedule_descriptors),
+            record_count: assembly.schedule_descriptors.len() as u32,
+        },
         SectionPayload::empty(SECTION_STARTUP_OPERATIONS),
     ];
     let payload_size = sections
@@ -135,6 +155,100 @@ fn encode_resource_fields(bytes: &mut Vec<u8>, fields: &[ResourceFieldDescriptor
     }
 }
 
+fn encode_system_descriptors(descriptors: &[SystemDescriptor]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    for descriptor in descriptors {
+        push_u64(&mut bytes, descriptor.id.0);
+        push_string(&mut bytes, &descriptor.name);
+        push_u32(&mut bytes, descriptor.params.len() as u32);
+        for param in &descriptor.params {
+            push_string(&mut bytes, &param.name);
+            match &param.kind {
+                SystemParamDescriptorKind::ReadResource { resource_id, name } => {
+                    push_u32(&mut bytes, SYSTEM_PARAM_READ_RESOURCE);
+                    push_u64(&mut bytes, resource_id.0);
+                    push_string(&mut bytes, name);
+                }
+                SystemParamDescriptorKind::Query { terms } => {
+                    push_u32(&mut bytes, SYSTEM_PARAM_QUERY);
+                    encode_system_query_terms(&mut bytes, terms);
+                }
+            }
+        }
+    }
+
+    bytes
+}
+
+fn encode_system_query_terms(bytes: &mut Vec<u8>, terms: &[SystemQueryTermDescriptor]) {
+    push_u32(bytes, terms.len() as u32);
+    for term in terms {
+        push_u32(bytes, system_access_code(&term.access));
+        push_u64(bytes, term.component_id.0);
+        push_string(bytes, &term.name);
+    }
+}
+
+fn encode_query_descriptors(descriptors: &[QueryDescriptor]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    for descriptor in descriptors {
+        push_u64(&mut bytes, descriptor.id.0);
+        push_string(&mut bytes, &descriptor.name);
+        encode_query_terms(&mut bytes, &descriptor.terms);
+    }
+
+    bytes
+}
+
+fn encode_query_terms(bytes: &mut Vec<u8>, terms: &[QueryTermDescriptor]) {
+    push_u32(bytes, terms.len() as u32);
+    for term in terms {
+        push_u32(bytes, query_access_code(&term.access));
+        push_u64(bytes, term.component_id.0);
+        push_string(bytes, &term.name);
+    }
+}
+
+fn encode_schedule_descriptors(descriptors: &[ScheduleDescriptor]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    for descriptor in descriptors {
+        push_u64(&mut bytes, descriptor.id.0);
+        push_string(&mut bytes, &descriptor.name);
+        push_u32(&mut bytes, descriptor.items.len() as u32);
+        for item in &descriptor.items {
+            match item {
+                ScheduleItemDescriptor::Run {
+                    system_id,
+                    system_name,
+                } => {
+                    push_u32(&mut bytes, SCHEDULE_ITEM_RUN);
+                    push_u64(&mut bytes, system_id.0);
+                    push_string(&mut bytes, system_name);
+                }
+            }
+        }
+    }
+
+    bytes
+}
+
+fn system_access_code(access: &SystemAccess) -> u32 {
+    match access {
+        SystemAccess::Read => DESCRIPTOR_ACCESS_READ,
+        SystemAccess::Mut => DESCRIPTOR_ACCESS_MUT,
+    }
+}
+
+fn query_access_code(access: &QueryAccess) -> u32 {
+    match access {
+        QueryAccess::Read => DESCRIPTOR_ACCESS_READ,
+        QueryAccess::Mut => DESCRIPTOR_ACCESS_MUT,
+    }
+}
+
 fn push_string(bytes: &mut Vec<u8>, value: &str) {
     push_u32(bytes, value.len() as u32);
     bytes.extend_from_slice(value.as_bytes());
@@ -196,16 +310,13 @@ mod tests {
             assemble_runtime_program_from_source(&program).expect("runtime assembly encodes");
         let metadata = encode_ecs_metadata(&assembly).expect("ECS metadata encodes");
 
-        assert_eq!(metadata.len(), 303);
+        assert!(metadata.len() >= 303);
         assert_eq!(&metadata[0..8], b"ARCHEECS");
         assert_eq!(read_u32_at(&metadata, 8), 1);
         assert_eq!(read_u32_at(&metadata, 12), 6);
 
         assert_section(&metadata, 0, 1, 112, 138, 2);
         assert_section(&metadata, 1, 2, 250, 53, 1);
-        for index in 2..6 {
-            assert_section(&metadata, index, (index + 1) as u32, 303, 0, 0);
-        }
 
         let mut offset = 112;
         assert_descriptor(
@@ -236,6 +347,53 @@ mod tests {
             4,
             &[("delta", "f32", 0)],
         );
+        assert_eq!(offset, 303);
+    }
+
+    #[test]
+    fn encodes_system_query_schedule_descriptors_in_ecs_metadata() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime assembly encodes");
+        let metadata = encode_ecs_metadata(&assembly).expect("ECS metadata encodes");
+
+        assert_eq!(metadata.len(), 577);
+        assert_eq!(&metadata[0..8], b"ARCHEECS");
+        assert_eq!(read_u32_at(&metadata, 8), 1);
+        assert_eq!(read_u32_at(&metadata, 12), 6);
+        assert_section(&metadata, 0, 1, 112, 138, 2);
+        assert_section(&metadata, 1, 2, 250, 53, 1);
+        assert_section(&metadata, 2, 3, 303, 134, 1);
+        assert_section(&metadata, 3, 4, 437, 90, 1);
+        assert_section(&metadata, 4, 5, 527, 50, 1);
+        assert_section(&metadata, 5, 6, 577, 0, 0);
+
+        let mut offset = 303;
+        assert_eq!(read_u64(&metadata, &mut offset), 0x723b6b52df270ed5);
+        assert_eq!(read_string(&metadata, &mut offset), "Demo.Move");
+        assert_eq!(read_u32(&metadata, &mut offset), 2);
+        assert_eq!(read_string(&metadata, &mut offset), "time");
+        assert_eq!(read_u32(&metadata, &mut offset), SYSTEM_PARAM_READ_RESOURCE);
+        assert_eq!(read_u64(&metadata, &mut offset), 0x7924ce11db524521);
+        assert_eq!(read_string(&metadata, &mut offset), "Demo.Time");
+        assert_eq!(read_string(&metadata, &mut offset), "movers");
+        assert_eq!(read_u32(&metadata, &mut offset), SYSTEM_PARAM_QUERY);
+        assert_query_terms(&metadata, &mut offset);
+        assert_eq!(offset, 437);
+
+        assert_eq!(read_u64(&metadata, &mut offset), 0xf4004232b85cef9f);
+        assert_eq!(read_string(&metadata, &mut offset), "Demo.Move.movers");
+        assert_query_terms(&metadata, &mut offset);
+        assert_eq!(offset, 527);
+
+        assert_eq!(read_u64(&metadata, &mut offset), 0xed3d905325519b05);
+        assert_eq!(read_string(&metadata, &mut offset), "Demo.Main");
+        assert_eq!(read_u32(&metadata, &mut offset), 1);
+        assert_eq!(read_u32(&metadata, &mut offset), SCHEDULE_ITEM_RUN);
+        assert_eq!(read_u64(&metadata, &mut offset), 0x723b6b52df270ed5);
+        assert_eq!(read_string(&metadata, &mut offset), "Demo.Move");
         assert_eq!(offset, metadata.len());
     }
 
@@ -273,6 +431,16 @@ mod tests {
             assert_eq!(read_string(metadata, offset), *expected_type_name);
             assert_eq!(read_u32(metadata, offset), *expected_offset);
         }
+    }
+
+    fn assert_query_terms(metadata: &[u8], offset: &mut usize) {
+        assert_eq!(read_u32(metadata, offset), 2);
+        assert_eq!(read_u32(metadata, offset), DESCRIPTOR_ACCESS_MUT);
+        assert_eq!(read_u64(metadata, offset), 0x002202c6aeb4f27b);
+        assert_eq!(read_string(metadata, offset), "Demo.Position");
+        assert_eq!(read_u32(metadata, offset), DESCRIPTOR_ACCESS_READ);
+        assert_eq!(read_u64(metadata, offset), 0x2cf8a68bcb7f913b);
+        assert_eq!(read_string(metadata, offset), "Demo.Velocity");
     }
 
     fn read_u32_at(metadata: &[u8], offset: usize) -> u32 {
