@@ -569,6 +569,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_startup_run_operation")
 
     Invoke-CheckedCommand `
+        -Name "registers_assembly_descriptors_into_world" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "registers_assembly_descriptors_into_world")
+
+    Invoke-CheckedCommand `
         -Name "arche_entity_packs_index_and_generation" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "arche_entity_packs_index_and_generation")

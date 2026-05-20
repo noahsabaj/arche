@@ -121,7 +121,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M14-001 | Register assembly descriptors into ArcheWorld | Source-assembled descriptor roots are registered into a runtime world without startup execution. |
+| M14-002 | Execute startup resource payload operation | Runtime execution stores the assembled `Demo.Time.delta` payload in `ArcheWorld`. |
 
 ### Doing
 
@@ -217,6 +217,7 @@ Board rules:
 | M13-004 | Assemble startup resource payload operation | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml assembles_startup_resource_payload_operation` passed, proving parsed `examples\move_system.arc` assembles startup `resource Time { delta: 1.0 }` into a `Demo.Time` resource payload operation with exact little-endian bytes `00 00 80 3F`; `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_move_system_to_core_metadata`, `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_schedule_to_core_metadata`, and `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed. This was assembly-only: no `ArcheWorld` construction, descriptor registration, resource storage allocation, startup execution, real Core resource semantics, CLI behavior, ELF/codegen changes, or generated executable behavior was added. Implementation commit: `05b3d4a`. |
 | M13-005 | Assemble startup spawn operation | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml assembles_startup_spawn_operation` passed, proving parsed `examples\move_system.arc` assembles startup `spawn { Position { x: 1.0, y: 2.0 } Velocity { x: 3.0, y: 4.0 } }` into a `StartupOperation::Spawn` with `Demo.Position` bytes `00 00 80 3F 00 00 00 40` and `Demo.Velocity` bytes `00 00 40 40 00 00 80 40`; `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_move_system_to_core_metadata`, `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_schedule_to_core_metadata`, and `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed. This was assembly-only: no `ArcheWorld` construction, row insertion, component column writes, startup execution, new Core semantics, CLI behavior, ELF/codegen changes, or generated executable behavior was added. Implementation commit: `1aa3952`. |
 | M13-006 | Assemble startup run operation | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml assembles_startup_run_operation` passed, proving parsed `examples\move_system.arc` assembles startup `run Main` into a `StartupOperation::RunSchedule` for `Demo.Main` with `ScheduleId(0xed3d905325519b05)` after the existing resource payload and spawn operations; `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml assembles_startup_spawn_operation`, `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_move_system_to_core_metadata`, `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_schedule_to_core_metadata`, and `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed. This was assembly-only: no `ArcheWorld` construction, schedule execution, Core run instruction, CLI behavior, ELF/codegen changes, or generated executable behavior was added. M13 source-driven runtime program assembly is complete. Implementation commit: `4696049`. |
+| M14-001 | Register assembly descriptors into ArcheWorld | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml registers_assembly_descriptors_into_world` passed, proving parsed `examples\move_system.arc` can assemble descriptor roots and register `Demo.Position`, `Demo.Velocity`, `Demo.Time`, `Demo.Move`, `Demo.Move.movers`, and `Demo.Main` into a fresh `ArcheWorld`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted source-to-world descriptor proof included. This was descriptor registration only: no resource storage allocation, archetype creation, entity insertion, startup operation execution, schedule planning, schedule execution, parser/Core changes, ELF/codegen changes, or generated executable behavior was added. Implementation commit: `pending`. |
 
 ### Backlog
 
@@ -224,7 +225,6 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M14-002 | Execute startup resource payload operation | Runtime execution stores the assembled `Demo.Time.delta` payload in `ArcheWorld`. |
 | M14-003 | Execute startup spawn operation | Runtime execution inserts the assembled `Position + Velocity` entity and payloads into `ArcheWorld`. |
 | M14-004 | Execute startup run schedule operation | Runtime execution invokes the assembled `Demo.Main` schedule operation. |
 | M14-005 | Execute move_system source runtime vertical slice | Source-assembled runtime execution updates `Position` through `Time`, `Velocity`, and `Move`. |
@@ -1616,18 +1616,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M13-006 stayed source-assembly only | 99/100 |
-| `assembles_startup_run_operation` proves startup `run Main` source assembles into a runtime operation record | 99/100 |
+| M14-001 stayed descriptor-registration only | 99/100 |
+| `registers_assembly_descriptors_into_world` proves source-assembled descriptor roots register into `ArcheWorld` | 99/100 |
 | Existing M0-M13 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state promotes M14-001 and shifts focus to source-level runtime execution | 98/100 |
-| Active inventory adds only the controlled M14-002 through M14-005 backlog | 97/100 |
+| Board state promotes M14-002 and keeps source-level runtime execution as the current focus | 98/100 |
+| Active inventory keeps the controlled M14-003 through M14-005 backlog | 98/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M14-001` in `Ready`.
+- The active board has only `M14-002` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, and completed M13.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, and M14-001.
 - Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, and M14-001 through M14-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, and M13 source-driven runtime program assembly are complete. M14 now begins source-level runtime execution from the assembled model.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, and M13 source-driven runtime program assembly are complete. M14 has registered source-assembled descriptors into `ArcheWorld`; startup resource payload execution is next.

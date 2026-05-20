@@ -7,11 +7,11 @@ use crate::parser::{
     SystemDecl, SystemParam, SystemParamKind,
 };
 use crate::runtime::{
-    stable_query_id, stable_resource_id, stable_schedule_id, stable_system_id, ComponentDescriptor,
-    ComponentFieldDescriptor, QueryAccess, QueryDescriptor, QueryTermDescriptor,
-    ResourceDescriptor, ResourceFieldDescriptor, ResourceId, ScheduleDescriptor, ScheduleId,
-    ScheduleItemDescriptor, SystemAccess, SystemDescriptor, SystemParamDescriptor,
-    SystemParamDescriptorKind, SystemQueryTermDescriptor,
+    stable_query_id, stable_resource_id, stable_schedule_id, stable_system_id, ArcheWorld,
+    ComponentDescriptor, ComponentFieldDescriptor, QueryAccess, QueryDescriptor,
+    QueryTermDescriptor, ResourceDescriptor, ResourceFieldDescriptor, ResourceId,
+    ScheduleDescriptor, ScheduleId, ScheduleItemDescriptor, SystemAccess, SystemDescriptor,
+    SystemParamDescriptor, SystemParamDescriptorKind, SystemQueryTermDescriptor,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -93,6 +93,58 @@ pub fn assemble_runtime_program_from_source(
     }
 
     Ok(assembly)
+}
+
+pub fn register_assembly_descriptors_into_world(
+    assembly: &RuntimeProgramAssembly,
+    world: &mut ArcheWorld,
+) -> Result<(), RuntimeAssemblyError> {
+    for descriptor in &assembly.component_descriptors {
+        if !world.register_component_descriptor(descriptor.clone()) {
+            return Err(assembly_error(format!(
+                "duplicate component descriptor `{}`",
+                descriptor.name
+            )));
+        }
+    }
+
+    for descriptor in &assembly.resource_descriptors {
+        if !world.register_resource_descriptor(descriptor.clone()) {
+            return Err(assembly_error(format!(
+                "duplicate resource descriptor `{}`",
+                descriptor.name
+            )));
+        }
+    }
+
+    for descriptor in &assembly.system_descriptors {
+        if !world.register_system_descriptor(descriptor.clone()) {
+            return Err(assembly_error(format!(
+                "duplicate system descriptor `{}`",
+                descriptor.name
+            )));
+        }
+    }
+
+    for descriptor in &assembly.query_descriptors {
+        if !world.register_query_descriptor(descriptor.clone()) {
+            return Err(assembly_error(format!(
+                "duplicate query descriptor `{}`",
+                descriptor.name
+            )));
+        }
+    }
+
+    for descriptor in &assembly.schedule_descriptors {
+        if !world.register_schedule_descriptor(descriptor.clone()) {
+            return Err(assembly_error(format!(
+                "duplicate schedule descriptor `{}`",
+                descriptor.name
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn assemble_component_descriptor(
@@ -945,6 +997,133 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn registers_assembly_descriptors_into_world() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+        let mut world = ArcheWorld::create();
+
+        register_assembly_descriptors_into_world(&assembly, &mut world)
+            .expect("assembly descriptors register into world");
+
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let time_id = ResourceId(0x7924ce11db524521);
+        let move_id = stable_system_id("Demo", "Move");
+        let movers_id = stable_query_id("Demo", "Move", "movers");
+        let main_id = stable_schedule_id("Demo", "Main");
+
+        assert_eq!(world.component_descriptors().len(), 2);
+        assert_eq!(world.resource_descriptors().len(), 1);
+        assert_eq!(world.system_descriptors().len(), 1);
+        assert_eq!(world.query_descriptors().len(), 1);
+        assert_eq!(world.schedule_descriptors().len(), 1);
+        assert_eq!(
+            world.component_descriptors().get(position_id),
+            Some(&xy_component_descriptor(position_id, "Demo.Position"))
+        );
+        assert_eq!(
+            world.component_descriptors().get(velocity_id),
+            Some(&xy_component_descriptor(velocity_id, "Demo.Velocity"))
+        );
+        assert_eq!(
+            world.resource_descriptors().get(time_id),
+            Some(&ResourceDescriptor {
+                id: time_id,
+                name: "Demo.Time".to_string(),
+                size: 4,
+                align: 4,
+                fields: vec![ResourceFieldDescriptor {
+                    name: "delta".to_string(),
+                    type_name: "f32".to_string(),
+                    offset: 0,
+                }],
+            })
+        );
+        assert_eq!(
+            world.system_descriptors().get(move_id),
+            Some(&SystemDescriptor {
+                id: move_id,
+                name: "Demo.Move".to_string(),
+                params: vec![
+                    SystemParamDescriptor {
+                        name: "time".to_string(),
+                        kind: SystemParamDescriptorKind::ReadResource {
+                            resource_id: time_id,
+                            name: "Demo.Time".to_string(),
+                        },
+                    },
+                    SystemParamDescriptor {
+                        name: "movers".to_string(),
+                        kind: SystemParamDescriptorKind::Query {
+                            terms: vec![
+                                SystemQueryTermDescriptor {
+                                    access: SystemAccess::Mut,
+                                    component_id: position_id,
+                                    name: "Demo.Position".to_string(),
+                                },
+                                SystemQueryTermDescriptor {
+                                    access: SystemAccess::Read,
+                                    component_id: velocity_id,
+                                    name: "Demo.Velocity".to_string(),
+                                },
+                            ],
+                        },
+                    },
+                ],
+            })
+        );
+        assert_eq!(
+            world.query_descriptors().get(movers_id),
+            Some(&QueryDescriptor {
+                id: movers_id,
+                name: "Demo.Move.movers".to_string(),
+                terms: vec![
+                    QueryTermDescriptor {
+                        access: QueryAccess::Mut,
+                        component_id: position_id,
+                        name: "Demo.Position".to_string(),
+                    },
+                    QueryTermDescriptor {
+                        access: QueryAccess::Read,
+                        component_id: velocity_id,
+                        name: "Demo.Velocity".to_string(),
+                    },
+                ],
+            })
+        );
+        assert_eq!(
+            world.schedule_descriptors().get(main_id),
+            Some(&ScheduleDescriptor {
+                id: main_id,
+                name: "Demo.Main".to_string(),
+                items: vec![ScheduleItemDescriptor::Run {
+                    system_id: move_id,
+                    system_name: "Demo.Move".to_string(),
+                }],
+            })
+        );
+        assert_eq!(world.entities().len(), 0);
+        assert_eq!(world.resource_storage_count(), 0);
+        assert_eq!(world.archetype_count(), 0);
+        assert_eq!(assembly.startup_operations.len(), 3);
+        assert!(matches!(
+            assembly.startup_operations[0],
+            StartupOperation::ResourcePayload { .. }
+        ));
+        assert!(matches!(
+            assembly.startup_operations[1],
+            StartupOperation::Spawn { .. }
+        ));
+        assert!(matches!(
+            assembly.startup_operations[2],
+            StartupOperation::RunSchedule { .. }
+        ));
     }
 
     fn xy_component_descriptor(id: ComponentId, name: &str) -> ComponentDescriptor {

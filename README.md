@@ -55,8 +55,9 @@ The proof chain currently demonstrates:
 - Source assembly for startup resource payload operations.
 - Source assembly for startup spawn operations.
 - Source assembly for startup run operations.
+- Source-assembled descriptor registration into `ArcheWorld`.
 
-M13 source-driven runtime program assembly is complete. The next proof is source-level ECS runtime execution.
+M14 source-level ECS runtime execution is underway. The next proof is executing startup resource payload operations.
 
 ## What This Is Not Yet
 
