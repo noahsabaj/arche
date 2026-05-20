@@ -19,8 +19,7 @@ enum Type {
 pub fn check_program(program: &Program) -> Result<(), CheckError> {
     let mut bindings = HashMap::new();
 
-    check_schedules(program)?;
-    check_system_params(program)?;
+    check_ecs_declarations(program)?;
 
     if let Some(startup) = &program.startup {
         for statement in &startup.statements {
@@ -28,6 +27,12 @@ pub fn check_program(program: &Program) -> Result<(), CheckError> {
         }
     }
 
+    Ok(())
+}
+
+pub fn check_ecs_declarations(program: &Program) -> Result<(), CheckError> {
+    check_schedules(program)?;
+    check_system_params(program)?;
     Ok(())
 }
 

@@ -45,6 +45,24 @@ pub fn startup_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> 
     Ok(runtime_wrapped_payload(&startup_body))
 }
 
+pub fn metadata_carrier_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> {
+    let startup = program.startup.as_ref().ok_or_else(unsupported_shape)?;
+    let Some(Statement::Exit(exit)) = startup.statements.last() else {
+        return Err(metadata_carrier_error());
+    };
+    let Expression::Integer(integer) = &exit.expression else {
+        return Err(metadata_carrier_error());
+    };
+
+    if integer.value != 0 {
+        return Err(metadata_carrier_error());
+    }
+
+    Ok(runtime_wrapped_payload(&immediate_exit_body(
+        &exit.expression,
+    )?))
+}
+
 fn runtime_wrapped_payload(startup_body: &[u8]) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(
         RUNTIME_CREATE_PREFIX.len() + startup_body.len() + RUNTIME_DESTROY_SUFFIX.len(),
@@ -165,5 +183,11 @@ fn i32_immediate(value: u64, label: &str) -> Result<i32, CodegenError> {
 fn unsupported_shape() -> CodegenError {
     CodegenError {
         message: "unsupported executable startup shape".to_string(),
+    }
+}
+
+fn metadata_carrier_error() -> CodegenError {
+    CodegenError {
+        message: "metadata carrier executable requires final `exit 0`".to_string(),
     }
 }

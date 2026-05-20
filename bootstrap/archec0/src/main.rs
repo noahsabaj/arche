@@ -221,32 +221,70 @@ fn write_output(source_path: &str, output_path: &str) {
 
     let source_text = read_source(source);
     let program = parse_source(source, &source_text);
-
-    if let Err(error) = checker::check_program(&program) {
-        eprintln!(
-            "{}",
-            diagnostics::format_check_error(source, &source_text, &error)
-        );
-        process::exit(1);
-    }
-
-    let text_payload = match codegen::startup_text_payload(&program) {
-        Ok(text_payload) => text_payload,
-        Err(error) => {
-            eprintln!("archec0: {}", error.message);
-            process::exit(1);
-        }
-    };
-
-    let metadata_payload = match component_metadata::encode_component_metadata(&program) {
-        Ok(metadata_payload) => metadata_payload,
+    let assembly = match runtime_assembly::assemble_runtime_program_from_source(&program) {
+        Ok(assembly) => assembly,
         Err(error) => {
             eprintln!(
-                "archec0: could not encode component metadata: {}",
+                "archec0: could not assemble runtime metadata: {}",
                 error.message
             );
             process::exit(1);
         }
+    };
+
+    let (text_payload, metadata_payload) = if assembly.requires_ecs_metadata() {
+        if let Err(error) = checker::check_ecs_declarations(&program) {
+            eprintln!(
+                "{}",
+                diagnostics::format_check_error(source, &source_text, &error)
+            );
+            process::exit(1);
+        }
+
+        let text_payload = match codegen::metadata_carrier_text_payload(&program) {
+            Ok(text_payload) => text_payload,
+            Err(error) => {
+                eprintln!("archec0: {}", error.message);
+                process::exit(1);
+            }
+        };
+        let metadata_payload = match ecs_metadata::encode_ecs_metadata(&assembly) {
+            Ok(metadata_payload) => metadata_payload,
+            Err(error) => {
+                eprintln!("archec0: could not encode ECS metadata: {}", error.message);
+                process::exit(1);
+            }
+        };
+
+        (text_payload, metadata_payload)
+    } else {
+        if let Err(error) = checker::check_program(&program) {
+            eprintln!(
+                "{}",
+                diagnostics::format_check_error(source, &source_text, &error)
+            );
+            process::exit(1);
+        }
+
+        let text_payload = match codegen::startup_text_payload(&program) {
+            Ok(text_payload) => text_payload,
+            Err(error) => {
+                eprintln!("archec0: {}", error.message);
+                process::exit(1);
+            }
+        };
+        let metadata_payload = match component_metadata::encode_component_metadata(&program) {
+            Ok(metadata_payload) => metadata_payload,
+            Err(error) => {
+                eprintln!(
+                    "archec0: could not encode component metadata: {}",
+                    error.message
+                );
+                process::exit(1);
+            }
+        };
+
+        (text_payload, metadata_payload)
     };
 
     if let Some(parent) = output.parent() {

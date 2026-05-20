@@ -64,8 +64,9 @@ The proof chain currently demonstrates:
 - Component and resource descriptor records encoded into the `ARCHEECS` metadata envelope.
 - System, query, and schedule descriptor records encoded into the `ARCHEECS` metadata envelope.
 - Startup-operation records encoded into the `ARCHEECS` metadata envelope.
+- Generated native metadata-carrier binaries for `move_system.arc` with decoded full `ARCHEECS` payloads.
 
-M15 complete ECS metadata in the native executable is underway. The next proof is decoding generated native binary ECS metadata.
+M15 complete ECS metadata in the native executable is complete. The next proof is native executable source-level ECS startup.
 
 ## What This Is Not Yet
 

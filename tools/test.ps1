@@ -119,6 +119,19 @@ function Assert-StringEqual {
     }
 }
 
+function ConvertFrom-HexUInt64 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Hex
+    )
+
+    return [UInt64]::Parse(
+        $Hex,
+        [System.Globalization.NumberStyles]::HexNumber,
+        [System.Globalization.CultureInfo]::InvariantCulture
+    )
+}
+
 function Assert-OutputContains {
     param(
         [Parameter(Mandatory = $true)]
@@ -135,6 +148,31 @@ function Assert-OutputContains {
     if (!$text.Contains($ExpectedText)) {
         Write-Error "$Name expected output to contain '$ExpectedText'"
         exit 1
+    }
+}
+
+function Assert-BytesEqual {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Name,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]] $Actual,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]] $Expected
+    )
+
+    if ($Actual.Length -ne $Expected.Length) {
+        Write-Error "$Name expected $($Expected.Length) bytes but got $($Actual.Length)"
+        exit 1
+    }
+
+    for ($i = 0; $i -lt $Expected.Length; $i++) {
+        if ($Actual[$i] -ne $Expected[$i]) {
+            Write-Error "$Name byte $i expected $($Expected[$i]) but got $($Actual[$i])"
+            exit 1
+        }
     }
 }
 
@@ -300,6 +338,22 @@ function Read-MetadataString {
     return $value
 }
 
+function Read-MetadataBytes {
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]] $Bytes,
+
+        [Parameter(Mandatory = $true)]
+        [ref] $Offset
+    )
+
+    $length = Read-U32 -Bytes $Bytes -Offset $Offset
+    $value = New-Object byte[] $length
+    [Array]::Copy($Bytes, $Offset.Value, $value, 0, $length)
+    $Offset.Value += [int]$length
+    return [byte[]]$value
+}
+
 function New-RuntimeCreatePrefix {
     [byte[]]@(
         0x48, 0x83, 0xec, 0x18,
@@ -418,6 +472,171 @@ function Test-PositionComponentMetadata {
     Assert-Equal -Name "component metadata end offset" -Actual $offset -Expected $bytes.Length
 
     Write-Host "PASS: component metadata payload check"
+}
+
+function Assert-EcsSection {
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]] $Bytes,
+
+        [Parameter(Mandatory = $true)]
+        [int] $MetadataStart,
+
+        [Parameter(Mandatory = $true)]
+        [int] $Index,
+
+        [Parameter(Mandatory = $true)]
+        [UInt32] $ExpectedKind,
+
+        [Parameter(Mandatory = $true)]
+        [UInt32] $ExpectedOffset,
+
+        [Parameter(Mandatory = $true)]
+        [UInt32] $ExpectedByteLength,
+
+        [Parameter(Mandatory = $true)]
+        [UInt32] $ExpectedRecordCount
+    )
+
+    $offset = $MetadataStart + 16 + ($Index * 16)
+
+    Assert-Equal -Name "ECS metadata section $Index kind" -Actual (Read-U32 -Bytes $Bytes -Offset ([ref]$offset)) -Expected $ExpectedKind
+    Assert-Equal -Name "ECS metadata section $Index offset" -Actual (Read-U32 -Bytes $Bytes -Offset ([ref]$offset)) -Expected $ExpectedOffset
+    Assert-Equal -Name "ECS metadata section $Index byte length" -Actual (Read-U32 -Bytes $Bytes -Offset ([ref]$offset)) -Expected $ExpectedByteLength
+    Assert-Equal -Name "ECS metadata section $Index record count" -Actual (Read-U32 -Bytes $Bytes -Offset ([ref]$offset)) -Expected $ExpectedRecordCount
+}
+
+function Assert-EcsQueryTerms {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Name,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]] $Bytes,
+
+        [Parameter(Mandatory = $true)]
+        [ref] $Offset
+    )
+
+    Assert-Equal -Name "$Name query term count" -Actual (Read-U32 -Bytes $Bytes -Offset $Offset) -Expected 2
+    Assert-Equal -Name "$Name query term 0 access" -Actual (Read-U32 -Bytes $Bytes -Offset $Offset) -Expected 2
+    Assert-Equal -Name "$Name query term 0 component id" -Actual (Read-U64 -Bytes $Bytes -Offset $Offset) -Expected (ConvertFrom-HexUInt64 "002202c6aeb4f27b")
+    Assert-StringEqual -Name "$Name query term 0 component name" -Actual (Read-MetadataString -Bytes $Bytes -Offset $Offset) -Expected "Demo.Position"
+    Assert-Equal -Name "$Name query term 1 access" -Actual (Read-U32 -Bytes $Bytes -Offset $Offset) -Expected 1
+    Assert-Equal -Name "$Name query term 1 component id" -Actual (Read-U64 -Bytes $Bytes -Offset $Offset) -Expected (ConvertFrom-HexUInt64 "2cf8a68bcb7f913b")
+    Assert-StringEqual -Name "$Name query term 1 component name" -Actual (Read-MetadataString -Bytes $Bytes -Offset $Offset) -Expected "Demo.Velocity"
+}
+
+function Test-EcsMetadataPayload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $expectedText = New-ImmediateRuntimeText -ExpectedExitCode 0
+
+    Test-Elf64Payload -Path $Path -ExpectedText $expectedText -ExpectedTrailingPayloadLength 717
+
+    Write-Host "==> ECS metadata payload check"
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Path))
+    $metadataStart = 120 + $expectedText.Length
+    $offset = $metadataStart
+
+    $magic = [System.Text.Encoding]::ASCII.GetString($bytes, $offset, 8)
+    $offset += 8
+    Assert-StringEqual -Name "ECS metadata magic" -Actual $magic -Expected "ARCHEECS"
+    Assert-Equal -Name "ECS metadata version" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
+    Assert-Equal -Name "ECS metadata section count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 6
+
+    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 0 -ExpectedKind 1 -ExpectedOffset 112 -ExpectedByteLength 138 -ExpectedRecordCount 2
+    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 1 -ExpectedKind 2 -ExpectedOffset 250 -ExpectedByteLength 53 -ExpectedRecordCount 1
+    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 2 -ExpectedKind 3 -ExpectedOffset 303 -ExpectedByteLength 134 -ExpectedRecordCount 1
+    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 3 -ExpectedKind 4 -ExpectedOffset 437 -ExpectedByteLength 90 -ExpectedRecordCount 1
+    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 4 -ExpectedKind 5 -ExpectedOffset 527 -ExpectedByteLength 50 -ExpectedRecordCount 1
+    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 5 -ExpectedKind 6 -ExpectedOffset 577 -ExpectedByteLength 140 -ExpectedRecordCount 3
+
+    $offset = $metadataStart + 112
+    Assert-Equal -Name "ECS Position id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "002202c6aeb4f27b")
+    Assert-StringEqual -Name "ECS Position name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Position"
+    Assert-Equal -Name "ECS Position size" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 8
+    Assert-Equal -Name "ECS Position align" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
+    Assert-Equal -Name "ECS Position field count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
+    Assert-StringEqual -Name "ECS Position field 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "x"
+    Assert-StringEqual -Name "ECS Position field 0 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
+    Assert-Equal -Name "ECS Position field 0 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 0
+    Assert-StringEqual -Name "ECS Position field 1 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "y"
+    Assert-StringEqual -Name "ECS Position field 1 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
+    Assert-Equal -Name "ECS Position field 1 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
+
+    Assert-Equal -Name "ECS Velocity id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "2cf8a68bcb7f913b")
+    Assert-StringEqual -Name "ECS Velocity name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Velocity"
+    Assert-Equal -Name "ECS Velocity size" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 8
+    Assert-Equal -Name "ECS Velocity align" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
+    Assert-Equal -Name "ECS Velocity field count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
+    Assert-StringEqual -Name "ECS Velocity field 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "x"
+    Assert-StringEqual -Name "ECS Velocity field 0 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
+    Assert-Equal -Name "ECS Velocity field 0 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 0
+    Assert-StringEqual -Name "ECS Velocity field 1 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "y"
+    Assert-StringEqual -Name "ECS Velocity field 1 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
+    Assert-Equal -Name "ECS Velocity field 1 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
+    Assert-Equal -Name "ECS component section end" -Actual $offset -Expected ($metadataStart + 250)
+
+    Assert-Equal -Name "ECS Time id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "7924ce11db524521")
+    Assert-StringEqual -Name "ECS Time name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Time"
+    Assert-Equal -Name "ECS Time size" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
+    Assert-Equal -Name "ECS Time align" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
+    Assert-Equal -Name "ECS Time field count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
+    Assert-StringEqual -Name "ECS Time field 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "delta"
+    Assert-StringEqual -Name "ECS Time field 0 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
+    Assert-Equal -Name "ECS Time field 0 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 0
+    Assert-Equal -Name "ECS resource section end" -Actual $offset -Expected ($metadataStart + 303)
+
+    Assert-Equal -Name "ECS Move id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "723b6b52df270ed5")
+    Assert-StringEqual -Name "ECS Move name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Move"
+    Assert-Equal -Name "ECS Move param count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
+    Assert-StringEqual -Name "ECS Move param 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "time"
+    Assert-Equal -Name "ECS Move param 0 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
+    Assert-Equal -Name "ECS Move param 0 resource id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "7924ce11db524521")
+    Assert-StringEqual -Name "ECS Move param 0 resource name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Time"
+    Assert-StringEqual -Name "ECS Move param 1 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "movers"
+    Assert-Equal -Name "ECS Move param 1 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
+    Assert-EcsQueryTerms -Name "ECS Move param 1" -Bytes $bytes -Offset ([ref]$offset)
+    Assert-Equal -Name "ECS system section end" -Actual $offset -Expected ($metadataStart + 437)
+
+    Assert-Equal -Name "ECS movers query id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "f4004232b85cef9f")
+    Assert-StringEqual -Name "ECS movers query name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Move.movers"
+    Assert-EcsQueryTerms -Name "ECS movers" -Bytes $bytes -Offset ([ref]$offset)
+    Assert-Equal -Name "ECS query section end" -Actual $offset -Expected ($metadataStart + 527)
+
+    Assert-Equal -Name "ECS Main schedule id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "ed3d905325519b05")
+    Assert-StringEqual -Name "ECS Main schedule name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Main"
+    Assert-Equal -Name "ECS Main schedule item count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
+    Assert-Equal -Name "ECS Main schedule item 0 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
+    Assert-Equal -Name "ECS Main schedule item 0 system id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "723b6b52df270ed5")
+    Assert-StringEqual -Name "ECS Main schedule item 0 system name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Move"
+    Assert-Equal -Name "ECS schedule section end" -Actual $offset -Expected ($metadataStart + 577)
+
+    Assert-Equal -Name "ECS startup op 0 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
+    Assert-Equal -Name "ECS startup op 0 resource id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "7924ce11db524521")
+    Assert-StringEqual -Name "ECS startup op 0 resource name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Time"
+    Assert-BytesEqual -Name "ECS startup op 0 payload" -Actual (Read-MetadataBytes -Bytes $bytes -Offset ([ref]$offset)) -Expected ([byte[]]@(0x00, 0x00, 0x80, 0x3f))
+
+    Assert-Equal -Name "ECS startup op 1 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
+    Assert-Equal -Name "ECS startup op 1 component count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
+    Assert-Equal -Name "ECS startup op 1 component 0 id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "002202c6aeb4f27b")
+    Assert-StringEqual -Name "ECS startup op 1 component 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Position"
+    Assert-BytesEqual -Name "ECS startup op 1 component 0 payload" -Actual (Read-MetadataBytes -Bytes $bytes -Offset ([ref]$offset)) -Expected ([byte[]]@(0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40))
+    Assert-Equal -Name "ECS startup op 1 component 1 id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "2cf8a68bcb7f913b")
+    Assert-StringEqual -Name "ECS startup op 1 component 1 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Velocity"
+    Assert-BytesEqual -Name "ECS startup op 1 component 1 payload" -Actual (Read-MetadataBytes -Bytes $bytes -Offset ([ref]$offset)) -Expected ([byte[]]@(0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40))
+
+    Assert-Equal -Name "ECS startup op 2 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 3
+    Assert-Equal -Name "ECS startup op 2 schedule id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "ed3d905325519b05")
+    Assert-StringEqual -Name "ECS startup op 2 schedule name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Main"
+    Assert-Equal -Name "ECS metadata end offset" -Actual $offset -Expected $bytes.Length
+
+    Write-Host "PASS: ECS metadata payload check"
 }
 
 function Test-Elf64Executable {
@@ -1112,6 +1331,15 @@ try {
         -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\position.arc", "-o", ".\build\position")
 
     Test-PositionComponentMetadata -Path ".\build\position"
+
+    Remove-Item -LiteralPath ".\build\move_system" -Force -ErrorAction SilentlyContinue
+
+    Invoke-CheckedCommand `
+        -Name "archec0 examples/move_system.arc -o build/move_system" `
+        -Executable "cargo" `
+        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system.arc", "-o", ".\build\move_system")
+
+    Test-EcsMetadataPayload -Path ".\build\move_system"
 
     Remove-Item -LiteralPath ".\build\bad" -Force -ErrorAction SilentlyContinue
 

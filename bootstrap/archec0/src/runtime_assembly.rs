@@ -51,6 +51,14 @@ impl RuntimeProgramAssembly {
             && self.schedule_descriptors.is_empty()
             && self.startup_operations.is_empty()
     }
+
+    pub fn requires_ecs_metadata(&self) -> bool {
+        !self.resource_descriptors.is_empty()
+            || !self.system_descriptors.is_empty()
+            || !self.query_descriptors.is_empty()
+            || !self.schedule_descriptors.is_empty()
+            || !self.startup_operations.is_empty()
+    }
 }
 
 pub fn assemble_runtime_program_from_source(
