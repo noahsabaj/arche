@@ -3,8 +3,8 @@
 use crate::layout::{self, ComponentId};
 use crate::parser::{
     ComponentDecl, ComponentLiteralValue, Program, QueryAccess as ParserQueryAccess, ResourceDecl,
-    ResourceStatement, ScheduleDecl, ScheduleItem, Statement, SystemDecl, SystemParam,
-    SystemParamKind,
+    ResourceStatement, ScheduleDecl, ScheduleItem, SpawnStatement, Statement, SystemDecl,
+    SystemParam, SystemParamKind,
 };
 use crate::runtime::{
     stable_query_id, stable_resource_id, stable_schedule_id, stable_system_id, ComponentDescriptor,
@@ -85,6 +85,7 @@ pub fn assemble_runtime_program_from_source(
     if let Some(startup) = &program.startup {
         assembly.startup_operations = assemble_startup_operations(
             &program.world.name,
+            &assembly.component_descriptors,
             &assembly.resource_descriptors,
             &startup.statements,
         )?;
@@ -230,16 +231,23 @@ fn assemble_query_access(access: ParserQueryAccess) -> QueryAccess {
 
 fn assemble_startup_operations(
     world_name: &str,
+    components: &[ComponentDescriptor],
     resources: &[ResourceDescriptor],
     statements: &[Statement],
 ) -> Result<Vec<StartupOperation>, RuntimeAssemblyError> {
     let mut operations = Vec::new();
 
     for statement in statements {
-        if let Statement::Resource(resource) = statement {
-            operations.push(assemble_resource_payload_operation(
-                world_name, resources, resource,
-            )?);
+        match statement {
+            Statement::Resource(resource) => {
+                operations.push(assemble_resource_payload_operation(
+                    world_name, resources, resource,
+                )?);
+            }
+            Statement::Spawn(spawn) => {
+                operations.push(assemble_spawn_operation(world_name, components, spawn)?);
+            }
+            _ => {}
         }
     }
 
@@ -301,6 +309,72 @@ fn assemble_resource_payload_operation(
         resource_id: descriptor.id,
         resource_name,
         payload_bytes,
+    })
+}
+
+fn assemble_spawn_operation(
+    world_name: &str,
+    components: &[ComponentDescriptor],
+    spawn: &SpawnStatement,
+) -> Result<StartupOperation, RuntimeAssemblyError> {
+    let mut operation_components = Vec::new();
+
+    for component in &spawn.components {
+        let component_name = layout::component_qualified_name(world_name, &component.name);
+        let descriptor = components
+            .iter()
+            .find(|descriptor| descriptor.name == component_name)
+            .ok_or_else(|| assembly_error(format!("unknown component `{}`", component.name)))?;
+        let mut payload_bytes = vec![0; descriptor.size as usize];
+
+        for field in &component.fields {
+            let descriptor_field = descriptor
+                .fields
+                .iter()
+                .find(|descriptor_field| descriptor_field.name == field.name)
+                .ok_or_else(|| {
+                    assembly_error(format!(
+                        "unknown field `{}` for component `{}`",
+                        field.name, component.name
+                    ))
+                })?;
+
+            if descriptor_field.type_name != "f32" {
+                return Err(assembly_error(format!(
+                    "unsupported component field type `{}` for `{}`",
+                    descriptor_field.type_name, field.name
+                )));
+            }
+
+            let value = match &field.value {
+                ComponentLiteralValue::Float { text, .. } => text.parse::<f32>().map_err(|_| {
+                    assembly_error(format!(
+                        "invalid f32 literal `{}` for component field `{}`",
+                        text, field.name
+                    ))
+                })?,
+            };
+            let offset = descriptor_field.offset as usize;
+            let end = offset + 4;
+            if end > payload_bytes.len() {
+                return Err(assembly_error(format!(
+                    "component field `{}` exceeds payload size",
+                    field.name
+                )));
+            }
+
+            payload_bytes[offset..end].copy_from_slice(&value.to_le_bytes());
+        }
+
+        operation_components.push(StartupSpawnComponent {
+            component_id: descriptor.id,
+            component_name,
+            payload_bytes,
+        });
+    }
+
+    Ok(StartupOperation::Spawn {
+        components: operation_components,
     })
 }
 
@@ -755,12 +829,56 @@ mod tests {
         assert_eq!(assembly.query_descriptors.len(), 1);
         assert_eq!(assembly.schedule_descriptors.len(), 1);
         assert_eq!(
-            assembly.startup_operations,
-            vec![StartupOperation::ResourcePayload {
+            assembly.startup_operations.first(),
+            Some(&StartupOperation::ResourcePayload {
                 resource_id: ResourceId(0x7924ce11db524521),
                 resource_name: "Demo.Time".to_string(),
                 payload_bytes: vec![0x00, 0x00, 0x80, 0x3f],
-            }]
+            })
+        );
+        assert!(!assembly
+            .startup_operations
+            .iter()
+            .any(|operation| matches!(operation, StartupOperation::RunSchedule { .. })));
+    }
+
+    #[test]
+    fn assembles_startup_spawn_operation() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+
+        assert_eq!(assembly.component_descriptors.len(), 2);
+        assert_eq!(assembly.resource_descriptors.len(), 1);
+        assert_eq!(assembly.system_descriptors.len(), 1);
+        assert_eq!(assembly.query_descriptors.len(), 1);
+        assert_eq!(assembly.schedule_descriptors.len(), 1);
+        assert_eq!(
+            assembly.startup_operations,
+            vec![
+                StartupOperation::ResourcePayload {
+                    resource_id: ResourceId(0x7924ce11db524521),
+                    resource_name: "Demo.Time".to_string(),
+                    payload_bytes: vec![0x00, 0x00, 0x80, 0x3f],
+                },
+                StartupOperation::Spawn {
+                    components: vec![
+                        StartupSpawnComponent {
+                            component_id: ComponentId(0x002202c6aeb4f27b),
+                            component_name: "Demo.Position".to_string(),
+                            payload_bytes: vec![0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40,],
+                        },
+                        StartupSpawnComponent {
+                            component_id: ComponentId(0x2cf8a68bcb7f913b),
+                            component_name: "Demo.Velocity".to_string(),
+                            payload_bytes: vec![0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40,],
+                        },
+                    ],
+                },
+            ]
         );
     }
 

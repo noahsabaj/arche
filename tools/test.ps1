@@ -559,6 +559,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_startup_resource_payload_operation")
 
     Invoke-CheckedCommand `
+        -Name "assembles_startup_spawn_operation" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_startup_spawn_operation")
+
+    Invoke-CheckedCommand `
         -Name "arche_entity_packs_index_and_generation" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "arche_entity_packs_index_and_generation")
@@ -938,6 +943,17 @@ try {
             "    resource Time",
             "      field delta",
             "        float 1.0",
+            "    spawn",
+            "      component Position",
+            "        field x",
+            "          float 1.0",
+            "        field y",
+            "          float 2.0",
+            "      component Velocity",
+            "        field x",
+            "          float 3.0",
+            "        field y",
+            "          float 4.0",
             "    run Main",
             "    exit",
             "      integer 0"

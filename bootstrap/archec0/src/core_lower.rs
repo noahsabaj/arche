@@ -599,10 +599,44 @@ mod tests {
                 locals: vec![],
                 blocks: vec![CoreBlock {
                     id: BlockId(0),
-                    instructions: vec![CoreInstruction::I32Const {
-                        result: ValueId(0),
-                        value: 0,
-                    }],
+                    instructions: vec![
+                        CoreInstruction::Spawn {
+                            components: vec![
+                                CoreSpawnComponent {
+                                    component_id: 0x002202c6aeb4f27b,
+                                    name: "Demo.Position".to_string(),
+                                    fields: vec![
+                                        CoreSpawnField {
+                                            name: "x".to_string(),
+                                            value: CoreSpawnFieldValue::F32Bits(0x3f800000),
+                                        },
+                                        CoreSpawnField {
+                                            name: "y".to_string(),
+                                            value: CoreSpawnFieldValue::F32Bits(0x40000000),
+                                        },
+                                    ],
+                                },
+                                CoreSpawnComponent {
+                                    component_id: 0x2cf8a68bcb7f913b,
+                                    name: "Demo.Velocity".to_string(),
+                                    fields: vec![
+                                        CoreSpawnField {
+                                            name: "x".to_string(),
+                                            value: CoreSpawnFieldValue::F32Bits(0x40400000),
+                                        },
+                                        CoreSpawnField {
+                                            name: "y".to_string(),
+                                            value: CoreSpawnFieldValue::F32Bits(0x40800000),
+                                        },
+                                    ],
+                                },
+                            ],
+                        },
+                        CoreInstruction::I32Const {
+                            result: ValueId(0),
+                            value: 0,
+                        },
+                    ],
                     terminator: CoreTerminator::Exit { value: ValueId(0) },
                 }],
             }],

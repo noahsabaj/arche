@@ -53,8 +53,9 @@ The proof chain currently demonstrates:
 - Source assembly for component and resource descriptors.
 - Source assembly for system, query, and schedule descriptors.
 - Source assembly for startup resource payload operations.
+- Source assembly for startup spawn operations.
 
-M13 source-driven runtime program assembly is underway. The next proof is assembling startup spawn operations from source.
+M13 source-driven runtime program assembly is underway. The next proof is assembling startup run operations from source.
 
 ## What This Is Not Yet
 

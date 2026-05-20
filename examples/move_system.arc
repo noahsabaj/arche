@@ -31,6 +31,12 @@ schedule Main {
 
 startup {
     resource Time { delta: 1.0 }
+
+    spawn {
+        Position { x: 1.0, y: 2.0 }
+        Velocity { x: 3.0, y: 4.0 }
+    }
+
     run Main
     exit 0
 }
