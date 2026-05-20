@@ -539,6 +539,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "encodes_position_component_metadata")
 
     Invoke-CheckedCommand `
+        -Name "defines_ecs_metadata_binary_envelope" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_ecs_metadata_binary_envelope")
+
+    Invoke-CheckedCommand `
         -Name "defines_runtime_program_assembly_model" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_runtime_program_assembly_model")

@@ -60,8 +60,9 @@ The proof chain currently demonstrates:
 - Source-assembled startup spawn execution into `ArcheWorld`.
 - Source-assembled startup run schedule execution into `ArcheWorld`.
 - Source-driven runtime execution of the full `move_system.arc` vertical slice, updating `Position` through `Time`, `Velocity`, and `Move`.
+- A deterministic `ARCHEECS` binary envelope for complete ECS metadata sections.
 
-M14 source-level ECS runtime execution is complete. The next proof is complete ECS metadata in the native executable.
+M15 complete ECS metadata in the native executable is underway. The next proof is encoding component/resource descriptors into the ECS metadata envelope.
 
 ## What This Is Not Yet
 

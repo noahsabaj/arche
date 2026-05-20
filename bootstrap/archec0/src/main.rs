@@ -7,6 +7,7 @@ mod core_format;
 mod core_lower;
 mod core_verify;
 mod diagnostics;
+mod ecs_metadata;
 mod elf64;
 mod layout;
 mod lexer;
