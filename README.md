@@ -59,8 +59,9 @@ The proof chain currently demonstrates:
 - Source-assembled startup resource payload execution into `ArcheWorld`.
 - Source-assembled startup spawn execution into `ArcheWorld`.
 - Source-assembled startup run schedule execution into `ArcheWorld`.
+- Source-driven runtime execution of the full `move_system.arc` vertical slice, updating `Position` through `Time`, `Velocity`, and `Move`.
 
-M14 source-level ECS runtime execution is underway. The next proof is executing the full `move_system.arc` source runtime vertical slice.
+M14 source-level ECS runtime execution is complete. The next proof is complete ECS metadata in the native executable.
 
 ## What This Is Not Yet
 

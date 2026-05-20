@@ -282,6 +282,29 @@ pub fn execute_startup_run_schedule_operation(
         .map_err(|error| assembly_error(error.message))
 }
 
+pub fn execute_runtime_program_assembly(
+    assembly: &RuntimeProgramAssembly,
+) -> Result<ArcheWorld, RuntimeAssemblyError> {
+    let mut world = ArcheWorld::create();
+
+    register_assembly_descriptors_into_world(assembly, &mut world)?;
+    for operation in &assembly.startup_operations {
+        match operation {
+            StartupOperation::ResourcePayload { .. } => {
+                execute_startup_resource_payload_operation(operation, &mut world)?;
+            }
+            StartupOperation::Spawn { .. } => {
+                execute_startup_spawn_operation(operation, &mut world)?;
+            }
+            StartupOperation::RunSchedule { .. } => {
+                execute_startup_run_schedule_operation(operation, &mut world)?;
+            }
+        }
+    }
+
+    Ok(world)
+}
+
 fn assemble_component_descriptor(
     world_name: &str,
     component: &ComponentDecl,
@@ -1402,6 +1425,60 @@ mod tests {
         let table = world.archetype(&key).expect("spawn archetype exists");
         assert_eq!(table.entity_count(), 1);
         assert_eq!(table.entity(0), Some(entity));
+        assert_eq!(
+            table
+                .column(position_id)
+                .expect("position column exists")
+                .row_bytes(0),
+            Some(expected_position.as_slice())
+        );
+        assert_eq!(
+            table
+                .column(velocity_id)
+                .expect("velocity column exists")
+                .row_bytes(0),
+            Some(initial_velocity.as_slice())
+        );
+        assert!(world.entities().is_alive(entity));
+    }
+
+    #[test]
+    fn executes_move_system_source_runtime_vertical_slice() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+
+        let world = execute_runtime_program_assembly(&assembly).expect("runtime assembly executes");
+
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let time_id = ResourceId(0x7924ce11db524521);
+        let expected_position = f32_pair_payload(4.0, 6.0);
+        let initial_velocity = f32_pair_payload(3.0, 4.0);
+        let key = ArchetypeKey::new(vec![position_id, velocity_id]);
+
+        assert_eq!(world.component_descriptors().len(), 2);
+        assert_eq!(world.resource_descriptors().len(), 1);
+        assert_eq!(world.system_descriptors().len(), 1);
+        assert_eq!(world.query_descriptors().len(), 1);
+        assert_eq!(world.schedule_descriptors().len(), 1);
+        assert_eq!(world.resource_storage_count(), 1);
+        assert_eq!(
+            world
+                .read_resource_f32_field(time_id, "delta")
+                .expect("delta decodes"),
+            1.0
+        );
+        assert_eq!(world.entities().len(), 1);
+        assert_eq!(world.archetype_count(), 1);
+
+        let table = world.archetype(&key).expect("spawn archetype exists");
+        assert_eq!(table.entity_count(), 1);
+        let entity = table.entity(0).expect("row 0 entity exists");
+        assert_eq!(entity.index(), 0);
+        assert_eq!(entity.generation(), 0);
         assert_eq!(
             table
                 .column(position_id)

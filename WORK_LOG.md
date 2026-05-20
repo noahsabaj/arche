@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M14 source-level ECS runtime execution proof.
+**Current focus:** M15 complete ECS metadata in native executable.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -52,9 +52,8 @@ Source file -> parsed ECS program -> Arche Core -> runtime world -> schedule -> 
 
 Current missing links:
 
-- Source-driven startup execution for resources, spawns, and schedules.
+- Complete ECS metadata encoding in generated native executables.
 - System body Core lowering for real query loops.
-- Complete ECS metadata in generated native executables.
 - Native generated query-loop code instead of runtime-only helper proofs.
 
 ## Integration Debt
@@ -64,10 +63,10 @@ These are intentional gaps created by narrow proof milestones.
 Current gaps:
 
 - Component/source declarations can produce metadata, but source-level ECS programs are not yet fully executed in generated native binaries.
-- Spawn and resource behavior are proven in runtime tests, but startup spawn/resource source is not yet driving generated executable ECS state.
+- Source-level startup resource, spawn, and schedule execution now drives runtime ECS state, but not generated executable ECS state.
 - System declarations and query metadata exist, but system bodies are not yet lowered into executable query-loop code.
-- M10 Move behavior is proven through a runtime application path, not a compiled source system body.
-- Runtime schedule plan execution and source-level `run Main` parsing are proven; source-driven schedule execution is not yet native executable behavior.
+- M10/M14 Move behavior is proven through a runtime application path, not a compiled source system body.
+- Runtime schedule execution is source-driven in tests, but not yet native executable behavior.
 
 ## Future Horizon
 
@@ -121,7 +120,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M14-005 | Execute move_system source runtime vertical slice | Source-assembled runtime execution updates `Position` through `Time`, `Velocity`, and `Move`. |
+| M15-001 | Define ECS metadata binary envelope | A generated metadata envelope has a deterministic magic, version, and section structure for ECS records. |
 
 ### Doing
 
@@ -221,6 +220,7 @@ Board rules:
 | M14-002 | Execute startup resource payload operation | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_startup_resource_payload_operation` passed, proving parsed `examples\move_system.arc` can assemble startup `resource Time { delta: 1.0 }`, register descriptors into `ArcheWorld`, execute only that resource payload operation, allocate `Demo.Time` storage, store exact bytes `00 00 80 3F`, and decode `Time.delta == 1.0`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted source-to-world startup resource proof included. This was resource startup execution only: no spawn execution, archetype creation, entity insertion, schedule planning, schedule execution, parser/Core changes, ELF/codegen changes, or generated executable behavior was added. Implementation commit: `addd0da`. |
 | M14-003 | Execute startup spawn operation | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_startup_spawn_operation` passed, proving parsed `examples\move_system.arc` can assemble startup `spawn { Position { x: 1.0, y: 2.0 } Velocity { x: 3.0, y: 4.0 } }`, register descriptors into `ArcheWorld`, execute the assembled spawn operation, allocate one entity, create the `Demo.Position + Demo.Velocity` archetype, allocate component columns, and copy exact `Position` bytes `00 00 80 3F 00 00 00 40` and `Velocity` bytes `00 00 40 40 00 00 80 40`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted source-to-world startup spawn proof included. This was spawn startup execution only: no schedule planning, schedule execution, `Move` application, parser/Core changes, ELF/codegen changes, or generated executable behavior was added. Implementation commit: `4b35760`. |
 | M14-004 | Execute startup run schedule operation | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_startup_run_schedule_operation` passed, proving parsed `examples\move_system.arc` can assemble startup `run Main`, register descriptors into `ArcheWorld`, execute resource and spawn startup operations, then execute the assembled `Demo.Main` run schedule operation through the existing runtime schedule plan/executor so `Position` updates from `1.0, 2.0` to `4.0, 6.0` while `Velocity` and `Time.delta` remain unchanged; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted source-to-world startup run proof included. This was startup run schedule execution only: no parser/Core changes, ELF/codegen changes, generated executable behavior, or general startup dispatcher was added. Implementation commit: `6913db2`. |
+| M14-005 | Execute move_system source runtime vertical slice | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_move_system_source_runtime_vertical_slice` passed, proving parsed `examples\move_system.arc` can assemble the full runtime program, register descriptors into a fresh `ArcheWorld`, execute startup resource payload, spawn, and `run Main` operations in source order, and update `Position` from `1.0, 2.0` to `4.0, 6.0` while preserving `Velocity`, `Time.delta`, entity liveness, and descriptor roots; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted full source-to-runtime vertical-slice proof included. This was runtime assembly execution only: no parser/Core changes, CLI behavior, ELF/codegen changes, generated executable behavior, native metadata encoding, or compiled system body was added. M14 source-level ECS runtime execution is complete. Implementation commit: `PENDING`. |
 
 ### Backlog
 
@@ -228,7 +228,10 @@ Dependency ordered:
 
 | Issue | Title | Done when |
 |---|---|---|
-| - | - | Empty. |
+| M15-002 | Encode component and resource descriptors in metadata | Generated ECS metadata contains deterministic component and resource descriptor records. |
+| M15-003 | Encode system, query, and schedule descriptors in metadata | Generated ECS metadata contains deterministic system, query, and schedule descriptor records. |
+| M15-004 | Encode startup operations in metadata | Generated ECS metadata contains deterministic startup resource, spawn, and run operation records. |
+| M15-005 | Decode generated ECS metadata proof | The proof runner decodes generated native binary ECS metadata for the vertical-slice fixture. |
 
 ## Milestones
 
@@ -1571,6 +1574,64 @@ cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_move_system_s
 
 Done when the source-assembled runtime path updates `Position` from `Velocity * Time.delta`.
 
+### M15: Complete ECS metadata in native executable
+
+Purpose:
+
+```text
+Encode source-derived ECS descriptors and startup operations into generated native binaries before native execution consumes them.
+```
+
+#### M15-001: Define ECS metadata binary envelope
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_ecs_metadata_binary_envelope
+```
+
+Done when generated ECS metadata has a deterministic magic, version, and record envelope.
+
+#### M15-002: Encode component and resource descriptors in metadata
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml encodes_component_resource_descriptors_in_ecs_metadata
+```
+
+Done when generated ECS metadata contains `Demo.Position`, `Demo.Velocity`, and `Demo.Time` descriptor records.
+
+#### M15-003: Encode system, query, and schedule descriptors in metadata
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml encodes_system_query_schedule_descriptors_in_ecs_metadata
+```
+
+Done when generated ECS metadata contains `Demo.Move`, `Demo.Move.movers`, and `Demo.Main` descriptor records.
+
+#### M15-004: Encode startup operations in metadata
+
+Acceptance test:
+
+```powershell
+cargo test --manifest-path .\bootstrap\archec0\Cargo.toml encodes_startup_operations_in_ecs_metadata
+```
+
+Done when generated ECS metadata contains the source startup resource payload, spawn, and run operation records.
+
+#### M15-005: Decode generated ECS metadata proof
+
+Acceptance test:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1
+```
+
+Done when the proof runner decodes the generated `move_system.arc` native binary and proves the complete ECS metadata payload is present.
+
 ## Daily Workflow
 
 Each work session:
@@ -1617,18 +1678,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M14-004 stayed startup-run-schedule-operation only | 99/100 |
-| `executes_startup_run_schedule_operation` proves source-assembled `Demo.Main` run updates `Position` through runtime schedule execution | 99/100 |
-| Existing M0-M14-003 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state promotes M14-005 and keeps source-level runtime execution as the current focus | 98/100 |
-| Active backlog is empty before the final M14 vertical-slice proof | 98/100 |
+| M14-005 stayed runtime assembly execution only | 99/100 |
+| `executes_move_system_source_runtime_vertical_slice` proves source can drive runtime ECS behavior through resource, spawn, and schedule startup operations | 99/100 |
+| Existing M0-M14-004 parser, runtime unit, layout, Core, executable, binary metadata, diagnostic, and e2e proofs remain passing | 98/100 |
+| Board state marks M14 complete and promotes M15-001 as the next proof | 98/100 |
+| Active backlog is constrained to M15-002 through M15-005 | 98/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M14-005` in `Ready`.
+- The active board has only `M15-001` in `Ready`.
 - `Doing` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, M14-001, M14-002, M14-003, and M14-004.
-- Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, and M14-001 through M14-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, and M13 source-driven runtime program assembly are complete. M14 has registered source-assembled descriptors into `ArcheWorld`, executed the startup resource payload operation, executed the startup spawn operation, and executed the startup run schedule operation; the final source runtime vertical slice is next.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, and completed M14.
+- Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, and M15-001 through M15-005 only.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, and M14 source-level ECS runtime execution are complete. M15 now starts complete ECS metadata in native executables.
