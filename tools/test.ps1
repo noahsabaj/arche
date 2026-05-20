@@ -410,14 +410,20 @@ function Read-MetadataBytes {
 
 function New-RuntimeCreatePrefix {
     [byte[]]@(
-        0x48, 0x83, 0xec, 0x30,
+        0x48, 0x83, 0xec, 0x60,
         0x31, 0xc0,
         0x48, 0x89, 0x04, 0x24,
         0x48, 0x89, 0x44, 0x24, 0x08,
         0x48, 0x89, 0x44, 0x24, 0x10,
         0x48, 0x89, 0x44, 0x24, 0x18,
         0x48, 0x89, 0x44, 0x24, 0x20,
-        0x48, 0x89, 0x44, 0x24, 0x28
+        0x48, 0x89, 0x44, 0x24, 0x28,
+        0x48, 0x89, 0x44, 0x24, 0x30,
+        0x48, 0x89, 0x44, 0x24, 0x38,
+        0x48, 0x89, 0x44, 0x24, 0x40,
+        0x48, 0x89, 0x44, 0x24, 0x48,
+        0x48, 0x89, 0x44, 0x24, 0x50,
+        0x48, 0x89, 0x44, 0x24, 0x58
     )
 }
 
@@ -430,7 +436,13 @@ function New-RuntimeDestroySuffix {
         0x48, 0x89, 0x44, 0x24, 0x18,
         0x48, 0x89, 0x44, 0x24, 0x20,
         0x48, 0x89, 0x44, 0x24, 0x28,
-        0x48, 0x83, 0xc4, 0x30,
+        0x48, 0x89, 0x44, 0x24, 0x30,
+        0x48, 0x89, 0x44, 0x24, 0x38,
+        0x48, 0x89, 0x44, 0x24, 0x40,
+        0x48, 0x89, 0x44, 0x24, 0x48,
+        0x48, 0x89, 0x44, 0x24, 0x50,
+        0x48, 0x89, 0x44, 0x24, 0x58,
+        0x48, 0x83, 0xc4, 0x60,
         0xb8, 0x3c, 0x00, 0x00, 0x00,
         0x0f, 0x05
     )
@@ -730,7 +742,26 @@ function Test-CorruptEcsResourcePayload {
     $bytes[$payloadHighByteOffset] = 0x40
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 70
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 199
+}
+
+function Test-CorruptEcsSpawnPayload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_spawn_payload"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $payloadHighByteOffset = $metadataStart + 691
+    Assert-Equal -Name "ECS spawn payload high byte before corruption" -Actual $bytes[$payloadHighByteOffset] -Expected 0x40
+    $bytes[$payloadHighByteOffset] = 0x41
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 199
 }
 
 function Test-Elf64Executable {
@@ -1434,9 +1465,10 @@ try {
         -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system.arc", "-o", ".\build\move_system")
 
     Test-EcsMetadataPayload -Path ".\build\move_system"
-    Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 69
+    Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 198
     Test-CorruptEcsMetadataMagic -Path ".\build\move_system"
     Test-CorruptEcsResourcePayload -Path ".\build\move_system"
+    Test-CorruptEcsSpawnPayload -Path ".\build\move_system"
 
     Remove-Item -LiteralPath ".\build\bad" -Force -ErrorAction SilentlyContinue
 

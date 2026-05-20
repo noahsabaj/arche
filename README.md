@@ -68,8 +68,9 @@ The proof chain currently demonstrates:
 - Native startup validation for embedded `ARCHEECS` metadata envelopes, including a corrupted-metadata failure proof.
 - Native startup descriptor-count registration from embedded `ARCHEECS` metadata.
 - Native startup resource payload application from embedded `ARCHEECS` metadata.
+- Native startup spawn-row application from embedded `ARCHEECS` metadata.
 
-M16 native executable source-level ECS startup is underway. The next proof is native startup spawn execution from embedded `ARCHEECS` metadata.
+M16 native executable source-level ECS startup is underway. The next proof is the final observable native ECS startup proof.
 
 ## What This Is Not Yet
 

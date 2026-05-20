@@ -1,7 +1,7 @@
 use crate::parser::{BinaryOperator, Expression, Program, Statement};
 
 const RUNTIME_CREATE_PREFIX: &[u8] = &[
-    0x48, 0x83, 0xec, 0x30, // sub rsp, 48
+    0x48, 0x83, 0xec, 0x60, // sub rsp, 96
     0x31, 0xc0, // xor eax, eax
     0x48, 0x89, 0x04, 0x24, // mov qword ptr [rsp], rax
     0x48, 0x89, 0x44, 0x24, 0x08, // mov qword ptr [rsp + 8], rax
@@ -9,6 +9,12 @@ const RUNTIME_CREATE_PREFIX: &[u8] = &[
     0x48, 0x89, 0x44, 0x24, 0x18, // mov qword ptr [rsp + 24], rax
     0x48, 0x89, 0x44, 0x24, 0x20, // mov qword ptr [rsp + 32], rax
     0x48, 0x89, 0x44, 0x24, 0x28, // mov qword ptr [rsp + 40], rax
+    0x48, 0x89, 0x44, 0x24, 0x30, // mov qword ptr [rsp + 48], rax
+    0x48, 0x89, 0x44, 0x24, 0x38, // mov qword ptr [rsp + 56], rax
+    0x48, 0x89, 0x44, 0x24, 0x40, // mov qword ptr [rsp + 64], rax
+    0x48, 0x89, 0x44, 0x24, 0x48, // mov qword ptr [rsp + 72], rax
+    0x48, 0x89, 0x44, 0x24, 0x50, // mov qword ptr [rsp + 80], rax
+    0x48, 0x89, 0x44, 0x24, 0x58, // mov qword ptr [rsp + 88], rax
 ];
 
 const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
@@ -19,7 +25,13 @@ const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
     0x48, 0x89, 0x44, 0x24, 0x18, // mov qword ptr [rsp + 24], rax
     0x48, 0x89, 0x44, 0x24, 0x20, // mov qword ptr [rsp + 32], rax
     0x48, 0x89, 0x44, 0x24, 0x28, // mov qword ptr [rsp + 40], rax
-    0x48, 0x83, 0xc4, 0x30, // add rsp, 48
+    0x48, 0x89, 0x44, 0x24, 0x30, // mov qword ptr [rsp + 48], rax
+    0x48, 0x89, 0x44, 0x24, 0x38, // mov qword ptr [rsp + 56], rax
+    0x48, 0x89, 0x44, 0x24, 0x40, // mov qword ptr [rsp + 64], rax
+    0x48, 0x89, 0x44, 0x24, 0x48, // mov qword ptr [rsp + 72], rax
+    0x48, 0x89, 0x44, 0x24, 0x50, // mov qword ptr [rsp + 80], rax
+    0x48, 0x89, 0x44, 0x24, 0x58, // mov qword ptr [rsp + 88], rax
+    0x48, 0x83, 0xc4, 0x60, // add rsp, 96
     0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, 60
     0x0f, 0x05, // syscall
 ];
@@ -35,10 +47,23 @@ const ECS_STARTUP_SECTION_DIRECTORY_OFFSET: usize = 16 + 5 * 16;
 const ECS_SECTION_OFFSET_FIELD_OFFSET: usize = 4;
 const ECS_SECTION_RECORD_COUNT_FIELD_OFFSET: usize = 12;
 const ECS_STARTUP_OP_RESOURCE_PAYLOAD: u32 = 1;
+const ECS_STARTUP_OP_SPAWN: u32 = 2;
 const ECS_DESCRIPTOR_RECORD_COUNT_OFFSETS: [u8; 5] = [28, 44, 60, 76, 92];
 const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [0, 8, 16, 24, 32];
 const ECS_RESOURCE_PAYLOAD_STORAGE_SLOT: u8 = 40;
 const ECS_RESOURCE_PAYLOAD_HIGH_BYTE_SLOT: u8 = ECS_RESOURCE_PAYLOAD_STORAGE_SLOT + 3;
+const ECS_SPAWN_ROW_COUNT_SLOT: u8 = 48;
+const ECS_POSITION_PAYLOAD_STORAGE_SLOT: u8 = 56;
+const ECS_POSITION_Y_HIGH_BYTE_SLOT: u8 = ECS_POSITION_PAYLOAD_STORAGE_SLOT + 7;
+const ECS_VELOCITY_PAYLOAD_STORAGE_SLOT: u8 = 64;
+const ECS_VELOCITY_Y_HIGH_BYTE_SLOT: u8 = ECS_VELOCITY_PAYLOAD_STORAGE_SLOT + 7;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EcsStartupPayloadOffsets {
+    resource_payload: i32,
+    position_payload: i32,
+    velocity_payload: i32,
+}
 
 pub fn startup_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> {
     let startup = program.startup.as_ref().ok_or_else(unsupported_shape)?;
@@ -76,10 +101,10 @@ pub fn ecs_metadata_decoder_text_payload(
         });
     }
 
-    let resource_payload_offset = first_startup_resource_payload_offset(metadata_payload)?;
+    let startup_payload_offsets = startup_payload_offsets(metadata_payload)?;
     let startup_body = ecs_metadata_decoder_body(
         &metadata_payload[..ECS_METADATA_ENVELOPE_SIZE],
-        resource_payload_offset,
+        startup_payload_offsets,
     );
     Ok(runtime_wrapped_payload(&startup_body))
 }
@@ -100,7 +125,9 @@ fn require_metadata_decoder_exit(program: &Program) -> Result<(), CodegenError> 
     Ok(())
 }
 
-fn first_startup_resource_payload_offset(metadata_payload: &[u8]) -> Result<i32, CodegenError> {
+fn startup_payload_offsets(
+    metadata_payload: &[u8],
+) -> Result<EcsStartupPayloadOffsets, CodegenError> {
     let startup_section_offset = read_metadata_u32(
         metadata_payload,
         ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_OFFSET_FIELD_OFFSET,
@@ -110,38 +137,98 @@ fn first_startup_resource_payload_offset(metadata_payload: &[u8]) -> Result<i32,
         ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_RECORD_COUNT_FIELD_OFFSET,
     )?;
 
-    if startup_record_count == 0 {
-        return Err(metadata_resource_payload_error());
+    if startup_record_count < 2 {
+        return Err(metadata_startup_payload_error());
     }
 
     let mut offset = startup_section_offset;
-    let operation_kind = read_metadata_u32(metadata_payload, offset)?;
-    offset += 4;
+    let resource_payload = parse_resource_payload_operation(metadata_payload, &mut offset)?;
+    let (position_payload, velocity_payload) =
+        parse_spawn_operation(metadata_payload, &mut offset)?;
+
+    Ok(EcsStartupPayloadOffsets {
+        resource_payload,
+        position_payload,
+        velocity_payload,
+    })
+}
+
+fn parse_resource_payload_operation(
+    metadata_payload: &[u8],
+    offset: &mut usize,
+) -> Result<i32, CodegenError> {
+    let operation_kind = read_metadata_u32(metadata_payload, *offset)?;
+    *offset += 4;
 
     if operation_kind != ECS_STARTUP_OP_RESOURCE_PAYLOAD {
-        return Err(metadata_resource_payload_error());
+        return Err(metadata_startup_payload_error());
     }
 
-    checked_metadata_range(metadata_payload, offset, 8)?;
-    offset += 8;
-    skip_metadata_string(metadata_payload, &mut offset)?;
+    checked_metadata_range(metadata_payload, *offset, 8)?;
+    *offset += 8;
+    skip_metadata_string(metadata_payload, offset)?;
 
-    let payload_len = read_metadata_u32(metadata_payload, offset)? as usize;
-    offset += 4;
+    parse_payload_offset(metadata_payload, offset, 4)
+}
 
-    if payload_len != 4 {
-        return Err(metadata_resource_payload_error());
+fn parse_spawn_operation(
+    metadata_payload: &[u8],
+    offset: &mut usize,
+) -> Result<(i32, i32), CodegenError> {
+    let operation_kind = read_metadata_u32(metadata_payload, *offset)?;
+    *offset += 4;
+
+    if operation_kind != ECS_STARTUP_OP_SPAWN {
+        return Err(metadata_startup_payload_error());
     }
 
-    checked_metadata_range(metadata_payload, offset, payload_len)?;
-    if offset > i32::MAX as usize {
+    let component_count = read_metadata_u32(metadata_payload, *offset)?;
+    *offset += 4;
+
+    if component_count != 2 {
+        return Err(metadata_startup_payload_error());
+    }
+
+    let position_payload = parse_spawn_component_payload(metadata_payload, offset)?;
+    let velocity_payload = parse_spawn_component_payload(metadata_payload, offset)?;
+
+    Ok((position_payload, velocity_payload))
+}
+
+fn parse_spawn_component_payload(
+    metadata_payload: &[u8],
+    offset: &mut usize,
+) -> Result<i32, CodegenError> {
+    checked_metadata_range(metadata_payload, *offset, 8)?;
+    *offset += 8;
+    skip_metadata_string(metadata_payload, offset)?;
+    parse_payload_offset(metadata_payload, offset, 8)
+}
+
+fn parse_payload_offset(
+    metadata_payload: &[u8],
+    offset: &mut usize,
+    expected_payload_len: usize,
+) -> Result<i32, CodegenError> {
+    let payload_len = read_metadata_u32(metadata_payload, *offset)? as usize;
+    *offset += 4;
+
+    if payload_len != expected_payload_len {
+        return Err(metadata_startup_payload_error());
+    }
+
+    checked_metadata_range(metadata_payload, *offset, payload_len)?;
+    let payload_offset = *offset;
+    *offset += payload_len;
+
+    if payload_offset > i32::MAX as usize {
         return Err(CodegenError {
-            message: "ECS metadata resource payload offset must fit in signed 32-bit displacement"
+            message: "ECS metadata startup payload offset must fit in signed 32-bit displacement"
                 .to_string(),
         });
     }
 
-    Ok(offset as i32)
+    Ok(payload_offset as i32)
 }
 
 fn read_metadata_u32(metadata_payload: &[u8], offset: usize) -> Result<u32, CodegenError> {
@@ -168,17 +255,20 @@ fn checked_metadata_range(
     byte_len: usize,
 ) -> Result<(), CodegenError> {
     let Some(end) = offset.checked_add(byte_len) else {
-        return Err(metadata_resource_payload_error());
+        return Err(metadata_startup_payload_error());
     };
 
     if end > metadata_payload.len() {
-        return Err(metadata_resource_payload_error());
+        return Err(metadata_startup_payload_error());
     }
 
     Ok(())
 }
 
-fn ecs_metadata_decoder_body(envelope: &[u8], resource_payload_offset: i32) -> Vec<u8> {
+fn ecs_metadata_decoder_body(
+    envelope: &[u8],
+    startup_payload_offsets: EcsStartupPayloadOffsets,
+) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut jump_to_failure_offsets = Vec::new();
 
@@ -203,7 +293,7 @@ fn ecs_metadata_decoder_body(envelope: &[u8], resource_payload_offset: i32) -> V
     }
 
     bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
-    bytes.extend_from_slice(&resource_payload_offset.to_le_bytes());
+    bytes.extend_from_slice(&startup_payload_offsets.resource_payload.to_le_bytes());
     bytes.extend_from_slice(&[
         0x89,
         0x44,
@@ -211,16 +301,44 @@ fn ecs_metadata_decoder_body(envelope: &[u8], resource_payload_offset: i32) -> V
         ECS_RESOURCE_PAYLOAD_STORAGE_SLOT, // mov dword ptr [rsp + 40], eax
     ]);
 
+    bytes.extend_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00]); // mov eax, 1
+    store_rax_to_stack_slot(&mut bytes, ECS_SPAWN_ROW_COUNT_SLOT);
+
+    bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
+    bytes.extend_from_slice(&startup_payload_offsets.position_payload.to_le_bytes());
+    store_rax_to_stack_slot(&mut bytes, ECS_POSITION_PAYLOAD_STORAGE_SLOT);
+
+    bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
+    bytes.extend_from_slice(&startup_payload_offsets.velocity_payload.to_le_bytes());
+    store_rax_to_stack_slot(&mut bytes, ECS_VELOCITY_PAYLOAD_STORAGE_SLOT);
+
     bytes.extend_from_slice(&[0x8b, 0x3c, 0x24]); // mov edi, dword ptr [rsp]
     for stack_slot in ECS_DESCRIPTOR_REGISTRY_SLOTS.iter().skip(1) {
         bytes.extend_from_slice(&[0x03, 0x7c, 0x24, *stack_slot]); // add edi, dword ptr [rsp + slot]
     }
+    bytes.extend_from_slice(&[0x03, 0x7c, 0x24, ECS_SPAWN_ROW_COUNT_SLOT]); // add edi, dword ptr [rsp + 48]
     bytes.extend_from_slice(&[
         0x0f,
         0xb6,
         0x44,
         0x24,
         ECS_RESOURCE_PAYLOAD_HIGH_BYTE_SLOT, // movzx eax, byte ptr [rsp + 43]
+    ]);
+    bytes.extend_from_slice(&[0x01, 0xc7]); // add edi, eax
+    bytes.extend_from_slice(&[
+        0x0f,
+        0xb6,
+        0x44,
+        0x24,
+        ECS_POSITION_Y_HIGH_BYTE_SLOT, // movzx eax, byte ptr [rsp + 63]
+    ]);
+    bytes.extend_from_slice(&[0x01, 0xc7]); // add edi, eax
+    bytes.extend_from_slice(&[
+        0x0f,
+        0xb6,
+        0x44,
+        0x24,
+        ECS_VELOCITY_Y_HIGH_BYTE_SLOT, // movzx eax, byte ptr [rsp + 71]
     ]);
     bytes.extend_from_slice(&[0x01, 0xc7]); // add edi, eax
 
@@ -399,9 +517,9 @@ fn metadata_decoder_error() -> CodegenError {
     }
 }
 
-fn metadata_resource_payload_error() -> CodegenError {
+fn metadata_startup_payload_error() -> CodegenError {
     CodegenError {
-        message: "ECS metadata decoder executable requires first startup operation to be a 4-byte resource payload"
+        message: "ECS metadata decoder executable requires a 4-byte resource payload followed by a two-component spawn operation"
             .to_string(),
     }
 }
