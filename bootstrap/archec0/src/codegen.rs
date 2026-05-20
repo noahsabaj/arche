@@ -1,11 +1,14 @@
 use crate::parser::{BinaryOperator, Expression, Program, Statement};
 
 const RUNTIME_CREATE_PREFIX: &[u8] = &[
-    0x48, 0x83, 0xec, 0x18, // sub rsp, 24
+    0x48, 0x83, 0xec, 0x30, // sub rsp, 48
     0x31, 0xc0, // xor eax, eax
     0x48, 0x89, 0x04, 0x24, // mov qword ptr [rsp], rax
     0x48, 0x89, 0x44, 0x24, 0x08, // mov qword ptr [rsp + 8], rax
     0x48, 0x89, 0x44, 0x24, 0x10, // mov qword ptr [rsp + 16], rax
+    0x48, 0x89, 0x44, 0x24, 0x18, // mov qword ptr [rsp + 24], rax
+    0x48, 0x89, 0x44, 0x24, 0x20, // mov qword ptr [rsp + 32], rax
+    0x48, 0x89, 0x44, 0x24, 0x28, // mov qword ptr [rsp + 40], rax
 ];
 
 const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
@@ -13,7 +16,10 @@ const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
     0x48, 0x89, 0x04, 0x24, // mov qword ptr [rsp], rax
     0x48, 0x89, 0x44, 0x24, 0x08, // mov qword ptr [rsp + 8], rax
     0x48, 0x89, 0x44, 0x24, 0x10, // mov qword ptr [rsp + 16], rax
-    0x48, 0x83, 0xc4, 0x18, // add rsp, 24
+    0x48, 0x89, 0x44, 0x24, 0x18, // mov qword ptr [rsp + 24], rax
+    0x48, 0x89, 0x44, 0x24, 0x20, // mov qword ptr [rsp + 32], rax
+    0x48, 0x89, 0x44, 0x24, 0x28, // mov qword ptr [rsp + 40], rax
+    0x48, 0x83, 0xc4, 0x30, // add rsp, 48
     0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, 60
     0x0f, 0x05, // syscall
 ];
@@ -25,6 +31,8 @@ pub struct CodegenError {
 
 const ECS_METADATA_ENVELOPE_SIZE: usize = 112;
 const ECS_METADATA_FAILURE_EXIT_CODE: u8 = 16;
+const ECS_DESCRIPTOR_RECORD_COUNT_OFFSETS: [u8; 5] = [28, 44, 60, 76, 92];
+const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [0, 8, 16, 24, 32];
 
 pub fn startup_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> {
     let startup = program.startup.as_ref().ok_or_else(unsupported_shape)?;
@@ -98,7 +106,19 @@ fn ecs_metadata_decoder_body(envelope: &[u8]) -> Vec<u8> {
         jump_to_failure_offsets.push(jump_offset);
     }
 
-    bytes.extend_from_slice(&[0xbf, 0x00, 0x00, 0x00, 0x00]); // mov edi, 0
+    for (count_offset, stack_slot) in ECS_DESCRIPTOR_RECORD_COUNT_OFFSETS
+        .iter()
+        .zip(ECS_DESCRIPTOR_REGISTRY_SLOTS)
+    {
+        bytes.extend_from_slice(&[0x8b, 0x46, *count_offset]); // mov eax, dword ptr [rsi + offset]
+        store_rax_to_stack_slot(&mut bytes, stack_slot);
+    }
+
+    bytes.extend_from_slice(&[0x8b, 0x3c, 0x24]); // mov edi, dword ptr [rsp]
+    for stack_slot in ECS_DESCRIPTOR_REGISTRY_SLOTS.iter().skip(1) {
+        bytes.extend_from_slice(&[0x03, 0x7c, 0x24, *stack_slot]); // add edi, dword ptr [rsp + slot]
+    }
+
     let jump_to_done_offset = bytes.len();
     bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
 
@@ -126,6 +146,14 @@ fn ecs_metadata_decoder_body(envelope: &[u8]) -> Vec<u8> {
     patch_i32(&mut bytes, 3, metadata_displacement);
 
     bytes
+}
+
+fn store_rax_to_stack_slot(bytes: &mut Vec<u8>, stack_slot: u8) {
+    if stack_slot == 0 {
+        bytes.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]); // mov qword ptr [rsp], rax
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, stack_slot]); // mov qword ptr [rsp + slot], rax
+    }
 }
 
 fn patch_rel32(bytes: &mut [u8], patch_offset: usize, target_offset: usize, next_offset: usize) {

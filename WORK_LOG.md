@@ -52,7 +52,7 @@ Source file -> parsed ECS program -> Arche Core -> runtime world -> schedule -> 
 
 Current missing links:
 
-- Native executable startup can validate embedded `ARCHEECS` metadata, but does not yet register descriptors or create source-described ECS world state.
+- Native executable startup can validate embedded `ARCHEECS` metadata and register descriptor counts, but does not yet allocate resource storage or create source-described ECS world state.
 - System body Core lowering for real query loops.
 - Native generated query-loop code instead of runtime-only helper proofs.
 
@@ -62,7 +62,7 @@ These are intentional gaps created by narrow proof milestones.
 
 Current gaps:
 
-- Generated native binaries can carry complete decoded `ARCHEECS` metadata, and native startup can validate its envelope, but native startup does not yet register descriptors or execute startup operations from it.
+- Generated native binaries can carry complete decoded `ARCHEECS` metadata, and native startup can validate its envelope and register descriptor counts, but native startup does not yet execute startup operations from it.
 - Source-level startup resource, spawn, and schedule execution now drives runtime ECS state, but not generated executable ECS state.
 - System declarations and query metadata exist, but system bodies are not yet lowered into executable query-loop code.
 - M10/M14 Move behavior is proven through a runtime application path, not a compiled source system body.
@@ -116,13 +116,12 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M16-002 | Register native ECS descriptors from metadata | Native startup registers source-described component/resource/system/query/schedule descriptors decoded from `ARCHEECS`. |
+| M16-003 | Execute native startup resource payloads | Native startup allocates resource storage and applies decoded resource payload records. |
 
 ### Backlog
 
 | Issue | Title | Done when |
 |---|---|---|
-| M16-003 | Execute native startup resource payloads | Native startup allocates resource storage and applies decoded resource payload records. |
 | M16-004 | Execute native startup spawn operations | Native startup creates source-described entity rows from decoded spawn operation records. |
 | M16-005 | Add observable native ECS startup proof | A generated executable exposes a deterministic startup-world result through a temporary bootstrap observable. |
 
@@ -231,6 +230,7 @@ Board rules:
 | M15-004 | Encode startup operations in metadata | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml encodes_startup_operations_in_ecs_metadata` passed, proving the `ARCHEECS` envelope encodes source-assembled startup records for `resource Demo.Time`, one `Demo.Position + Demo.Velocity` spawn payload, and `run Demo.Main` with exact IDs, source order, payload byte lengths, raw payload bytes, and deterministic section offsets; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted startup-operation ECS metadata proof included. This was metadata encoding only: no generated executable integration, metadata decoding proof, parser/Core/runtime execution changes, or changes to existing `ARCHECMP` component metadata behavior were added. Implementation commit: `f277613a`. |
 | M15-005 | Decode generated ECS metadata proof | `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed; it built `.\examples\move_system.arc` to `.\build\move_system`, verified the metadata-carrier ELF text is the runtime-wrapped `exit 0` payload, decoded the trailing 717-byte `ARCHEECS` payload, checked all six section offsets/counts, and proved the generated binary carries `Demo.Position`, `Demo.Velocity`, `Demo.Time`, `Demo.Move`, `Demo.Move.movers`, `Demo.Main`, and the source-order startup resource/spawn/run records. This was generated binary metadata only: no native ECS startup execution, query loop execution, Core changes, or `ARCHECMP` compatibility break was added. Implementation commit: `271b19ac`. |
 | M16-001 | Decode ARCHEECS metadata inside native startup | `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed; it built `.\examples\move_system.arc` to `.\build\move_system`, decoded the trailing 717-byte `ARCHEECS` payload host-side, ran the generated Linux ELF through WSL and observed exit code `0`, then corrupted the embedded metadata magic byte and observed native startup exit code `16`. This proves generated native startup locates and validates the embedded `ARCHEECS` envelope and directory before exiting. This was envelope validation only: no descriptor registration, resource allocation, spawn execution, schedule execution, query loop execution, Core changes, or source-level ECS behavior in the generated executable was added. Implementation commit: `00e215c1`. |
+| M16-002 | Register native ECS descriptors from metadata | `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed; it built `.\examples\move_system.arc` to `.\build\move_system`, decoded the trailing 717-byte `ARCHEECS` payload host-side, ran the generated Linux ELF through WSL and observed exit code `6`, then corrupted the embedded metadata magic byte and observed native startup exit code `16`. This proves generated native startup validates the embedded `ARCHEECS` envelope, decodes component/resource/system/query/schedule descriptor record counts, registers them into bootstrap native descriptor-count slots, and exposes the descriptor-count sum `2 + 1 + 1 + 1 + 1 = 6`. This was native metadata descriptor-registration only: no descriptor heap tables, resource allocation, spawn execution, schedule execution, query loop execution, Core changes, or source-level ECS behavior in the generated executable was added. Implementation commit: `PENDING`. |
 
 ## Milestones
 
@@ -1729,19 +1729,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M16-001 stayed native envelope validation only | 99/100 |
-| `tools/test.ps1` proves valid embedded `ARCHEECS` metadata exits `0` and corrupted metadata exits `16` | 99/100 |
+| M16-002 stayed native descriptor-count registration only | 99/100 |
+| `tools/test.ps1` proves valid embedded `ARCHEECS` metadata exits `6` after descriptor-count registration and corrupted metadata exits `16` | 99/100 |
 | Existing M0-M15 parser, runtime unit, layout, Core, executable, component metadata, ECS metadata, diagnostic, and e2e proofs remain passing | 98/100 |
-| Board state marks M16-001 complete and promotes M16-002 as the next proof | 98/100 |
+| Board state marks M16-002 complete and promotes M16-003 as the next proof | 98/100 |
 | M16 backlog remains constrained to source-level native startup only | 98/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M16-002` in `Ready`.
+- The active board has only `M16-003` in `Ready`.
 - `Doing` is empty.
-- `Backlog` contains only M16-003 through M16-005.
+- `Backlog` contains only M16-004 and M16-005.
 - `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, and completed M15.
 - Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, and M16-001 through M16-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, and M16-001 native metadata envelope validation are complete. M16-002 native descriptor registration from metadata is next.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16-001 native metadata envelope validation, and M16-002 native descriptor-count registration are complete. M16-003 native startup resource payload execution is next.

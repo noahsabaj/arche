@@ -66,8 +66,9 @@ The proof chain currently demonstrates:
 - Startup-operation records encoded into the `ARCHEECS` metadata envelope.
 - Generated native metadata-carrier binaries for `move_system.arc` with decoded full `ARCHEECS` payloads.
 - Native startup validation for embedded `ARCHEECS` metadata envelopes, including a corrupted-metadata failure proof.
+- Native startup descriptor-count registration from embedded `ARCHEECS` metadata.
 
-M16 native executable source-level ECS startup is underway. The next proof is native descriptor registration from embedded `ARCHEECS` metadata.
+M16 native executable source-level ECS startup is underway. The next proof is native startup resource payload execution from embedded `ARCHEECS` metadata.
 
 ## What This Is Not Yet
 
