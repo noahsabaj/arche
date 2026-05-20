@@ -62,6 +62,7 @@ pub struct CoreSystemBody {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CoreSystemStatement {
     QueryLoop(CoreQueryLoop),
+    Expression(CoreSystemExpression),
     AddAssign {
         target: CoreSystemPlace,
         value: CoreSystemExpression,

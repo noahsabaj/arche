@@ -838,6 +838,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_query_loop_skeleton_to_core_body")
 
     Invoke-CheckedCommand `
+        -Name "lowers_query_loop_field_expressions_to_core_body" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_query_loop_field_expressions_to_core_body")
+
+    Invoke-CheckedCommand `
         -Name "lowers_math_ast_to_core" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_math_ast_to_core")

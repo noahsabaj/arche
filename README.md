@@ -72,8 +72,9 @@ The proof chain currently demonstrates:
 - Final observable native startup proof for the source-described `Demo.Time` and one `Demo.Position + Demo.Velocity` row.
 - A non-executing Core system body model for the future `Demo.Move` query loop.
 - Core lowering for query-loop skeletons, starting with `for (pos, vel) in movers`.
+- Core lowering for query-loop field expressions and `f32` multiplication, starting with `vel * time.delta`.
 
-M16 native executable source-level ECS startup is complete. M17 Core system-body lowering is underway; the next proof is lowering field expressions and arithmetic inside the query loop.
+M16 native executable source-level ECS startup is complete. M17 Core system-body lowering is underway; the next proof is lowering add-assign/update statements.
 
 ## What This Is Not Yet
 

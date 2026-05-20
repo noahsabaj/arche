@@ -6,8 +6,8 @@ use crate::core::{
     BlockId, CoreBinaryOp, CoreBlock, CoreFunction, CoreInstruction, CoreLocal, CoreProgram,
     CoreQueryAccess, CoreQueryLoop, CoreQueryLoopBinding, CoreQueryTerm, CoreSchedule,
     CoreScheduleItem, CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreSystem,
-    CoreSystemBody, CoreSystemParam, CoreSystemParamKind, CoreSystemStatement, CoreTerminator,
-    CoreType, CoreWorld, LocalId, ValueId,
+    CoreSystemBinaryOp, CoreSystemBody, CoreSystemExpression, CoreSystemParam, CoreSystemParamKind,
+    CoreSystemStatement, CoreTerminator, CoreType, CoreWorld, LocalId, ValueId,
 };
 use crate::layout;
 use crate::parser::{
@@ -161,7 +161,7 @@ fn lower_system_query_loop(
         )));
     }
 
-    let bindings = query_loop
+    let bindings: Vec<CoreQueryLoopBinding> = query_loop
         .bindings
         .iter()
         .zip(terms.iter())
@@ -172,12 +172,112 @@ fn lower_system_query_loop(
             access: term.access,
         })
         .collect();
+    let body = lower_system_query_loop_body(params, &bindings, &query_loop.body)?;
 
     Ok(CoreQueryLoop {
         query_param: query_loop.query_param.clone(),
         bindings,
-        body: vec![],
+        body,
     })
+}
+
+fn lower_system_query_loop_body(
+    params: &[CoreSystemParam],
+    bindings: &[CoreQueryLoopBinding],
+    statements: &[SystemBodyStatement],
+) -> Result<Vec<CoreSystemStatement>, CoreLowerError> {
+    let mut lowered = Vec::new();
+
+    for statement in statements {
+        match statement {
+            SystemBodyStatement::Expression(expression) => {
+                lowered.push(CoreSystemStatement::Expression(lower_system_expression(
+                    params, bindings, expression,
+                )?));
+            }
+            SystemBodyStatement::QueryLoop(_) => {
+                return Err(lower_error(
+                    "nested query loop lowering is not supported yet",
+                ));
+            }
+        }
+    }
+
+    Ok(lowered)
+}
+
+fn lower_system_expression(
+    params: &[CoreSystemParam],
+    bindings: &[CoreQueryLoopBinding],
+    expression: &Expression,
+) -> Result<CoreSystemExpression, CoreLowerError> {
+    match expression {
+        Expression::FieldAccess {
+            target, field_name, ..
+        } => lower_system_field_access(params, bindings, target, field_name),
+        Expression::Binary(binary) => {
+            if binary.operator != BinaryOperator::Multiply {
+                return Err(lower_error(format!(
+                    "system body operator `{}` is not lowerable yet",
+                    binary.operator
+                )));
+            }
+
+            Ok(CoreSystemExpression::Binary {
+                op: CoreSystemBinaryOp::F32Multiply,
+                left: Box::new(lower_system_expression(params, bindings, &binary.left)?),
+                right: Box::new(lower_system_expression(params, bindings, &binary.right)?),
+            })
+        }
+        Expression::Identifier { name, .. } => Err(lower_error(format!(
+            "system body identifier `{name}` is not lowerable without a field"
+        ))),
+        Expression::Integer(_) => Err(lower_error(
+            "integer literals are not lowerable in system bodies yet",
+        )),
+    }
+}
+
+fn lower_system_field_access(
+    params: &[CoreSystemParam],
+    bindings: &[CoreQueryLoopBinding],
+    target: &Expression,
+    field_name: &str,
+) -> Result<CoreSystemExpression, CoreLowerError> {
+    let Expression::Identifier { name, .. } = target else {
+        return Err(lower_error(
+            "nested system body field access is not lowerable yet",
+        ));
+    };
+
+    if let Some(binding) = bindings.iter().find(|binding| binding.name == *name) {
+        return Ok(CoreSystemExpression::ComponentField {
+            binding: binding.name.clone(),
+            component_id: binding.component_id,
+            component_name: binding.component_name.clone(),
+            field_name: field_name.to_string(),
+        });
+    }
+
+    if let Some(param) = params.iter().find(|param| param.name == *name) {
+        let CoreSystemParamKind::ReadResource { resource_id, name } = &param.kind else {
+            return Err(lower_error(format!(
+                "system body parameter `{}` is not a read resource",
+                param.name
+            )));
+        };
+
+        return Ok(CoreSystemExpression::ResourceField {
+            param: param.name.clone(),
+            resource_id: *resource_id,
+            resource_name: name.clone(),
+            field_name: field_name.to_string(),
+        });
+    }
+
+    Err(lower_error(format!(
+        "unknown system body field target `{name}`"
+    )))
 }
 
 fn lower_system_param(
@@ -483,8 +583,9 @@ mod tests {
     use super::*;
     use crate::core::{
         CoreQueryAccess, CoreQueryLoopBinding, CoreQueryTerm, CoreSchedule, CoreScheduleItem,
-        CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemBody,
-        CoreSystemParam, CoreSystemParamKind, CoreSystemStatement,
+        CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemBinaryOp,
+        CoreSystemBody, CoreSystemExpression, CoreSystemParam, CoreSystemParamKind,
+        CoreSystemStatement,
     };
     use crate::lexer;
     use crate::parser;
@@ -727,6 +828,109 @@ startup {
             startup.terminator,
             CoreTerminator::Exit { value: ValueId(0) }
         );
+    }
+
+    #[test]
+    fn lowers_query_loop_field_expressions_to_core_body() {
+        let source = r#"
+world Demo
+
+component Position {
+    x: f32
+    y: f32
+}
+
+component Velocity {
+    x: f32
+    y: f32
+}
+
+resource Time {
+    delta: f32
+}
+
+system Move(
+    time: read Time,
+    movers: query[mut Position, Velocity]
+) {
+    for (pos, vel) in movers {
+        vel.x * time.delta
+        vel.y * time.delta
+    }
+}
+
+startup {
+    exit 0
+}
+"#;
+        let tokens = lexer::lex(source).expect("query-loop expression fixture lexes");
+        let ast = parser::parse_program(&tokens).expect("query-loop expression fixture parses");
+        let actual =
+            lower_program_to_core(&ast).expect("query-loop expression fixture lowers to Core");
+
+        assert_eq!(actual.systems.len(), 1);
+        let system = &actual.systems[0];
+        assert_eq!(system.body.statements.len(), 1);
+        let CoreSystemStatement::QueryLoop(query_loop) = &system.body.statements[0] else {
+            panic!("expected query loop");
+        };
+
+        assert_eq!(query_loop.query_param, "movers");
+        assert_eq!(
+            query_loop.bindings,
+            vec![
+                CoreQueryLoopBinding {
+                    name: "pos".to_string(),
+                    component_id: 0x002202c6aeb4f27b,
+                    component_name: "Demo.Position".to_string(),
+                    access: CoreQueryAccess::Mut,
+                },
+                CoreQueryLoopBinding {
+                    name: "vel".to_string(),
+                    component_id: 0x2cf8a68bcb7f913b,
+                    component_name: "Demo.Velocity".to_string(),
+                    access: CoreQueryAccess::Read,
+                },
+            ]
+        );
+        assert_eq!(
+            query_loop.body,
+            vec![
+                CoreSystemStatement::Expression(move_velocity_delta_expression("x")),
+                CoreSystemStatement::Expression(move_velocity_delta_expression("y")),
+            ]
+        );
+
+        let startup = &actual.functions[0].blocks[0];
+        assert_eq!(
+            startup.instructions,
+            vec![CoreInstruction::I32Const {
+                result: ValueId(0),
+                value: 0,
+            }]
+        );
+        assert_eq!(
+            startup.terminator,
+            CoreTerminator::Exit { value: ValueId(0) }
+        );
+    }
+
+    fn move_velocity_delta_expression(velocity_field: &str) -> CoreSystemExpression {
+        CoreSystemExpression::Binary {
+            op: CoreSystemBinaryOp::F32Multiply,
+            left: Box::new(CoreSystemExpression::ComponentField {
+                binding: "vel".to_string(),
+                component_id: 0x2cf8a68bcb7f913b,
+                component_name: "Demo.Velocity".to_string(),
+                field_name: velocity_field.to_string(),
+            }),
+            right: Box::new(CoreSystemExpression::ResourceField {
+                param: "time".to_string(),
+                resource_id: 0x7924ce11db524521,
+                resource_name: "Demo.Time".to_string(),
+                field_name: "delta".to_string(),
+            }),
+        }
     }
 
     fn expected_move_system_core() -> CoreProgram {
