@@ -63,8 +63,9 @@ The proof chain currently demonstrates:
 - A deterministic `ARCHEECS` binary envelope for complete ECS metadata sections.
 - Component and resource descriptor records encoded into the `ARCHEECS` metadata envelope.
 - System, query, and schedule descriptor records encoded into the `ARCHEECS` metadata envelope.
+- Startup-operation records encoded into the `ARCHEECS` metadata envelope.
 
-M15 complete ECS metadata in the native executable is underway. The next proof is encoding startup-operation records into the ECS metadata envelope.
+M15 complete ECS metadata in the native executable is underway. The next proof is decoding generated native binary ECS metadata.
 
 ## What This Is Not Yet
 

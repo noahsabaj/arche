@@ -6,7 +6,7 @@ use crate::runtime::{
     ScheduleItemDescriptor, SystemAccess, SystemDescriptor, SystemParamDescriptorKind,
     SystemQueryTermDescriptor,
 };
-use crate::runtime_assembly::RuntimeProgramAssembly;
+use crate::runtime_assembly::{RuntimeProgramAssembly, StartupOperation, StartupSpawnComponent};
 
 const MAGIC: &[u8; 8] = b"ARCHEECS";
 const VERSION: u32 = 1;
@@ -22,6 +22,9 @@ const SYSTEM_PARAM_QUERY: u32 = 2;
 const DESCRIPTOR_ACCESS_READ: u32 = 1;
 const DESCRIPTOR_ACCESS_MUT: u32 = 2;
 const SCHEDULE_ITEM_RUN: u32 = 1;
+const STARTUP_OP_RESOURCE_PAYLOAD: u32 = 1;
+const STARTUP_OP_SPAWN: u32 = 2;
+const STARTUP_OP_RUN_SCHEDULE: u32 = 3;
 const SECTION_KINDS: [u32; 6] = [
     SECTION_COMPONENTS,
     SECTION_RESOURCES,
@@ -64,7 +67,11 @@ pub fn encode_ecs_metadata(assembly: &RuntimeProgramAssembly) -> Result<Vec<u8>,
             bytes: encode_schedule_descriptors(&assembly.schedule_descriptors),
             record_count: assembly.schedule_descriptors.len() as u32,
         },
-        SectionPayload::empty(SECTION_STARTUP_OPERATIONS),
+        SectionPayload {
+            kind: SECTION_STARTUP_OPERATIONS,
+            bytes: encode_startup_operations(&assembly.startup_operations),
+            record_count: assembly.startup_operations.len() as u32,
+        },
     ];
     let payload_size = sections
         .iter()
@@ -249,9 +256,56 @@ fn query_access_code(access: &QueryAccess) -> u32 {
     }
 }
 
+fn encode_startup_operations(operations: &[StartupOperation]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+
+    for operation in operations {
+        match operation {
+            StartupOperation::ResourcePayload {
+                resource_id,
+                resource_name,
+                payload_bytes,
+            } => {
+                push_u32(&mut bytes, STARTUP_OP_RESOURCE_PAYLOAD);
+                push_u64(&mut bytes, resource_id.0);
+                push_string(&mut bytes, resource_name);
+                push_bytes(&mut bytes, payload_bytes);
+            }
+            StartupOperation::Spawn { components } => {
+                push_u32(&mut bytes, STARTUP_OP_SPAWN);
+                encode_startup_spawn_components(&mut bytes, components);
+            }
+            StartupOperation::RunSchedule {
+                schedule_id,
+                schedule_name,
+            } => {
+                push_u32(&mut bytes, STARTUP_OP_RUN_SCHEDULE);
+                push_u64(&mut bytes, schedule_id.0);
+                push_string(&mut bytes, schedule_name);
+            }
+        }
+    }
+
+    bytes
+}
+
+fn encode_startup_spawn_components(bytes: &mut Vec<u8>, components: &[StartupSpawnComponent]) {
+    push_u32(bytes, components.len() as u32);
+    for component in components {
+        push_u64(bytes, component.component_id.0);
+        push_string(bytes, &component.component_name);
+        push_bytes(bytes, &component.payload_bytes);
+    }
+}
+
 fn push_string(bytes: &mut Vec<u8>, value: &str) {
     push_u32(bytes, value.len() as u32);
     bytes.extend_from_slice(value.as_bytes());
+}
+
+fn push_bytes(bytes: &mut Vec<u8>, value: &[u8]) {
+    push_u32(bytes, value.len() as u32);
+    bytes.extend_from_slice(value);
 }
 
 fn push_u32(bytes: &mut Vec<u8>, value: u32) {
@@ -359,7 +413,7 @@ mod tests {
             assemble_runtime_program_from_source(&program).expect("runtime assembly encodes");
         let metadata = encode_ecs_metadata(&assembly).expect("ECS metadata encodes");
 
-        assert_eq!(metadata.len(), 577);
+        assert!(metadata.len() >= 577);
         assert_eq!(&metadata[0..8], b"ARCHEECS");
         assert_eq!(read_u32_at(&metadata, 8), 1);
         assert_eq!(read_u32_at(&metadata, 12), 6);
@@ -368,7 +422,6 @@ mod tests {
         assert_section(&metadata, 2, 3, 303, 134, 1);
         assert_section(&metadata, 3, 4, 437, 90, 1);
         assert_section(&metadata, 4, 5, 527, 50, 1);
-        assert_section(&metadata, 5, 6, 577, 0, 0);
 
         let mut offset = 303;
         assert_eq!(read_u64(&metadata, &mut offset), 0x723b6b52df270ed5);
@@ -394,6 +447,59 @@ mod tests {
         assert_eq!(read_u32(&metadata, &mut offset), SCHEDULE_ITEM_RUN);
         assert_eq!(read_u64(&metadata, &mut offset), 0x723b6b52df270ed5);
         assert_eq!(read_string(&metadata, &mut offset), "Demo.Move");
+        assert_eq!(offset, 577);
+    }
+
+    #[test]
+    fn encodes_startup_operations_in_ecs_metadata() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime assembly encodes");
+        let metadata = encode_ecs_metadata(&assembly).expect("ECS metadata encodes");
+
+        assert_eq!(metadata.len(), 717);
+        assert_eq!(&metadata[0..8], b"ARCHEECS");
+        assert_eq!(read_u32_at(&metadata, 8), 1);
+        assert_eq!(read_u32_at(&metadata, 12), 6);
+        assert_section(&metadata, 0, 1, 112, 138, 2);
+        assert_section(&metadata, 1, 2, 250, 53, 1);
+        assert_section(&metadata, 2, 3, 303, 134, 1);
+        assert_section(&metadata, 3, 4, 437, 90, 1);
+        assert_section(&metadata, 4, 5, 527, 50, 1);
+        assert_section(&metadata, 5, 6, 577, 140, 3);
+
+        let mut offset = 577;
+        assert_eq!(
+            read_u32(&metadata, &mut offset),
+            STARTUP_OP_RESOURCE_PAYLOAD
+        );
+        assert_eq!(read_u64(&metadata, &mut offset), 0x7924ce11db524521);
+        assert_eq!(read_string(&metadata, &mut offset), "Demo.Time");
+        assert_eq!(
+            read_bytes(&metadata, &mut offset),
+            vec![0x00, 0x00, 0x80, 0x3f]
+        );
+
+        assert_eq!(read_u32(&metadata, &mut offset), STARTUP_OP_SPAWN);
+        assert_eq!(read_u32(&metadata, &mut offset), 2);
+        assert_eq!(read_u64(&metadata, &mut offset), 0x002202c6aeb4f27b);
+        assert_eq!(read_string(&metadata, &mut offset), "Demo.Position");
+        assert_eq!(
+            read_bytes(&metadata, &mut offset),
+            vec![0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40]
+        );
+        assert_eq!(read_u64(&metadata, &mut offset), 0x2cf8a68bcb7f913b);
+        assert_eq!(read_string(&metadata, &mut offset), "Demo.Velocity");
+        assert_eq!(
+            read_bytes(&metadata, &mut offset),
+            vec![0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40]
+        );
+
+        assert_eq!(read_u32(&metadata, &mut offset), STARTUP_OP_RUN_SCHEDULE);
+        assert_eq!(read_u64(&metadata, &mut offset), 0xed3d905325519b05);
+        assert_eq!(read_string(&metadata, &mut offset), "Demo.Main");
         assert_eq!(offset, metadata.len());
     }
 
@@ -462,6 +568,13 @@ mod tests {
     fn read_string(metadata: &[u8], offset: &mut usize) -> String {
         let length = read_u32(metadata, offset) as usize;
         let value = String::from_utf8(metadata[*offset..*offset + length].to_vec()).unwrap();
+        *offset += length;
+        value
+    }
+
+    fn read_bytes(metadata: &[u8], offset: &mut usize) -> Vec<u8> {
+        let length = read_u32(metadata, offset) as usize;
+        let value = metadata[*offset..*offset + length].to_vec();
         *offset += length;
         value
     }

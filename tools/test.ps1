@@ -554,6 +554,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "encodes_system_query_schedule_descriptors_in_ecs_metadata")
 
     Invoke-CheckedCommand `
+        -Name "encodes_startup_operations_in_ecs_metadata" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "encodes_startup_operations_in_ecs_metadata")
+
+    Invoke-CheckedCommand `
         -Name "defines_runtime_program_assembly_model" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_runtime_program_assembly_model")
