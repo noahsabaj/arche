@@ -5,40 +5,250 @@ use crate::core::{
 use crate::core_lower;
 use crate::parser::{BinaryOperator, Expression, Program, Statement};
 
+const NATIVE_ECS_QWORD_BYTE_LEN: u8 = 8;
+const NATIVE_ECS_DWORD_BYTE_LEN: u8 = 4;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeEcsSlot {
+    offset: u8,
+    byte_len: u8,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeDescriptorCountSlots {
+    components: NativeEcsSlot,
+    resources: NativeEcsSlot,
+    systems: NativeEcsSlot,
+    queries: NativeEcsSlot,
+    schedules: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeStartupStateSlots {
+    time_payload: NativeEcsSlot,
+    row_count: NativeEcsSlot,
+    position_payload: NativeEcsSlot,
+    velocity_payload: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeCompiledMoveSlots {
+    target_position_payload: NativeEcsSlot,
+    scanned_row_count: NativeEcsSlot,
+    field_product_payload: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeEcsExecutionStateLayout {
+    frame_size: u8,
+    zeroed_qword_offsets: [u8; 12],
+    descriptor_counts: NativeDescriptorCountSlots,
+    startup_state: NativeStartupStateSlots,
+    compiled_move: NativeCompiledMoveSlots,
+}
+
+const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
+    NativeEcsExecutionStateLayout {
+        frame_size: 96,
+        zeroed_qword_offsets: [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88],
+        descriptor_counts: NativeDescriptorCountSlots {
+            components: NativeEcsSlot {
+                offset: 0,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            resources: NativeEcsSlot {
+                offset: 8,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            systems: NativeEcsSlot {
+                offset: 16,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            queries: NativeEcsSlot {
+                offset: 24,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            schedules: NativeEcsSlot {
+                offset: 32,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+        },
+        startup_state: NativeStartupStateSlots {
+            time_payload: NativeEcsSlot {
+                offset: 40,
+                byte_len: NATIVE_ECS_DWORD_BYTE_LEN,
+            },
+            row_count: NativeEcsSlot {
+                offset: 48,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            position_payload: NativeEcsSlot {
+                offset: 56,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            velocity_payload: NativeEcsSlot {
+                offset: 64,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+        },
+        compiled_move: NativeCompiledMoveSlots {
+            target_position_payload: NativeEcsSlot {
+                offset: 72,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            scanned_row_count: NativeEcsSlot {
+                offset: 80,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            field_product_payload: NativeEcsSlot {
+                offset: 88,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+        },
+    };
+const NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size;
+
 const RUNTIME_CREATE_PREFIX: &[u8] = &[
-    0x48, 0x83, 0xec, 0x60, // sub rsp, 96
-    0x31, 0xc0, // xor eax, eax
-    0x48, 0x89, 0x04, 0x24, // mov qword ptr [rsp], rax
-    0x48, 0x89, 0x44, 0x24, 0x08, // mov qword ptr [rsp + 8], rax
-    0x48, 0x89, 0x44, 0x24, 0x10, // mov qword ptr [rsp + 16], rax
-    0x48, 0x89, 0x44, 0x24, 0x18, // mov qword ptr [rsp + 24], rax
-    0x48, 0x89, 0x44, 0x24, 0x20, // mov qword ptr [rsp + 32], rax
-    0x48, 0x89, 0x44, 0x24, 0x28, // mov qword ptr [rsp + 40], rax
-    0x48, 0x89, 0x44, 0x24, 0x30, // mov qword ptr [rsp + 48], rax
-    0x48, 0x89, 0x44, 0x24, 0x38, // mov qword ptr [rsp + 56], rax
-    0x48, 0x89, 0x44, 0x24, 0x40, // mov qword ptr [rsp + 64], rax
-    0x48, 0x89, 0x44, 0x24, 0x48, // mov qword ptr [rsp + 72], rax
-    0x48, 0x89, 0x44, 0x24, 0x50, // mov qword ptr [rsp + 80], rax
-    0x48, 0x89, 0x44, 0x24, 0x58, // mov qword ptr [rsp + 88], rax
+    0x48,
+    0x83,
+    0xec,
+    NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE, // sub rsp, frame size
+    0x31,
+    0xc0, // xor eax, eax
+    0x48,
+    0x89,
+    0x04,
+    0x24, // mov qword ptr [rsp], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x08, // mov qword ptr [rsp + 8], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x10, // mov qword ptr [rsp + 16], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x18, // mov qword ptr [rsp + 24], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x20, // mov qword ptr [rsp + 32], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x28, // mov qword ptr [rsp + 40], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x30, // mov qword ptr [rsp + 48], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x38, // mov qword ptr [rsp + 56], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x40, // mov qword ptr [rsp + 64], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x48, // mov qword ptr [rsp + 72], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x50, // mov qword ptr [rsp + 80], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x58, // mov qword ptr [rsp + 88], rax
 ];
 
 const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
-    0x31, 0xc0, // xor eax, eax
-    0x48, 0x89, 0x04, 0x24, // mov qword ptr [rsp], rax
-    0x48, 0x89, 0x44, 0x24, 0x08, // mov qword ptr [rsp + 8], rax
-    0x48, 0x89, 0x44, 0x24, 0x10, // mov qword ptr [rsp + 16], rax
-    0x48, 0x89, 0x44, 0x24, 0x18, // mov qword ptr [rsp + 24], rax
-    0x48, 0x89, 0x44, 0x24, 0x20, // mov qword ptr [rsp + 32], rax
-    0x48, 0x89, 0x44, 0x24, 0x28, // mov qword ptr [rsp + 40], rax
-    0x48, 0x89, 0x44, 0x24, 0x30, // mov qword ptr [rsp + 48], rax
-    0x48, 0x89, 0x44, 0x24, 0x38, // mov qword ptr [rsp + 56], rax
-    0x48, 0x89, 0x44, 0x24, 0x40, // mov qword ptr [rsp + 64], rax
-    0x48, 0x89, 0x44, 0x24, 0x48, // mov qword ptr [rsp + 72], rax
-    0x48, 0x89, 0x44, 0x24, 0x50, // mov qword ptr [rsp + 80], rax
-    0x48, 0x89, 0x44, 0x24, 0x58, // mov qword ptr [rsp + 88], rax
-    0x48, 0x83, 0xc4, 0x60, // add rsp, 96
-    0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, 60
-    0x0f, 0x05, // syscall
+    0x31,
+    0xc0, // xor eax, eax
+    0x48,
+    0x89,
+    0x04,
+    0x24, // mov qword ptr [rsp], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x08, // mov qword ptr [rsp + 8], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x10, // mov qword ptr [rsp + 16], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x18, // mov qword ptr [rsp + 24], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x20, // mov qword ptr [rsp + 32], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x28, // mov qword ptr [rsp + 40], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x30, // mov qword ptr [rsp + 48], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x38, // mov qword ptr [rsp + 56], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x40, // mov qword ptr [rsp + 64], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x48, // mov qword ptr [rsp + 72], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x50, // mov qword ptr [rsp + 80], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x58, // mov qword ptr [rsp + 88], rax
+    0x48,
+    0x83,
+    0xc4,
+    NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE, // add rsp, frame size
+    0xb8,
+    0x3c,
+    0x00,
+    0x00,
+    0x00, // mov eax, 60
+    0x0f,
+    0x05, // syscall
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -62,14 +272,56 @@ const ECS_STARTUP_OP_SPAWN: u32 = 2;
 const ECS_STARTUP_OP_RUN_SCHEDULE: u32 = 3;
 const ECS_EXPECTED_DESCRIPTOR_COUNTS: [u64; 5] = [2, 1, 1, 1, 1];
 const ECS_DESCRIPTOR_RECORD_COUNT_OFFSETS: [u8; 5] = [28, 44, 60, 76, 92];
-const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [0, 8, 16, 24, 32];
-const ECS_RESOURCE_PAYLOAD_STORAGE_SLOT: u8 = 40;
-const ECS_SPAWN_ROW_COUNT_SLOT: u8 = 48;
-const ECS_POSITION_PAYLOAD_STORAGE_SLOT: u8 = 56;
-const ECS_VELOCITY_PAYLOAD_STORAGE_SLOT: u8 = 64;
-const ECS_QUERY_LOOP_TARGET_POSITION_SLOT: u8 = 72;
-const ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT: u8 = 80;
-const ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT: u8 = 88;
+const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_counts
+        .components
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_counts
+        .resources
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_counts
+        .systems
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_counts
+        .queries
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_counts
+        .schedules
+        .offset,
+];
+const ECS_RESOURCE_PAYLOAD_STORAGE_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .startup_state
+    .time_payload
+    .offset;
+const ECS_SPAWN_ROW_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .startup_state
+    .row_count
+    .offset;
+const ECS_POSITION_PAYLOAD_STORAGE_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .startup_state
+    .position_payload
+    .offset;
+const ECS_VELOCITY_PAYLOAD_STORAGE_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .startup_state
+    .velocity_payload
+    .offset;
+const ECS_QUERY_LOOP_TARGET_POSITION_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .compiled_move
+    .target_position_payload
+    .offset;
+const ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .compiled_move
+    .scanned_row_count
+    .offset;
+const ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .compiled_move
+    .field_product_payload
+    .offset;
 
 const DEMO_POSITION_COMPONENT_ID: u64 = 0x002202c6aeb4f27b;
 const DEMO_VELOCITY_COMPONENT_ID: u64 = 0x2cf8a68bcb7f913b;
@@ -1147,6 +1399,134 @@ mod tests {
     use crate::runtime_assembly;
 
     #[test]
+    fn defines_native_ecs_execution_state_layout() {
+        let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
+
+        assert_eq!(layout.frame_size, 96);
+        assert_eq!(
+            layout.zeroed_qword_offsets,
+            [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88]
+        );
+        assert_eq!(
+            layout.descriptor_counts,
+            NativeDescriptorCountSlots {
+                components: NativeEcsSlot {
+                    offset: 0,
+                    byte_len: 8,
+                },
+                resources: NativeEcsSlot {
+                    offset: 8,
+                    byte_len: 8,
+                },
+                systems: NativeEcsSlot {
+                    offset: 16,
+                    byte_len: 8,
+                },
+                queries: NativeEcsSlot {
+                    offset: 24,
+                    byte_len: 8,
+                },
+                schedules: NativeEcsSlot {
+                    offset: 32,
+                    byte_len: 8,
+                },
+            }
+        );
+        assert_eq!(
+            layout.startup_state,
+            NativeStartupStateSlots {
+                time_payload: NativeEcsSlot {
+                    offset: 40,
+                    byte_len: 4,
+                },
+                row_count: NativeEcsSlot {
+                    offset: 48,
+                    byte_len: 8,
+                },
+                position_payload: NativeEcsSlot {
+                    offset: 56,
+                    byte_len: 8,
+                },
+                velocity_payload: NativeEcsSlot {
+                    offset: 64,
+                    byte_len: 8,
+                },
+            }
+        );
+        assert_eq!(
+            layout.compiled_move,
+            NativeCompiledMoveSlots {
+                target_position_payload: NativeEcsSlot {
+                    offset: 72,
+                    byte_len: 8,
+                },
+                scanned_row_count: NativeEcsSlot {
+                    offset: 80,
+                    byte_len: 8,
+                },
+                field_product_payload: NativeEcsSlot {
+                    offset: 88,
+                    byte_len: 8,
+                },
+            }
+        );
+        assert_eq!(ECS_DESCRIPTOR_REGISTRY_SLOTS, [0, 8, 16, 24, 32]);
+        assert_eq!(ECS_RESOURCE_PAYLOAD_STORAGE_SLOT, 40);
+        assert_eq!(ECS_SPAWN_ROW_COUNT_SLOT, 48);
+        assert_eq!(ECS_POSITION_PAYLOAD_STORAGE_SLOT, 56);
+        assert_eq!(ECS_VELOCITY_PAYLOAD_STORAGE_SLOT, 64);
+        assert_eq!(ECS_QUERY_LOOP_TARGET_POSITION_SLOT, 72);
+        assert_eq!(ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT, 80);
+        assert_eq!(ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT, 88);
+
+        let slots = [
+            layout.descriptor_counts.components,
+            layout.descriptor_counts.resources,
+            layout.descriptor_counts.systems,
+            layout.descriptor_counts.queries,
+            layout.descriptor_counts.schedules,
+            layout.startup_state.time_payload,
+            layout.startup_state.row_count,
+            layout.startup_state.position_payload,
+            layout.startup_state.velocity_payload,
+            layout.compiled_move.target_position_payload,
+            layout.compiled_move.scanned_row_count,
+            layout.compiled_move.field_product_payload,
+        ];
+        for slot in slots {
+            assert!(
+                slot.offset + slot.byte_len <= layout.frame_size,
+                "slot {:?} should fit in the native ECS frame",
+                slot
+            );
+        }
+        for (left_index, left) in slots.iter().enumerate() {
+            for right in slots.iter().skip(left_index + 1) {
+                assert!(
+                    left.offset + left.byte_len <= right.offset
+                        || right.offset + right.byte_len <= left.offset,
+                    "semantic slots should not overlap: {:?} and {:?}",
+                    left,
+                    right
+                );
+            }
+        }
+        assert!(
+            layout.zeroed_qword_offsets.contains(&40),
+            "the 4-byte Time payload lives inside the zeroed qword at [rsp + 40]"
+        );
+
+        assert_eq!(
+            RUNTIME_CREATE_PREFIX,
+            expected_runtime_create_prefix(&layout).as_slice()
+        );
+        assert_eq!(
+            RUNTIME_DESTROY_SUFFIX,
+            expected_runtime_destroy_suffix(&layout).as_slice()
+        );
+    }
+
+    #[test]
     fn defines_native_move_query_loop_observable() {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
@@ -1552,5 +1932,49 @@ mod tests {
         haystack
             .windows(needle.len())
             .any(|window| window == needle)
+    }
+
+    fn expected_runtime_create_prefix(layout: &NativeEcsExecutionStateLayout) -> Vec<u8> {
+        let mut bytes = vec![
+            0x48,
+            0x83,
+            0xec,
+            layout.frame_size, // sub rsp, frame size
+            0x31,
+            0xc0, // xor eax, eax
+        ];
+        for offset in layout.zeroed_qword_offsets {
+            append_zero_qword_store(&mut bytes, offset);
+        }
+        bytes
+    }
+
+    fn expected_runtime_destroy_suffix(layout: &NativeEcsExecutionStateLayout) -> Vec<u8> {
+        let mut bytes = vec![0x31, 0xc0]; // xor eax, eax
+        for offset in layout.zeroed_qword_offsets {
+            append_zero_qword_store(&mut bytes, offset);
+        }
+        bytes.extend_from_slice(&[
+            0x48,
+            0x83,
+            0xc4,
+            layout.frame_size, // add rsp, frame size
+            0xb8,
+            0x3c,
+            0x00,
+            0x00,
+            0x00, // mov eax, 60
+            0x0f,
+            0x05, // syscall
+        ]);
+        bytes
+    }
+
+    fn append_zero_qword_store(bytes: &mut Vec<u8>, offset: u8) {
+        if offset == 0 {
+            bytes.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]);
+        } else {
+            bytes.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset]);
+        }
     }
 }

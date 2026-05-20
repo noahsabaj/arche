@@ -872,6 +872,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_move_query_loop_observable")
 
     Invoke-CheckedCommand `
+        -Name "defines_native_ecs_execution_state_layout" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_ecs_execution_state_layout")
+
+    Invoke-CheckedCommand `
         -Name "emits_native_query_loop_row_scan_skeleton" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "emits_native_query_loop_row_scan_skeleton")

@@ -80,8 +80,9 @@ The proof chain currently demonstrates:
 - Generated-native field loading and `f32` multiplication for `Velocity * Time.delta`.
 - Generated-native `Position` field stores for the bootstrap `Demo.Move` query-loop body.
 - Generated-native `run Demo.Main` dispatch into compiled `Demo.Move` query-loop code.
+- A named native ECS execution-state layout for descriptor counts, startup state, query scan state, and compiled-system temporaries.
 
-M18 native codegen for compiled query loops is complete. The next proof is defining native ECS execution state.
+M19 native ECS execution-state work is underway. The next proof is materializing native descriptor record state.
 
 ## What This Is Not Yet
 
