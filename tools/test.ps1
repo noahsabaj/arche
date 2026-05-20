@@ -295,6 +295,60 @@ function Test-Elf64Payload {
     Write-Host "PASS: ELF entrypoint check"
 }
 
+function Test-Elf64TrailingPayload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+
+        [Parameter(Mandatory = $true)]
+        [UInt64] $ExpectedTrailingPayloadLength
+    )
+
+    Write-Host "==> ELF64 header check"
+
+    if (!(Test-Path -LiteralPath $Path)) {
+        Write-Error "ELF output not found: $Path"
+        exit 1
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Path))
+
+    if ($bytes.Length -lt (120 + $ExpectedTrailingPayloadLength + 1)) {
+        Write-Error "ELF output is too small for expected trailing payload: $($bytes.Length) bytes"
+        exit 1
+    }
+
+    Assert-Equal -Name "ELF magic byte 0" -Actual $bytes[0] -Expected 0x7f
+    Assert-Equal -Name "ELF magic byte 1" -Actual $bytes[1] -Expected 0x45
+    Assert-Equal -Name "ELF magic byte 2" -Actual $bytes[2] -Expected 0x4c
+    Assert-Equal -Name "ELF magic byte 3" -Actual $bytes[3] -Expected 0x46
+    Assert-Equal -Name "ELF class" -Actual $bytes[4] -Expected 2
+    Assert-Equal -Name "ELF data encoding" -Actual $bytes[5] -Expected 1
+    Assert-Equal -Name "ELF type" -Actual ([BitConverter]::ToUInt16($bytes, 16)) -Expected 2
+    Assert-Equal -Name "ELF machine" -Actual ([BitConverter]::ToUInt16($bytes, 18)) -Expected 0x3e
+    Assert-Equal -Name "ELF program header entry size" -Actual ([BitConverter]::ToUInt16($bytes, 54)) -Expected 56
+
+    $entrypoint = [BitConverter]::ToUInt64($bytes, 24)
+    $loadFlags = [BitConverter]::ToUInt32($bytes, 68)
+    $loadOffset = [BitConverter]::ToUInt64($bytes, 72)
+    $loadVaddr = [BitConverter]::ToUInt64($bytes, 80)
+    $loadFileSize = [BitConverter]::ToUInt64($bytes, 96)
+    $metadataStart = [UInt64]($bytes.Length - $ExpectedTrailingPayloadLength)
+
+    Assert-Equal -Name "ELF load segment flags" -Actual $loadFlags -Expected 5
+    Assert-Equal -Name "ELF load segment file size" -Actual $loadFileSize -Expected $bytes.Length
+    Assert-Equal -Name "ELF load segment memory size" -Actual ([BitConverter]::ToUInt64($bytes, 104)) -Expected $bytes.Length
+    Assert-Equal -Name "ELF entrypoint" -Actual $entrypoint -Expected ($loadVaddr + 120)
+    Assert-Equal -Name "ELF entrypoint file offset" -Actual ([UInt64]$loadOffset + ($entrypoint - $loadVaddr)) -Expected 120
+
+    if ($metadataStart -le 120) {
+        Write-Error "ELF text payload is missing before trailing metadata"
+        exit 1
+    }
+
+    Write-Host "PASS: ELF64 header check"
+}
+
 function Read-U32 {
     param(
         [Parameter(Mandatory = $true)]
@@ -533,14 +587,12 @@ function Test-EcsMetadataPayload {
         [string] $Path
     )
 
-    $expectedText = New-ImmediateRuntimeText -ExpectedExitCode 0
-
-    Test-Elf64Payload -Path $Path -ExpectedText $expectedText -ExpectedTrailingPayloadLength 717
+    Test-Elf64TrailingPayload -Path $Path -ExpectedTrailingPayloadLength 717
 
     Write-Host "==> ECS metadata payload check"
 
     $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Path))
-    $metadataStart = 120 + $expectedText.Length
+    $metadataStart = $bytes.Length - 717
     $offset = $metadataStart
 
     $magic = [System.Text.Encoding]::ASCII.GetString($bytes, $offset, 8)
@@ -637,6 +689,23 @@ function Test-EcsMetadataPayload {
     Assert-Equal -Name "ECS metadata end offset" -Actual $offset -Expected $bytes.Length
 
     Write-Host "PASS: ECS metadata payload check"
+}
+
+function Test-CorruptEcsMetadataMagic {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_metadata"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $bytes[$metadataStart] = 0x58
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 16
 }
 
 function Test-Elf64Executable {
@@ -1340,6 +1409,8 @@ try {
         -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system.arc", "-o", ".\build\move_system")
 
     Test-EcsMetadataPayload -Path ".\build\move_system"
+    Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 0
+    Test-CorruptEcsMetadataMagic -Path ".\build\move_system"
 
     Remove-Item -LiteralPath ".\build\bad" -Force -ErrorAction SilentlyContinue
 

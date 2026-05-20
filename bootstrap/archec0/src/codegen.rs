@@ -23,6 +23,9 @@ pub struct CodegenError {
     pub message: String,
 }
 
+const ECS_METADATA_ENVELOPE_SIZE: usize = 112;
+const ECS_METADATA_FAILURE_EXIT_CODE: u8 = 16;
+
 pub fn startup_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> {
     let startup = program.startup.as_ref().ok_or_else(unsupported_shape)?;
 
@@ -45,22 +48,93 @@ pub fn startup_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> 
     Ok(runtime_wrapped_payload(&startup_body))
 }
 
-pub fn metadata_carrier_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> {
+pub fn ecs_metadata_decoder_text_payload(
+    program: &Program,
+    metadata_payload: &[u8],
+) -> Result<Vec<u8>, CodegenError> {
+    require_metadata_decoder_exit(program)?;
+
+    if metadata_payload.len() < ECS_METADATA_ENVELOPE_SIZE {
+        return Err(CodegenError {
+            message: format!(
+                "ECS metadata payload must contain at least {ECS_METADATA_ENVELOPE_SIZE} envelope bytes"
+            ),
+        });
+    }
+
+    let startup_body = ecs_metadata_decoder_body(&metadata_payload[..ECS_METADATA_ENVELOPE_SIZE]);
+    Ok(runtime_wrapped_payload(&startup_body))
+}
+
+fn require_metadata_decoder_exit(program: &Program) -> Result<(), CodegenError> {
     let startup = program.startup.as_ref().ok_or_else(unsupported_shape)?;
     let Some(Statement::Exit(exit)) = startup.statements.last() else {
-        return Err(metadata_carrier_error());
+        return Err(metadata_decoder_error());
     };
     let Expression::Integer(integer) = &exit.expression else {
-        return Err(metadata_carrier_error());
+        return Err(metadata_decoder_error());
     };
 
     if integer.value != 0 {
-        return Err(metadata_carrier_error());
+        return Err(metadata_decoder_error());
     }
 
-    Ok(runtime_wrapped_payload(&immediate_exit_body(
-        &exit.expression,
-    )?))
+    Ok(())
+}
+
+fn ecs_metadata_decoder_body(envelope: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut jump_to_failure_offsets = Vec::new();
+
+    bytes.extend_from_slice(&[0x48, 0x8d, 0x35, 0x00, 0x00, 0x00, 0x00]); // lea rsi, [rip + metadata]
+
+    for (index, chunk) in envelope.chunks_exact(8).enumerate() {
+        bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
+        bytes.extend_from_slice(chunk);
+        bytes.extend_from_slice(&[0x48, 0x39, 0x46, (index * 8) as u8]); // cmp [rsi + offset], rax
+
+        let jump_offset = bytes.len();
+        bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
+        jump_to_failure_offsets.push(jump_offset);
+    }
+
+    bytes.extend_from_slice(&[0xbf, 0x00, 0x00, 0x00, 0x00]); // mov edi, 0
+    let jump_to_done_offset = bytes.len();
+    bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
+
+    let failure_offset = bytes.len();
+    bytes.extend_from_slice(&[
+        0xbf,
+        ECS_METADATA_FAILURE_EXIT_CODE,
+        0x00,
+        0x00,
+        0x00, // mov edi, failure
+    ]);
+    let done_offset = bytes.len();
+
+    for jump_offset in jump_to_failure_offsets {
+        patch_rel32(&mut bytes, jump_offset + 2, failure_offset, jump_offset + 6);
+    }
+    patch_rel32(
+        &mut bytes,
+        jump_to_done_offset + 1,
+        done_offset,
+        jump_to_done_offset + 5,
+    );
+
+    let metadata_displacement = (bytes.len() + RUNTIME_DESTROY_SUFFIX.len() - 7) as i32;
+    patch_i32(&mut bytes, 3, metadata_displacement);
+
+    bytes
+}
+
+fn patch_rel32(bytes: &mut [u8], patch_offset: usize, target_offset: usize, next_offset: usize) {
+    let displacement = target_offset as i32 - next_offset as i32;
+    patch_i32(bytes, patch_offset, displacement);
+}
+
+fn patch_i32(bytes: &mut [u8], offset: usize, value: i32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
 fn runtime_wrapped_payload(startup_body: &[u8]) -> Vec<u8> {
@@ -186,8 +260,8 @@ fn unsupported_shape() -> CodegenError {
     }
 }
 
-fn metadata_carrier_error() -> CodegenError {
+fn metadata_decoder_error() -> CodegenError {
     CodegenError {
-        message: "metadata carrier executable requires final `exit 0`".to_string(),
+        message: "ECS metadata decoder executable requires final `exit 0`".to_string(),
     }
 }
