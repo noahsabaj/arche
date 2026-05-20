@@ -136,7 +136,7 @@ fn emit_core(source_path: &str) {
     let source = read_source(path);
     let program = parse_source(path, &source);
 
-    if let Err(error) = checker::check_program(&program) {
+    if let Err(error) = checker::check_ecs_declarations(&program) {
         eprintln!("{}", diagnostics::format_check_error(path, &source, &error));
         process::exit(1);
     }

@@ -627,10 +627,10 @@ fn lower_error(message: impl Into<String>) -> CoreLowerError {
 mod tests {
     use super::*;
     use crate::core::{
-        CoreQueryAccess, CoreQueryLoopBinding, CoreQueryTerm, CoreSchedule, CoreScheduleItem,
-        CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemBinaryOp,
-        CoreSystemBody, CoreSystemExpression, CoreSystemParam, CoreSystemParamKind,
-        CoreSystemPlace, CoreSystemStatement,
+        CoreQueryAccess, CoreQueryLoop, CoreQueryLoopBinding, CoreQueryTerm, CoreSchedule,
+        CoreScheduleItem, CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreSystem,
+        CoreSystemBinaryOp, CoreSystemBody, CoreSystemExpression, CoreSystemParam,
+        CoreSystemParamKind, CoreSystemPlace, CoreSystemStatement,
     };
     use crate::lexer;
     use crate::parser;
@@ -1107,7 +1107,29 @@ startup {
                         },
                     },
                 ],
-                body: CoreSystemBody { statements: vec![] },
+                body: CoreSystemBody {
+                    statements: vec![CoreSystemStatement::QueryLoop(CoreQueryLoop {
+                        query_param: "movers".to_string(),
+                        bindings: vec![
+                            CoreQueryLoopBinding {
+                                name: "pos".to_string(),
+                                component_id: 0x002202c6aeb4f27b,
+                                component_name: "Demo.Position".to_string(),
+                                access: CoreQueryAccess::Mut,
+                            },
+                            CoreQueryLoopBinding {
+                                name: "vel".to_string(),
+                                component_id: 0x2cf8a68bcb7f913b,
+                                component_name: "Demo.Velocity".to_string(),
+                                access: CoreQueryAccess::Read,
+                            },
+                        ],
+                        body: vec![
+                            move_position_add_assign("x", "x"),
+                            move_position_add_assign("y", "y"),
+                        ],
+                    })],
+                },
             }],
             schedules: vec![CoreSchedule {
                 name: "Main".to_string(),

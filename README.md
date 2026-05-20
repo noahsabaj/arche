@@ -74,8 +74,9 @@ The proof chain currently demonstrates:
 - Core lowering for query-loop skeletons, starting with `for (pos, vel) in movers`.
 - Core lowering for query-loop field expressions and `f32` multiplication, starting with `vel * time.delta`.
 - Core lowering for add-assign/update statements inside query loops, starting with `pos.x += vel.x * time.delta`.
+- Core text emission for the lowered `Demo.Move` query loop in `move_system.arc --emit-core`.
 
-M16 native executable source-level ECS startup is complete. M17 Core system-body lowering is underway; the next proof is emitting the Core query loop for `move_system`.
+M17 Core system-body lowering is complete. M18 native codegen for compiled query loops is the next proof focus.
 
 ## What This Is Not Yet
 
@@ -119,6 +120,7 @@ cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\math.arc 
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\math.arc --emit-core
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\time_delta.arc --emit-ast
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast
+cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-core
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\position.arc --inspect-components
 cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\exit42.arc -o .\build\exit42
 ```

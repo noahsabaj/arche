@@ -18,11 +18,10 @@ system Move(
     time: read Time,
     movers: query[mut Position, Velocity]
 ) {
-    time.delta
-    Position.x
-    Position.y
-    Velocity.x
-    Velocity.y
+    for (pos, vel) in movers {
+        pos.x += vel.x * time.delta
+        pos.y += vel.y * time.delta
+    }
 }
 
 schedule Main {

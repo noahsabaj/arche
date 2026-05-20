@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M17 Core system-body lowering.
+**Current focus:** M18 native codegen for compiled query loop.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -53,7 +53,7 @@ Source file -> parsed ECS program -> Arche Core -> runtime world -> schedule -> 
 Current missing links:
 
 - Native executable startup can validate embedded `ARCHEECS` metadata, register descriptor counts, apply the `Demo.Time` resource payload, create one bootstrap-native spawn row, and expose a deterministic startup-world observable, but does not yet run schedules or query loops.
-- System body Core lowering for real query loops.
+- `move_system.arc --emit-core` can print the lowered `Demo.Move` query-loop body.
 - Native generated query-loop code instead of runtime-only helper proofs.
 
 ## Integration Debt
@@ -64,15 +64,15 @@ Current gaps:
 
 - Generated native binaries can carry complete decoded `ARCHEECS` metadata, and native startup can validate its envelope, register descriptor counts, apply the first resource payload, create one spawn row, and expose a deterministic startup-world observable, but native startup does not yet execute schedule startup operations from it.
 - Source-level startup resource, spawn, and schedule execution now drives runtime ECS state, but not generated executable ECS state.
-- System declarations and query metadata exist, but system bodies are not yet lowered into executable query-loop code.
+- System declarations, query metadata, and Core query-loop bodies exist, but system bodies are not yet lowered into executable native query-loop code.
 - M10/M14 Move behavior is proven through a runtime application path, not a compiled source system body.
 - Runtime schedule execution is source-driven in tests, but not yet native executable behavior.
 
 ## Future Horizon
 
-These are milestone targets only, not active board issues.
+These are milestone targets only, not detailed issue expansions.
 
-- M18: Native codegen for compiled query loop.
+- M18: Native codegen for compiled query loop is now active below.
 
 ## Do Not Start Yet
 
@@ -114,13 +114,16 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M17-005 | Emit Core query loop for move_system | `--emit-core` can print the lowered `Demo.Move` query-loop body. |
+| M18-001 | Define native query-loop codegen observable | A generated executable proof has a narrow observable for compiled `Demo.Move` query-loop execution. |
 
 ### Backlog
 
 | Issue | Title | Done when |
 |---|---|---|
-| - | - | Empty. |
+| M18-002 | Emit native Position/Velocity row scan skeleton | Native code can walk the bootstrap row state without mutating it. |
+| M18-003 | Emit native field load and f32 multiply | Native code can compute `Velocity * Time.delta` from startup state. |
+| M18-004 | Emit native Position field stores | Native code can write updated `Position` fields into bootstrap row state. |
+| M18-005 | Replace bootstrap Move helper with compiled query loop proof | The native proof uses compiled query-loop code for `Demo.Move` instead of the bootstrap helper path. |
 
 ### Doing
 
@@ -235,6 +238,7 @@ Board rules:
 | M17-002 | Lower query loop skeleton | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_query_loop_skeleton_to_core_body` passed, proving an inline `Demo.Move` fixture with `for (pos, vel) in movers {}` lowers to a `CoreSystemStatement::QueryLoop` skeleton with `pos -> mut Demo.Position`, `vel -> read Demo.Velocity`, an empty Core loop body, and normal `startup { exit 0 }` lowering; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted Core query-loop skeleton proof included. This was Core-only skeleton lowering: existing expression-only system bodies still lower empty, `--emit-core` output is unchanged, and no field math, add-assign lowering, runtime behavior, native behavior, or fixture-level `Move` execution was added. Implementation commit: `e7423b7d`. |
 | M17-003 | Lower field expressions and arithmetic | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_query_loop_field_expressions_to_core_body` passed, proving an inline `Demo.Move` fixture with `vel.x * time.delta` and `vel.y * time.delta` inside `for (pos, vel) in movers` lowers to non-effecting Core expression statements using `CoreSystemExpression::ComponentField`, `CoreSystemExpression::ResourceField`, and `CoreSystemExpression::Binary(F32Multiply)` with exact `Demo.Velocity` and `Demo.Time` IDs/names; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted Core query-loop expression proof included. This was Core-only expression lowering: top-level legacy system expressions still lower empty, `--emit-core` output is unchanged, and no add-assign lowering, runtime behavior, native behavior, or fixture-level `Move` execution was added. Implementation commit: `8d01cb6b`. |
 | M17-004 | Lower assignment/update statements | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_query_loop_add_assign_to_core_body` passed, proving an inline `Demo.Move` fixture with `pos.x += vel.x * time.delta` and `pos.y += vel.y * time.delta` inside `for (pos, vel) in movers` lowers to `CoreSystemStatement::AddAssign` with `pos -> mut Demo.Position` targets and the existing `vel * time.delta` Core expression values; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted Core query-loop update proof included. This was Core-only update lowering: `--emit-core` output is unchanged, and no runtime behavior, native behavior, schedule execution, query execution, or fixture-level `Move` execution was added. Implementation commit: `260307cb`. |
+| M17-005 | Emit Core query loop for move_system | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-core` printed the lowered `Demo.Move` Core query-loop body with `movers` bindings, `pos -> mut Demo.Position`, `vel -> read Demo.Velocity`, and two `add_assign` statements for `pos.x` and `pos.y`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with exact `move_system.arc --emit-ast` and `move_system.arc --emit-core` assertions while preserving the existing `math.arc --emit-core` assertion. This completed M17 Core system-body lowering and stayed Core text-output only: no runtime behavior, native behavior, scheduler/query-loop execution, metadata format changes, or generated `Move` code was added. Implementation commit: `PENDING`. |
 
 ## Milestones
 
@@ -1733,19 +1737,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M17-004 stayed Core query-loop update lowering only | 99/100 |
-| `tools/test.ps1` includes `lowers_query_loop_add_assign_to_core_body` and the full proof runner remains passing | 99/100 |
+| M17-005 stayed Core query-loop text emission only | 99/100 |
+| `tools/test.ps1` includes exact `move_system.arc --emit-ast` and `move_system.arc --emit-core` assertions and the full proof runner remains passing | 99/100 |
 | Existing M0-M16 parser, runtime unit, layout, Core, executable, component metadata, ECS metadata, diagnostic, native startup, and e2e proofs remain passing | 98/100 |
-| Board state marks M17-004 complete and promotes M17-005 as the next proof | 98/100 |
-| M17 backlog remains constrained to Core system-body lowering only | 97/100 |
+| Board state marks M17 complete and promotes M18-001 as the next proof | 98/100 |
+| M18 backlog remains constrained to native compiled query-loop proofs only | 97/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M17-005` in `Ready`.
+- The active board has only `M18-001` in `Ready`.
 - `Doing` is empty.
-- `Backlog` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, and M17-001 through M17-004.
-- Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, M16-001 through M16-005, and M17-001 through M17-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17-001 Core system body model, M17-002 query-loop skeleton lowering, M17-003 field expression and arithmetic lowering, and M17-004 assignment/update lowering are complete. M17-005 Core query-loop text emission is next.
+- `Backlog` contains only M18-002 through M18-005.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, and completed M17.
+- Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, M16-001 through M16-005, M17-001 through M17-005, and M18-001 through M18-005 only.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, and M17 Core system-body lowering are complete. M18 native codegen for the compiled query loop is next.

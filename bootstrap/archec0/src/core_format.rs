@@ -2,8 +2,10 @@ use std::collections::HashMap;
 use std::fmt::Write;
 
 use crate::core::{
-    CoreBinaryOp, CoreFunction, CoreInstruction, CoreProgram, CoreSpawnFieldValue, CoreTerminator,
-    CoreType, LocalId, ValueId,
+    CoreBinaryOp, CoreFunction, CoreInstruction, CoreProgram, CoreQueryAccess, CoreQueryLoop,
+    CoreSpawnFieldValue, CoreSystem, CoreSystemBinaryOp, CoreSystemExpression, CoreSystemParam,
+    CoreSystemParamKind, CoreSystemPlace, CoreSystemStatement, CoreTerminator, CoreType, LocalId,
+    ValueId,
 };
 
 pub fn format_core_program(program: &CoreProgram) -> String {
@@ -26,9 +28,105 @@ impl CoreFormatter {
     fn format_program(&mut self, program: &CoreProgram) {
         let _ = write!(self.output, "world {}", program.world.name);
 
+        for system in &program.systems {
+            if !system.body.statements.is_empty() {
+                self.format_system(system);
+            }
+        }
+
         for function in &program.functions {
             self.format_function(function);
         }
+    }
+
+    fn format_system(&mut self, system: &CoreSystem) {
+        let _ = write!(self.output, "\n\nsystem {} {{", system.name);
+
+        for param in &system.params {
+            self.format_system_param(param);
+        }
+
+        for statement in &system.body.statements {
+            self.format_system_statement(statement, 2);
+        }
+
+        self.output.push_str("\n}");
+    }
+
+    fn format_system_param(&mut self, param: &CoreSystemParam) {
+        match &param.kind {
+            CoreSystemParamKind::ReadResource { resource_id, name } => {
+                let _ = write!(
+                    self.output,
+                    "\n  param {}: read {} id 0x{:016x}",
+                    param.name, name, resource_id
+                );
+            }
+            CoreSystemParamKind::Query { terms } => {
+                let _ = write!(self.output, "\n  param {}: query", param.name);
+                for term in terms {
+                    let _ = write!(
+                        self.output,
+                        "\n    {} {} id 0x{:016x}",
+                        format_query_access(term.access),
+                        term.name,
+                        term.component_id
+                    );
+                }
+            }
+        }
+    }
+
+    fn format_system_statement(&mut self, statement: &CoreSystemStatement, indent: usize) {
+        match statement {
+            CoreSystemStatement::QueryLoop(query_loop) => {
+                self.format_query_loop(query_loop, indent);
+            }
+            CoreSystemStatement::Expression(expression) => {
+                let _ = write!(
+                    self.output,
+                    "\n{}expr {}",
+                    " ".repeat(indent),
+                    format_system_expression(expression)
+                );
+            }
+            CoreSystemStatement::AddAssign { target, value } => {
+                let _ = write!(
+                    self.output,
+                    "\n{}add_assign {}, {}",
+                    " ".repeat(indent),
+                    format_system_place(target),
+                    format_system_expression(value)
+                );
+            }
+        }
+    }
+
+    fn format_query_loop(&mut self, query_loop: &CoreQueryLoop, indent: usize) {
+        let leading = " ".repeat(indent);
+        let _ = write!(
+            self.output,
+            "\n{}for {} {{",
+            leading, query_loop.query_param
+        );
+
+        for binding in &query_loop.bindings {
+            let _ = write!(
+                self.output,
+                "\n{}  bind {}: {} {} id 0x{:016x}",
+                leading,
+                binding.name,
+                format_query_access(binding.access),
+                binding.component_name,
+                binding.component_id
+            );
+        }
+
+        for statement in &query_loop.body {
+            self.format_system_statement(statement, indent + 2);
+        }
+
+        let _ = write!(self.output, "\n{}}}", leading);
     }
 
     fn format_function(&mut self, function: &CoreFunction) {
@@ -158,6 +256,48 @@ fn format_binary_op(op: CoreBinaryOp) -> &'static str {
         CoreBinaryOp::Add => "i32.add",
         CoreBinaryOp::Subtract => "i32.sub",
         CoreBinaryOp::Multiply => "i32.mul",
+    }
+}
+
+fn format_query_access(access: CoreQueryAccess) -> &'static str {
+    match access {
+        CoreQueryAccess::Read => "read",
+        CoreQueryAccess::Mut => "mut",
+    }
+}
+
+fn format_system_place(place: &CoreSystemPlace) -> String {
+    match place {
+        CoreSystemPlace::ComponentField {
+            binding,
+            field_name,
+            ..
+        } => format!("{binding}.{field_name}"),
+    }
+}
+
+fn format_system_expression(expression: &CoreSystemExpression) -> String {
+    match expression {
+        CoreSystemExpression::ResourceField {
+            param, field_name, ..
+        } => format!("{param}.{field_name}"),
+        CoreSystemExpression::ComponentField {
+            binding,
+            field_name,
+            ..
+        } => format!("{binding}.{field_name}"),
+        CoreSystemExpression::Binary { op, left, right } => format!(
+            "{} {}, {}",
+            format_system_binary_op(*op),
+            format_system_expression(left),
+            format_system_expression(right)
+        ),
+    }
+}
+
+fn format_system_binary_op(op: CoreSystemBinaryOp) -> &'static str {
+    match op {
+        CoreSystemBinaryOp::F32Multiply => "f32.mul",
     }
 }
 
