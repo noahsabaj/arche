@@ -853,6 +853,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_move_query_loop_observable")
 
     Invoke-CheckedCommand `
+        -Name "emits_native_query_loop_row_scan_skeleton" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "emits_native_query_loop_row_scan_skeleton")
+
+    Invoke-CheckedCommand `
         -Name "lowers_math_ast_to_core" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_math_ast_to_core")
@@ -1538,7 +1543,7 @@ try {
         -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system.arc", "-o", ".\build\move_system")
 
     Test-EcsMetadataPayload -Path ".\build\move_system"
-    Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 43
+    Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 44
     Test-CorruptEcsMetadataMagic -Path ".\build\move_system"
     Test-CorruptEcsResourcePayload -Path ".\build\move_system"
     Test-CorruptEcsSpawnPayload -Path ".\build\move_system"

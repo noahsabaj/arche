@@ -49,7 +49,8 @@ pub struct CodegenError {
 const ECS_METADATA_ENVELOPE_SIZE: usize = 112;
 const ECS_METADATA_FAILURE_EXIT_CODE: u8 = 16;
 const ECS_STARTUP_STATE_FAILURE_EXIT_CODE: u8 = 17;
-const ECS_QUERY_LOOP_OBSERVABLE_SUCCESS_EXIT_CODE: u8 = 43;
+const ECS_QUERY_LOOP_SCAN_FAILURE_EXIT_CODE: u8 = 18;
+const ECS_QUERY_LOOP_ROW_SCAN_SUCCESS_EXIT_CODE: u8 = 44;
 const ECS_STARTUP_SECTION_DIRECTORY_OFFSET: usize = 16 + 5 * 16;
 const ECS_SECTION_OFFSET_FIELD_OFFSET: usize = 4;
 const ECS_SECTION_RECORD_COUNT_FIELD_OFFSET: usize = 12;
@@ -63,6 +64,7 @@ const ECS_SPAWN_ROW_COUNT_SLOT: u8 = 48;
 const ECS_POSITION_PAYLOAD_STORAGE_SLOT: u8 = 56;
 const ECS_VELOCITY_PAYLOAD_STORAGE_SLOT: u8 = 64;
 const ECS_QUERY_LOOP_TARGET_POSITION_SLOT: u8 = 72;
+const ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT: u8 = 80;
 
 const DEMO_POSITION_COMPONENT_ID: u64 = 0x002202c6aeb4f27b;
 const DEMO_VELOCITY_COMPONENT_ID: u64 = 0x2cf8a68bcb7f913b;
@@ -515,6 +517,7 @@ fn ecs_metadata_decoder_body(
     let mut bytes = Vec::new();
     let mut jump_to_metadata_failure_offsets = Vec::new();
     let mut jump_to_startup_state_failure_offsets = Vec::new();
+    let mut jump_to_query_loop_scan_failure_offsets = Vec::new();
 
     bytes.extend_from_slice(&[0x48, 0x8d, 0x35, 0x00, 0x00, 0x00, 0x00]); // lea rsi, [rip + metadata]
 
@@ -602,7 +605,16 @@ fn ecs_metadata_decoder_body(
         &mut jump_to_startup_state_failure_offsets,
     );
 
-    move_edi_exit_code(&mut bytes, ECS_QUERY_LOOP_OBSERVABLE_SUCCESS_EXIT_CODE);
+    load_stack_slot_to_rax(&mut bytes, ECS_SPAWN_ROW_COUNT_SLOT);
+    store_rax_to_stack_slot(&mut bytes, ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT);
+    compare_stack_slot_to_u64(
+        &mut bytes,
+        ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT,
+        1,
+        &mut jump_to_query_loop_scan_failure_offsets,
+    );
+
+    move_edi_exit_code(&mut bytes, ECS_QUERY_LOOP_ROW_SCAN_SUCCESS_EXIT_CODE);
 
     let jump_to_done_offset = bytes.len();
     bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
@@ -614,6 +626,11 @@ fn ecs_metadata_decoder_body(
 
     let startup_state_failure_offset = bytes.len();
     move_edi_exit_code(&mut bytes, ECS_STARTUP_STATE_FAILURE_EXIT_CODE);
+    let jump_from_startup_state_failure_to_done_offset = bytes.len();
+    bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
+
+    let query_loop_scan_failure_offset = bytes.len();
+    move_edi_exit_code(&mut bytes, ECS_QUERY_LOOP_SCAN_FAILURE_EXIT_CODE);
     let done_offset = bytes.len();
 
     for jump_offset in jump_to_metadata_failure_offsets {
@@ -632,6 +649,14 @@ fn ecs_metadata_decoder_body(
             jump_offset + 6,
         );
     }
+    for jump_offset in jump_to_query_loop_scan_failure_offsets {
+        patch_rel32(
+            &mut bytes,
+            jump_offset + 2,
+            query_loop_scan_failure_offset,
+            jump_offset + 6,
+        );
+    }
     patch_rel32(
         &mut bytes,
         jump_to_done_offset + 1,
@@ -643,6 +668,12 @@ fn ecs_metadata_decoder_body(
         jump_from_metadata_failure_to_done_offset + 1,
         done_offset,
         jump_from_metadata_failure_to_done_offset + 5,
+    );
+    patch_rel32(
+        &mut bytes,
+        jump_from_startup_state_failure_to_done_offset + 1,
+        done_offset,
+        jump_from_startup_state_failure_to_done_offset + 5,
     );
 
     let metadata_displacement = (bytes.len() + RUNTIME_DESTROY_SUFFIX.len() - 7) as i32;
@@ -679,6 +710,14 @@ fn store_rax_to_stack_slot(bytes: &mut Vec<u8>, stack_slot: u8) {
         bytes.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]); // mov qword ptr [rsp], rax
     } else {
         bytes.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, stack_slot]); // mov qword ptr [rsp + slot], rax
+    }
+}
+
+fn load_stack_slot_to_rax(bytes: &mut Vec<u8>, stack_slot: u8) {
+    if stack_slot == 0 {
+        bytes.extend_from_slice(&[0x48, 0x8b, 0x04, 0x24]); // mov rax, qword ptr [rsp]
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, stack_slot]); // mov rax, qword ptr [rsp + slot]
     }
 }
 
@@ -837,8 +876,10 @@ fn native_move_query_loop_observable_error() -> CodegenError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecs_metadata;
     use crate::lexer;
     use crate::parser;
+    use crate::runtime_assembly;
 
     #[test]
     fn defines_native_move_query_loop_observable() {
@@ -887,5 +928,93 @@ mod tests {
                 target_position_payload: [0x00, 0x00, 0x80, 0x40, 0x00, 0x00, 0xc0, 0x40,],
             }
         );
+    }
+
+    #[test]
+    fn emits_native_query_loop_row_scan_skeleton() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0x48,
+                    0x8b,
+                    0x44,
+                    0x24,
+                    ECS_SPAWN_ROW_COUNT_SLOT, // mov rax, qword ptr [rsp + 48]
+                    0x48,
+                    0x89,
+                    0x44,
+                    0x24,
+                    ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT, // mov qword ptr [rsp + 80], rax
+                ],
+            ),
+            "generated text should carry the row count into the scan-count slot"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0x48,
+                    0xb8,
+                    0x01,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x00,
+                    0x48,
+                    0x39,
+                    0x44,
+                    0x24,
+                    ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT, // cmp qword ptr [rsp + 80], rax
+                ],
+            ),
+            "generated text should require exactly one scanned bootstrap row"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_QUERY_LOOP_ROW_SCAN_SUCCESS_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "generated text should expose the M18-002 row-scan success code"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_QUERY_LOOP_SCAN_FAILURE_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "generated text should expose a row-scan failure code"
+        );
+    }
+
+    fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
     }
 }

@@ -52,7 +52,7 @@ Source file -> parsed ECS program -> Arche Core -> runtime world -> schedule -> 
 
 Current missing links:
 
-- Native executable startup can validate embedded `ARCHEECS` metadata, register descriptor counts, apply the `Demo.Time` resource payload, create one bootstrap-native spawn row, and expose a deterministic query-loop target observable, but does not yet scan rows, execute schedules, or run query loops.
+- Native executable startup can validate embedded `ARCHEECS` metadata, register descriptor counts, apply the `Demo.Time` resource payload, create one bootstrap-native spawn row, expose a deterministic query-loop target observable, and walk the bootstrap row count, but does not yet load fields, compute `Velocity * Time.delta`, store `Position`, execute schedules, or run full query loops.
 - `move_system.arc --emit-core` can print the lowered `Demo.Move` query-loop body.
 - Native generated row scan, field math, and field stores instead of runtime-only helper proofs.
 
@@ -62,9 +62,9 @@ These are intentional gaps created by narrow proof milestones.
 
 Current gaps:
 
-- Generated native binaries can carry complete decoded `ARCHEECS` metadata, and native startup can validate its envelope, register descriptor counts, apply the first resource payload, create one spawn row, and expose a Core-derived query-loop target observable, but native startup does not yet execute schedule startup operations from it.
+- Generated native binaries can carry complete decoded `ARCHEECS` metadata, and native startup can validate its envelope, register descriptor counts, apply the first resource payload, create one spawn row, expose a Core-derived query-loop target observable, and walk the bootstrap row count, but native startup does not yet execute schedule startup operations from it.
 - Source-level startup resource, spawn, and schedule execution now drives runtime ECS state, but not generated executable ECS state.
-- System declarations, query metadata, Core query-loop bodies, and a native query-loop observable exist, but system bodies are not yet lowered into executable native row scan, math, and store code.
+- System declarations, query metadata, Core query-loop bodies, a native query-loop observable, and a native row-scan skeleton exist, but system bodies are not yet lowered into executable native field math and store code.
 - M10/M14 Move behavior is proven through a runtime application path, not a compiled source system body.
 - Runtime schedule execution is source-driven in tests, but not yet native executable behavior.
 
@@ -114,13 +114,12 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M18-002 | Emit native Position/Velocity row scan skeleton | Native code can walk the bootstrap row state without mutating it. |
+| M18-003 | Emit native field load and f32 multiply | Native code can compute `Velocity * Time.delta` from startup state. |
 
 ### Backlog
 
 | Issue | Title | Done when |
 |---|---|---|
-| M18-003 | Emit native field load and f32 multiply | Native code can compute `Velocity * Time.delta` from startup state. |
 | M18-004 | Emit native Position field stores | Native code can write updated `Position` fields into bootstrap row state. |
 | M18-005 | Replace bootstrap Move helper with compiled query loop proof | The native proof uses compiled query-loop code for `Demo.Move` instead of the bootstrap helper path. |
 
@@ -239,6 +238,7 @@ Board rules:
 | M17-004 | Lower assignment/update statements | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml lowers_query_loop_add_assign_to_core_body` passed, proving an inline `Demo.Move` fixture with `pos.x += vel.x * time.delta` and `pos.y += vel.y * time.delta` inside `for (pos, vel) in movers` lowers to `CoreSystemStatement::AddAssign` with `pos -> mut Demo.Position` targets and the existing `vel * time.delta` Core expression values; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted Core query-loop update proof included. This was Core-only update lowering: `--emit-core` output is unchanged, and no runtime behavior, native behavior, schedule execution, query execution, or fixture-level `Move` execution was added. Implementation commit: `260307cb`. |
 | M17-005 | Emit Core query loop for move_system | `cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-core` printed the lowered `Demo.Move` Core query-loop body with `movers` bindings, `pos -> mut Demo.Position`, `vel -> read Demo.Velocity`, and two `add_assign` statements for `pos.x` and `pos.y`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with exact `move_system.arc --emit-ast` and `move_system.arc --emit-core` assertions while preserving the existing `math.arc --emit-core` assertion. This completed M17 Core system-body lowering and stayed Core text-output only: no runtime behavior, native behavior, scheduler/query-loop execution, metadata format changes, or generated `Move` code was added. Implementation commit: `973d49e2`. |
 | M18-001 | Define native query-loop codegen observable | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_native_move_query_loop_observable` passed, proving codegen can derive the supported `Demo.Move` query-loop observable from lowered Core, including `movers`, `pos -> mut Demo.Position`, `vel -> read Demo.Velocity`, `time -> Demo.Time`, the two supported `pos += vel * time.delta` updates, and target post-Move `Position` bytes `00 00 80 40 00 00 C0 40`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted unit proof and generated `move_system` now exiting `43` after startup-state validation while corrupt metadata still exits `16` and corrupt startup payloads still exit `17`. This was a native query-loop observable only: no row scan, field math emission, field stores, schedule execution, or bootstrap Move replacement was added. Implementation commit: `1281818b`. |
+| M18-002 | Emit native Position/Velocity row scan skeleton | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml emits_native_query_loop_row_scan_skeleton` passed, proving generated rich-ECS native text copies the bootstrap row count from `[rsp + 48]` into the scan-count slot `[rsp + 80]`, checks that exactly one row was scanned, and exposes row-scan success/failure exit codes; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted unit proof and generated `move_system` now exiting `44` after startup-state validation and row-scan skeleton completion while corrupt metadata still exits `16` and corrupt startup payloads still exit `17`. This was a native row-scan skeleton only: no field loads, `f32` multiply, `Position` stores, schedule execution, runtime/Core behavior, or bootstrap Move replacement was added. Implementation commit: `PENDING`. |
 
 ## Milestones
 
@@ -1737,19 +1737,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M18-001 stayed native query-loop observable only | 99/100 |
-| `tools/test.ps1` includes `defines_native_move_query_loop_observable`, valid `move_system` exit `43`, and unchanged corrupt metadata/payload failure proofs | 99/100 |
-| Existing M0-M16 parser, runtime unit, layout, Core, executable, component metadata, ECS metadata, diagnostic, native startup, and e2e proofs remain passing | 98/100 |
-| Board state marks M18-001 complete and promotes M18-002 as the next proof | 98/100 |
-| M18 backlog remains constrained to native row scan, math, store, and replacement proofs only | 97/100 |
+| M18-002 stayed native row-scan skeleton only | 99/100 |
+| `tools/test.ps1` includes `emits_native_query_loop_row_scan_skeleton`, valid `move_system` exit `44`, and unchanged corrupt metadata/payload failure proofs | 99/100 |
+| Existing M0-M17 parser, runtime unit, layout, Core, executable, component metadata, ECS metadata, diagnostic, native startup, and e2e proofs remain passing | 98/100 |
+| Board state marks M18-002 complete and promotes M18-003 as the next proof | 98/100 |
+| M18 backlog remains constrained to native math, store, and replacement proofs only | 97/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M18-002` in `Ready`.
+- The active board has only `M18-003` in `Ready`.
 - `Doing` is empty.
-- `Backlog` contains only M18-003 through M18-005.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, and M18-001.
+- `Backlog` contains only M18-004 and M18-005.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, and M18-001 through M18-002.
 - Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, M16-001 through M16-005, M17-001 through M17-005, and M18-001 through M18-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, and M18-001 native query-loop observable are complete. M18-002 native row-scan skeleton is next.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, M18-001 native query-loop observable, and M18-002 native row-scan skeleton are complete. M18-003 native field loading and `f32` multiply is next.
