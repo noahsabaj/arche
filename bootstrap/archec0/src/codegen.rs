@@ -1,3 +1,8 @@
+use crate::core::{
+    CoreProgram, CoreQueryAccess, CoreSystemBinaryOp, CoreSystemExpression, CoreSystemParamKind,
+    CoreSystemPlace, CoreSystemStatement,
+};
+use crate::core_lower;
 use crate::parser::{BinaryOperator, Expression, Program, Statement};
 
 const RUNTIME_CREATE_PREFIX: &[u8] = &[
@@ -44,7 +49,7 @@ pub struct CodegenError {
 const ECS_METADATA_ENVELOPE_SIZE: usize = 112;
 const ECS_METADATA_FAILURE_EXIT_CODE: u8 = 16;
 const ECS_STARTUP_STATE_FAILURE_EXIT_CODE: u8 = 17;
-const ECS_STARTUP_STATE_SUCCESS_EXIT_CODE: u8 = 42;
+const ECS_QUERY_LOOP_OBSERVABLE_SUCCESS_EXIT_CODE: u8 = 43;
 const ECS_STARTUP_SECTION_DIRECTORY_OFFSET: usize = 16 + 5 * 16;
 const ECS_SECTION_OFFSET_FIELD_OFFSET: usize = 4;
 const ECS_SECTION_RECORD_COUNT_FIELD_OFFSET: usize = 12;
@@ -57,6 +62,11 @@ const ECS_RESOURCE_PAYLOAD_STORAGE_SLOT: u8 = 40;
 const ECS_SPAWN_ROW_COUNT_SLOT: u8 = 48;
 const ECS_POSITION_PAYLOAD_STORAGE_SLOT: u8 = 56;
 const ECS_VELOCITY_PAYLOAD_STORAGE_SLOT: u8 = 64;
+const ECS_QUERY_LOOP_TARGET_POSITION_SLOT: u8 = 72;
+
+const DEMO_POSITION_COMPONENT_ID: u64 = 0x002202c6aeb4f27b;
+const DEMO_VELOCITY_COMPONENT_ID: u64 = 0x2cf8a68bcb7f913b;
+const DEMO_TIME_RESOURCE_ID: u64 = 0x7924ce11db524521;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EcsStartupPayloads {
@@ -66,6 +76,32 @@ struct EcsStartupPayloads {
     position_payload: [u8; 8],
     velocity_payload_offset: i32,
     velocity_payload: [u8; 8],
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeMoveQueryLoopObservable {
+    system_name: String,
+    query_param: String,
+    position_binding: String,
+    velocity_binding: String,
+    position_component_id: u64,
+    position_component_name: String,
+    velocity_component_id: u64,
+    velocity_component_name: String,
+    time_param: String,
+    time_resource_id: u64,
+    time_resource_name: String,
+    updates: Vec<NativeMoveQueryLoopUpdate>,
+    target_position_payload: [u8; 8],
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct NativeMoveQueryLoopUpdate {
+    target_field: String,
+    velocity_field: String,
+    time_field: String,
 }
 
 pub fn startup_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> {
@@ -105,11 +141,211 @@ pub fn ecs_metadata_decoder_text_payload(
     }
 
     let startup_payloads = startup_payloads(metadata_payload)?;
+    let query_loop_observable = native_move_query_loop_observable(program, &startup_payloads)?;
     let startup_body = ecs_metadata_decoder_body(
         &metadata_payload[..ECS_METADATA_ENVELOPE_SIZE],
         startup_payloads,
+        query_loop_observable,
     );
     Ok(runtime_wrapped_payload(&startup_body))
+}
+
+fn native_move_query_loop_observable(
+    program: &Program,
+    startup_payloads: &EcsStartupPayloads,
+) -> Result<NativeMoveQueryLoopObservable, CodegenError> {
+    let core = core_lower::lower_program_to_core(program).map_err(|error| CodegenError {
+        message: format!(
+            "could not lower Core for native query-loop observable: {}",
+            error.message
+        ),
+    })?;
+
+    native_move_query_loop_observable_from_core(&core, startup_payloads)
+}
+
+fn native_move_query_loop_observable_from_core(
+    core: &CoreProgram,
+    startup_payloads: &EcsStartupPayloads,
+) -> Result<NativeMoveQueryLoopObservable, CodegenError> {
+    let system = core
+        .systems
+        .iter()
+        .find(|system| system.name == "Move")
+        .ok_or_else(native_move_query_loop_observable_error)?;
+    let CoreSystemParamKind::ReadResource {
+        resource_id,
+        name: resource_name,
+    } = &system
+        .params
+        .iter()
+        .find(|param| param.name == "time")
+        .ok_or_else(native_move_query_loop_observable_error)?
+        .kind
+    else {
+        return Err(native_move_query_loop_observable_error());
+    };
+    if *resource_id != DEMO_TIME_RESOURCE_ID || resource_name != "Demo.Time" {
+        return Err(native_move_query_loop_observable_error());
+    }
+
+    let CoreSystemParamKind::Query { terms } = &system
+        .params
+        .iter()
+        .find(|param| param.name == "movers")
+        .ok_or_else(native_move_query_loop_observable_error)?
+        .kind
+    else {
+        return Err(native_move_query_loop_observable_error());
+    };
+    if terms.len() != 2
+        || terms[0].access != CoreQueryAccess::Mut
+        || terms[0].component_id != DEMO_POSITION_COMPONENT_ID
+        || terms[0].name != "Demo.Position"
+        || terms[1].access != CoreQueryAccess::Read
+        || terms[1].component_id != DEMO_VELOCITY_COMPONENT_ID
+        || terms[1].name != "Demo.Velocity"
+    {
+        return Err(native_move_query_loop_observable_error());
+    }
+
+    if system.body.statements.len() != 1 {
+        return Err(native_move_query_loop_observable_error());
+    }
+    let CoreSystemStatement::QueryLoop(query_loop) = &system.body.statements[0] else {
+        return Err(native_move_query_loop_observable_error());
+    };
+    if query_loop.query_param != "movers"
+        || query_loop.bindings.len() != 2
+        || query_loop.bindings[0].name != "pos"
+        || query_loop.bindings[0].access != CoreQueryAccess::Mut
+        || query_loop.bindings[0].component_id != DEMO_POSITION_COMPONENT_ID
+        || query_loop.bindings[0].component_name != "Demo.Position"
+        || query_loop.bindings[1].name != "vel"
+        || query_loop.bindings[1].access != CoreQueryAccess::Read
+        || query_loop.bindings[1].component_id != DEMO_VELOCITY_COMPONENT_ID
+        || query_loop.bindings[1].component_name != "Demo.Velocity"
+        || query_loop.body.len() != 2
+    {
+        return Err(native_move_query_loop_observable_error());
+    }
+
+    let updates = vec![
+        require_move_add_assign(&query_loop.body[0], "x", "x")?,
+        require_move_add_assign(&query_loop.body[1], "y", "y")?,
+    ];
+    let target_position_payload = target_position_payload(startup_payloads);
+
+    Ok(NativeMoveQueryLoopObservable {
+        system_name: system.name.clone(),
+        query_param: query_loop.query_param.clone(),
+        position_binding: query_loop.bindings[0].name.clone(),
+        velocity_binding: query_loop.bindings[1].name.clone(),
+        position_component_id: query_loop.bindings[0].component_id,
+        position_component_name: query_loop.bindings[0].component_name.clone(),
+        velocity_component_id: query_loop.bindings[1].component_id,
+        velocity_component_name: query_loop.bindings[1].component_name.clone(),
+        time_param: "time".to_string(),
+        time_resource_id: *resource_id,
+        time_resource_name: resource_name.clone(),
+        updates,
+        target_position_payload,
+    })
+}
+
+fn require_move_add_assign(
+    statement: &CoreSystemStatement,
+    position_field: &str,
+    velocity_field: &str,
+) -> Result<NativeMoveQueryLoopUpdate, CodegenError> {
+    let CoreSystemStatement::AddAssign { target, value } = statement else {
+        return Err(native_move_query_loop_observable_error());
+    };
+    let CoreSystemPlace::ComponentField {
+        binding,
+        component_id,
+        component_name,
+        field_name,
+    } = target;
+    if binding != "pos"
+        || *component_id != DEMO_POSITION_COMPONENT_ID
+        || component_name != "Demo.Position"
+        || field_name != position_field
+    {
+        return Err(native_move_query_loop_observable_error());
+    }
+
+    require_velocity_delta_expression(value, velocity_field)?;
+    Ok(NativeMoveQueryLoopUpdate {
+        target_field: position_field.to_string(),
+        velocity_field: velocity_field.to_string(),
+        time_field: "delta".to_string(),
+    })
+}
+
+fn require_velocity_delta_expression(
+    expression: &CoreSystemExpression,
+    velocity_field: &str,
+) -> Result<(), CodegenError> {
+    let CoreSystemExpression::Binary { op, left, right } = expression else {
+        return Err(native_move_query_loop_observable_error());
+    };
+    if *op != CoreSystemBinaryOp::F32Multiply {
+        return Err(native_move_query_loop_observable_error());
+    }
+
+    let CoreSystemExpression::ComponentField {
+        binding,
+        component_id,
+        component_name,
+        field_name,
+    } = &**left
+    else {
+        return Err(native_move_query_loop_observable_error());
+    };
+    if binding != "vel"
+        || *component_id != DEMO_VELOCITY_COMPONENT_ID
+        || component_name != "Demo.Velocity"
+        || field_name != velocity_field
+    {
+        return Err(native_move_query_loop_observable_error());
+    }
+
+    let CoreSystemExpression::ResourceField {
+        param,
+        resource_id,
+        resource_name,
+        field_name,
+    } = &**right
+    else {
+        return Err(native_move_query_loop_observable_error());
+    };
+    if param != "time"
+        || *resource_id != DEMO_TIME_RESOURCE_ID
+        || resource_name != "Demo.Time"
+        || field_name != "delta"
+    {
+        return Err(native_move_query_loop_observable_error());
+    }
+
+    Ok(())
+}
+
+fn target_position_payload(startup_payloads: &EcsStartupPayloads) -> [u8; 8] {
+    let position_x = f32_from_le_bytes(&startup_payloads.position_payload[0..4]);
+    let position_y = f32_from_le_bytes(&startup_payloads.position_payload[4..8]);
+    let velocity_x = f32_from_le_bytes(&startup_payloads.velocity_payload[0..4]);
+    let velocity_y = f32_from_le_bytes(&startup_payloads.velocity_payload[4..8]);
+    let delta = f32_from_le_bytes(&startup_payloads.resource_payload);
+
+    let mut payload = [0; 8];
+    payload[0..4].copy_from_slice(&(position_x + velocity_x * delta).to_le_bytes());
+    payload[4..8].copy_from_slice(&(position_y + velocity_y * delta).to_le_bytes());
+    payload
+}
+
+fn f32_from_le_bytes(bytes: &[u8]) -> f32 {
+    f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
 fn require_metadata_decoder_exit(program: &Program) -> Result<(), CodegenError> {
@@ -271,7 +507,11 @@ fn checked_metadata_range(
     Ok(())
 }
 
-fn ecs_metadata_decoder_body(envelope: &[u8], startup_payloads: EcsStartupPayloads) -> Vec<u8> {
+fn ecs_metadata_decoder_body(
+    envelope: &[u8],
+    startup_payloads: EcsStartupPayloads,
+    query_loop_observable: NativeMoveQueryLoopObservable,
+) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut jump_to_metadata_failure_offsets = Vec::new();
     let mut jump_to_startup_state_failure_offsets = Vec::new();
@@ -352,7 +592,17 @@ fn ecs_metadata_decoder_body(envelope: &[u8], startup_payloads: EcsStartupPayloa
         &mut jump_to_startup_state_failure_offsets,
     );
 
-    move_edi_exit_code(&mut bytes, ECS_STARTUP_STATE_SUCCESS_EXIT_CODE);
+    bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, target Position payload
+    bytes.extend_from_slice(&query_loop_observable.target_position_payload);
+    store_rax_to_stack_slot(&mut bytes, ECS_QUERY_LOOP_TARGET_POSITION_SLOT);
+    compare_stack_slot_to_u64(
+        &mut bytes,
+        ECS_QUERY_LOOP_TARGET_POSITION_SLOT,
+        u64::from_le_bytes(query_loop_observable.target_position_payload),
+        &mut jump_to_startup_state_failure_offsets,
+    );
+
+    move_edi_exit_code(&mut bytes, ECS_QUERY_LOOP_OBSERVABLE_SUCCESS_EXIT_CODE);
 
     let jump_to_done_offset = bytes.len();
     bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp done
@@ -574,5 +824,68 @@ fn metadata_startup_payload_error() -> CodegenError {
     CodegenError {
         message: "ECS metadata decoder executable requires a 4-byte resource payload followed by a two-component spawn operation"
             .to_string(),
+    }
+}
+
+fn native_move_query_loop_observable_error() -> CodegenError {
+    CodegenError {
+        message: "native query-loop observable requires the supported Demo.Move Core query loop"
+            .to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer;
+    use crate::parser;
+
+    #[test]
+    fn defines_native_move_query_loop_observable() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let core = core_lower::lower_program_to_core(&program).expect("move_system.arc lowers");
+        let startup_payloads = EcsStartupPayloads {
+            resource_payload_offset: 609,
+            resource_payload: [0x00, 0x00, 0x80, 0x3f],
+            position_payload_offset: 653,
+            position_payload: [0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40],
+            velocity_payload_offset: 687,
+            velocity_payload: [0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40],
+        };
+
+        let observable = native_move_query_loop_observable_from_core(&core, &startup_payloads)
+            .expect("native query-loop observable is defined");
+
+        assert_eq!(
+            observable,
+            NativeMoveQueryLoopObservable {
+                system_name: "Move".to_string(),
+                query_param: "movers".to_string(),
+                position_binding: "pos".to_string(),
+                velocity_binding: "vel".to_string(),
+                position_component_id: DEMO_POSITION_COMPONENT_ID,
+                position_component_name: "Demo.Position".to_string(),
+                velocity_component_id: DEMO_VELOCITY_COMPONENT_ID,
+                velocity_component_name: "Demo.Velocity".to_string(),
+                time_param: "time".to_string(),
+                time_resource_id: DEMO_TIME_RESOURCE_ID,
+                time_resource_name: "Demo.Time".to_string(),
+                updates: vec![
+                    NativeMoveQueryLoopUpdate {
+                        target_field: "x".to_string(),
+                        velocity_field: "x".to_string(),
+                        time_field: "delta".to_string(),
+                    },
+                    NativeMoveQueryLoopUpdate {
+                        target_field: "y".to_string(),
+                        velocity_field: "y".to_string(),
+                        time_field: "delta".to_string(),
+                    },
+                ],
+                target_position_payload: [0x00, 0x00, 0x80, 0x40, 0x00, 0x00, 0xc0, 0x40,],
+            }
+        );
     }
 }

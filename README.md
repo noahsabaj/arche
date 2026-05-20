@@ -75,8 +75,9 @@ The proof chain currently demonstrates:
 - Core lowering for query-loop field expressions and `f32` multiplication, starting with `vel * time.delta`.
 - Core lowering for add-assign/update statements inside query loops, starting with `pos.x += vel.x * time.delta`.
 - Core text emission for the lowered `Demo.Move` query loop in `move_system.arc --emit-core`.
+- A generated-native query-loop observable for the supported `Demo.Move` Core body.
 
-M17 Core system-body lowering is complete. M18 native codegen for compiled query loops is the next proof focus.
+M18 native codegen for compiled query loops is underway. The next proof is a native `Position`/`Velocity` row-scan skeleton.
 
 ## What This Is Not Yet
 
