@@ -584,6 +584,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_startup_spawn_operation")
 
     Invoke-CheckedCommand `
+        -Name "executes_startup_run_schedule_operation" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_startup_run_schedule_operation")
+
+    Invoke-CheckedCommand `
         -Name "arche_entity_packs_index_and_generation" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "arche_entity_packs_index_and_generation")

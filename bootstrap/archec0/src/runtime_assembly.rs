@@ -250,6 +250,38 @@ pub fn execute_startup_spawn_operation(
     Ok(entity)
 }
 
+pub fn execute_startup_run_schedule_operation(
+    operation: &StartupOperation,
+    world: &mut ArcheWorld,
+) -> Result<(), RuntimeAssemblyError> {
+    let (schedule_id, schedule_name) = match operation {
+        StartupOperation::RunSchedule {
+            schedule_id,
+            schedule_name,
+        } => (*schedule_id, schedule_name),
+        _ => {
+            return Err(assembly_error("startup operation is not a run schedule"));
+        }
+    };
+
+    let schedule = world
+        .schedule_descriptors()
+        .get(schedule_id)
+        .cloned()
+        .ok_or_else(|| {
+            assembly_error(format!(
+                "schedule descriptor `{schedule_name}` is not registered"
+            ))
+        })?;
+    let plan = world
+        .build_schedule_plan(&schedule)
+        .map_err(|error| assembly_error(error.message))?;
+
+    world
+        .execute_schedule_plan(&plan)
+        .map_err(|error| assembly_error(error.message))
+}
+
 fn assemble_component_descriptor(
     world_name: &str,
     component: &ComponentDecl,
@@ -1331,6 +1363,60 @@ mod tests {
             assembly.startup_operations[2],
             StartupOperation::RunSchedule { .. }
         ));
+    }
+
+    #[test]
+    fn executes_startup_run_schedule_operation() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+        let mut world = ArcheWorld::create();
+
+        register_assembly_descriptors_into_world(&assembly, &mut world)
+            .expect("assembly descriptors register into world");
+        execute_startup_resource_payload_operation(&assembly.startup_operations[0], &mut world)
+            .expect("startup resource payload executes");
+        let entity = execute_startup_spawn_operation(&assembly.startup_operations[1], &mut world)
+            .expect("startup spawn executes");
+        execute_startup_run_schedule_operation(&assembly.startup_operations[2], &mut world)
+            .expect("startup run schedule executes");
+
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let time_id = ResourceId(0x7924ce11db524521);
+        let expected_position = f32_pair_payload(4.0, 6.0);
+        let initial_velocity = f32_pair_payload(3.0, 4.0);
+        let key = ArchetypeKey::new(vec![position_id, velocity_id]);
+
+        assert_eq!(world.resource_storage_count(), 1);
+        assert_eq!(
+            world
+                .read_resource_f32_field(time_id, "delta")
+                .expect("delta decodes"),
+            1.0
+        );
+        assert_eq!(world.archetype_count(), 1);
+
+        let table = world.archetype(&key).expect("spawn archetype exists");
+        assert_eq!(table.entity_count(), 1);
+        assert_eq!(table.entity(0), Some(entity));
+        assert_eq!(
+            table
+                .column(position_id)
+                .expect("position column exists")
+                .row_bytes(0),
+            Some(expected_position.as_slice())
+        );
+        assert_eq!(
+            table
+                .column(velocity_id)
+                .expect("velocity column exists")
+                .row_bytes(0),
+            Some(initial_velocity.as_slice())
+        );
+        assert!(world.entities().is_alive(entity));
     }
 
     fn xy_component_descriptor(id: ComponentId, name: &str) -> ComponentDescriptor {
