@@ -26,6 +26,7 @@ pub struct CoreWorld {
 pub struct CoreSystem {
     pub name: String,
     pub params: Vec<CoreSystemParam>,
+    pub body: CoreSystemBody,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -51,6 +52,71 @@ pub struct CoreQueryTerm {
 pub enum CoreQueryAccess {
     Read,
     Mut,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreSystemBody {
+    pub statements: Vec<CoreSystemStatement>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CoreSystemStatement {
+    QueryLoop(CoreQueryLoop),
+    AddAssign {
+        target: CoreSystemPlace,
+        value: CoreSystemExpression,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreQueryLoop {
+    pub query_param: String,
+    pub bindings: Vec<CoreQueryLoopBinding>,
+    pub body: Vec<CoreSystemStatement>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreQueryLoopBinding {
+    pub name: String,
+    pub component_id: u64,
+    pub component_name: String,
+    pub access: CoreQueryAccess,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CoreSystemPlace {
+    ComponentField {
+        binding: String,
+        component_id: u64,
+        component_name: String,
+        field_name: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CoreSystemExpression {
+    ResourceField {
+        param: String,
+        resource_id: u64,
+        resource_name: String,
+        field_name: String,
+    },
+    ComponentField {
+        binding: String,
+        component_id: u64,
+        component_name: String,
+        field_name: String,
+    },
+    Binary {
+        op: CoreSystemBinaryOp,
+        left: Box<CoreSystemExpression>,
+        right: Box<CoreSystemExpression>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CoreSystemBinaryOp {
+    F32Multiply,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -243,5 +309,114 @@ mod tests {
             ]
         );
         assert_eq!(entry.terminator, CoreTerminator::Exit { value: ValueId(3) });
+    }
+
+    #[test]
+    fn core_represents_move_system_body_model() {
+        let system = CoreSystem {
+            name: "Move".to_string(),
+            params: vec![
+                CoreSystemParam {
+                    name: "time".to_string(),
+                    kind: CoreSystemParamKind::ReadResource {
+                        resource_id: 0x7924ce11db524521,
+                        name: "Demo.Time".to_string(),
+                    },
+                },
+                CoreSystemParam {
+                    name: "movers".to_string(),
+                    kind: CoreSystemParamKind::Query {
+                        terms: vec![
+                            CoreQueryTerm {
+                                access: CoreQueryAccess::Mut,
+                                component_id: 0x002202c6aeb4f27b,
+                                name: "Demo.Position".to_string(),
+                            },
+                            CoreQueryTerm {
+                                access: CoreQueryAccess::Read,
+                                component_id: 0x2cf8a68bcb7f913b,
+                                name: "Demo.Velocity".to_string(),
+                            },
+                        ],
+                    },
+                },
+            ],
+            body: CoreSystemBody {
+                statements: vec![CoreSystemStatement::QueryLoop(CoreQueryLoop {
+                    query_param: "movers".to_string(),
+                    bindings: vec![
+                        CoreQueryLoopBinding {
+                            name: "pos".to_string(),
+                            component_id: 0x002202c6aeb4f27b,
+                            component_name: "Demo.Position".to_string(),
+                            access: CoreQueryAccess::Mut,
+                        },
+                        CoreQueryLoopBinding {
+                            name: "vel".to_string(),
+                            component_id: 0x2cf8a68bcb7f913b,
+                            component_name: "Demo.Velocity".to_string(),
+                            access: CoreQueryAccess::Read,
+                        },
+                    ],
+                    body: vec![move_add_assign("x", "x"), move_add_assign("y", "y")],
+                })],
+            },
+        };
+
+        assert_eq!(system.name, "Move");
+        assert_eq!(system.params.len(), 2);
+        assert_eq!(system.body.statements.len(), 1);
+        let CoreSystemStatement::QueryLoop(query_loop) = &system.body.statements[0] else {
+            panic!("expected a query loop statement");
+        };
+
+        assert_eq!(query_loop.query_param, "movers");
+        assert_eq!(
+            query_loop.bindings,
+            vec![
+                CoreQueryLoopBinding {
+                    name: "pos".to_string(),
+                    component_id: 0x002202c6aeb4f27b,
+                    component_name: "Demo.Position".to_string(),
+                    access: CoreQueryAccess::Mut,
+                },
+                CoreQueryLoopBinding {
+                    name: "vel".to_string(),
+                    component_id: 0x2cf8a68bcb7f913b,
+                    component_name: "Demo.Velocity".to_string(),
+                    access: CoreQueryAccess::Read,
+                },
+            ]
+        );
+        assert_eq!(
+            query_loop.body,
+            vec![move_add_assign("x", "x"), move_add_assign("y", "y")]
+        );
+    }
+
+    fn move_add_assign(position_field: &str, velocity_field: &str) -> CoreSystemStatement {
+        CoreSystemStatement::AddAssign {
+            target: CoreSystemPlace::ComponentField {
+                binding: "pos".to_string(),
+                component_id: 0x002202c6aeb4f27b,
+                component_name: "Demo.Position".to_string(),
+                field_name: position_field.to_string(),
+            },
+            value: CoreSystemExpression::Binary {
+                op: CoreSystemBinaryOp::F32Multiply,
+                left: Box::new(CoreSystemExpression::ComponentField {
+                    binding: "vel".to_string(),
+                    component_id: 0x2cf8a68bcb7f913b,
+                    component_name: "Demo.Velocity".to_string(),
+                    field_name: velocity_field.to_string(),
+                }),
+                right: Box::new(CoreSystemExpression::ResourceField {
+                    param: "time".to_string(),
+                    resource_id: 0x7924ce11db524521,
+                    resource_name: "Demo.Time".to_string(),
+                    field_name: "delta".to_string(),
+                }),
+            },
+        }
     }
 }

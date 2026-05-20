@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use crate::core::{
     BlockId, CoreBinaryOp, CoreBlock, CoreFunction, CoreInstruction, CoreLocal, CoreProgram,
     CoreQueryAccess, CoreQueryTerm, CoreSchedule, CoreScheduleItem, CoreSpawnComponent,
-    CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemParam, CoreSystemParamKind,
-    CoreTerminator, CoreType, CoreWorld, LocalId, ValueId,
+    CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemBody, CoreSystemParam,
+    CoreSystemParamKind, CoreTerminator, CoreType, CoreWorld, LocalId, ValueId,
 };
 use crate::layout;
 use crate::parser::{
@@ -107,6 +107,7 @@ fn lower_system(program: &Program, system: &SystemDecl) -> Result<CoreSystem, Co
     Ok(CoreSystem {
         name: system.name.clone(),
         params,
+        body: CoreSystemBody { statements: vec![] },
     })
 }
 
@@ -413,7 +414,8 @@ mod tests {
     use super::*;
     use crate::core::{
         CoreQueryAccess, CoreQueryTerm, CoreSchedule, CoreScheduleItem, CoreSpawnComponent,
-        CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemParam, CoreSystemParamKind,
+        CoreSpawnField, CoreSpawnFieldValue, CoreSystem, CoreSystemBody, CoreSystemParam,
+        CoreSystemParamKind,
     };
     use crate::lexer;
     use crate::parser;
@@ -585,6 +587,7 @@ mod tests {
                         },
                     },
                 ],
+                body: CoreSystemBody { statements: vec![] },
             }],
             schedules: vec![CoreSchedule {
                 name: "Main".to_string(),

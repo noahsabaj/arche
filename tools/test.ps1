@@ -828,6 +828,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "core_represents_math_startup")
 
     Invoke-CheckedCommand `
+        -Name "core_represents_move_system_body_model" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "core_represents_move_system_body_model")
+
+    Invoke-CheckedCommand `
         -Name "lowers_math_ast_to_core" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_math_ast_to_core")

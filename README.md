@@ -70,8 +70,9 @@ The proof chain currently demonstrates:
 - Native startup resource payload application from embedded `ARCHEECS` metadata.
 - Native startup spawn-row application from embedded `ARCHEECS` metadata.
 - Final observable native startup proof for the source-described `Demo.Time` and one `Demo.Position + Demo.Velocity` row.
+- A non-executing Core system body model for the future `Demo.Move` query loop.
 
-M16 native executable source-level ECS startup is complete. The next proof is Core system-body lowering.
+M16 native executable source-level ECS startup is complete. M17 Core system-body lowering is underway; the next proof is lowering the query-loop skeleton.
 
 ## What This Is Not Yet
 
