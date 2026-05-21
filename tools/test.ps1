@@ -466,12 +466,12 @@ function Add-ZeroQwordStore {
 }
 
 function New-RuntimeStateQwordOffsets {
-    @(0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168)
+    @(0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200)
 }
 
 function New-RuntimeCreatePrefix {
     $bytes = [System.Collections.Generic.List[byte]]::new()
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 176
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 208
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
@@ -485,7 +485,7 @@ function New-RuntimeDestroySuffix {
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
     }
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 176
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 208
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05))
     [byte[]]$bytes.ToArray()
 }
@@ -768,6 +768,25 @@ function Test-CorruptEcsMetadataMagic {
     Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 16
 }
 
+function Test-CorruptEcsStartupOperationKind {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_startup_operation_kind"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $operationKindOffset = $metadataStart + 577
+    Assert-Equal -Name "ECS startup op 0 kind before corruption" -Actual $bytes[$operationKindOffset] -Expected 0x01
+    $bytes[$operationKindOffset] = 0x09
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 21
+}
+
 function Test-CorruptEcsResourcePayload {
     param(
         [Parameter(Mandatory = $true)]
@@ -922,6 +941,11 @@ try {
         -Name "materializes_native_descriptor_record_state" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_descriptor_record_state")
+
+    Invoke-CheckedCommand `
+        -Name "dispatches_native_startup_operations" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "dispatches_native_startup_operations")
 
     Invoke-CheckedCommand `
         -Name "emits_native_query_loop_row_scan_skeleton" `
@@ -1631,6 +1655,7 @@ try {
     Test-EcsMetadataPayload -Path ".\build\move_system"
     Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 47
     Test-CorruptEcsMetadataMagic -Path ".\build\move_system"
+    Test-CorruptEcsStartupOperationKind -Path ".\build\move_system"
     Test-CorruptEcsResourcePayload -Path ".\build\move_system"
     Test-CorruptEcsSpawnPayload -Path ".\build\move_system"
     Test-CorruptEcsRunSchedule -Path ".\build\move_system"

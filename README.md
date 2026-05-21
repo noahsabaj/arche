@@ -82,8 +82,9 @@ The proof chain currently demonstrates:
 - Generated-native `run Demo.Main` dispatch into compiled `Demo.Move` query-loop code.
 - A named native ECS execution-state layout for descriptor counts, startup state, query scan state, and compiled-system temporaries.
 - Native descriptor record state materialization for component/resource/system/query/schedule section offsets and byte lengths.
+- Native startup operation dispatch for source-order resource, spawn, and run-schedule operation kinds.
 
-M19 native ECS execution-state work is underway. The next proof is adding a native startup operation dispatcher.
+M19 native ECS execution-state work is underway. The next proof is native query planning state.
 
 ## What This Is Not Yet
 
