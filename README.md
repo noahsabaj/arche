@@ -83,8 +83,9 @@ The proof chain currently demonstrates:
 - A named native ECS execution-state layout for descriptor counts, startup state, query scan state, and compiled-system temporaries.
 - Native descriptor record state materialization for component/resource/system/query/schedule section offsets and byte lengths.
 - Native startup operation dispatch for source-order resource, spawn, and run-schedule operation kinds.
+- Native query-planning state for the bootstrap `Demo.Position + Demo.Velocity` row used by compiled `Demo.Move`.
 
-M19 native ECS execution-state work is underway. The next proof is native query planning state.
+M19 native ECS execution-state work is underway. The next proof is executing compiled schedule state.
 
 ## What This Is Not Yet
 

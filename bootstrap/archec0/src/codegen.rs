@@ -55,6 +55,13 @@ struct NativeStartupDispatchSlots {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeQueryPlanSlots {
+    matched_row_count: NativeEcsSlot,
+    position_payload_address: NativeEcsSlot,
+    velocity_payload_address: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeCompiledMoveSlots {
     target_position_payload: NativeEcsSlot,
     scanned_row_count: NativeEcsSlot,
@@ -64,20 +71,21 @@ struct NativeCompiledMoveSlots {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeEcsExecutionStateLayout {
     frame_size: u8,
-    zeroed_qword_offsets: [u8; 26],
+    zeroed_qword_offsets: [u8; 29],
     descriptor_counts: NativeDescriptorCountSlots,
     descriptor_records: NativeDescriptorRecordStateSlots,
     startup_state: NativeStartupStateSlots,
     startup_dispatch: NativeStartupDispatchSlots,
+    query_plan: NativeQueryPlanSlots,
     compiled_move: NativeCompiledMoveSlots,
 }
 
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
-        frame_size: 208,
+        frame_size: 232,
         zeroed_qword_offsets: [
             0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152,
-            160, 168, 176, 184, 192, 200,
+            160, 168, 176, 184, 192, 200, 208, 216, 224,
         ],
         descriptor_counts: NativeDescriptorCountSlots {
             components: NativeEcsSlot {
@@ -186,6 +194,20 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
             },
             run_schedule_dispatch_count: NativeEcsSlot {
                 offset: 200,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+        },
+        query_plan: NativeQueryPlanSlots {
+            matched_row_count: NativeEcsSlot {
+                offset: 208,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            position_payload_address: NativeEcsSlot {
+                offset: 216,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            velocity_payload_address: NativeEcsSlot {
+                offset: 224,
                 byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
             },
         },
@@ -375,6 +397,30 @@ const RUNTIME_CREATE_PREFIX: &[u8] = &[
     0x00,
     0x00,
     0x00, // mov qword ptr [rsp + 200], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0xd0,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 208], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0xd8,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 216], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0xe0,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 224], rax
 ];
 
 const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
@@ -540,6 +586,30 @@ const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
     0x00,
     0x00, // mov qword ptr [rsp + 200], rax
     0x48,
+    0x89,
+    0x84,
+    0x24,
+    0xd0,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 208], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0xd8,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 216], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0xe0,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 224], rax
+    0x48,
     0x81,
     0xc4,
     NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE,
@@ -701,6 +771,18 @@ const ECS_STARTUP_SPAWN_DISPATCH_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAY
 const ECS_STARTUP_RUN_SCHEDULE_DISPATCH_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_dispatch
     .run_schedule_dispatch_count
+    .offset;
+const ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .query_plan
+    .matched_row_count
+    .offset;
+const ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .query_plan
+    .position_payload_address
+    .offset;
+const ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .query_plan
+    .velocity_payload_address
     .offset;
 
 const DEMO_POSITION_COMPONENT_ID: u64 = 0x002202c6aeb4f27b;
@@ -1498,6 +1580,7 @@ fn ecs_metadata_decoder_body(
         DEMO_MAIN_SCHEDULE_ID,
         &mut jump_to_run_schedule_dispatch_failure_offsets,
     );
+    emit_native_query_plan_builder(&mut bytes, &mut jump_to_query_loop_scan_failure_offsets);
     emit_compiled_demo_move_query_loop(
         &mut bytes,
         &query_loop_observable,
@@ -1696,6 +1779,22 @@ fn compare_metadata_slot_to_u32(
     jump_offsets.push(jump_offset);
 }
 
+fn emit_native_query_plan_builder(bytes: &mut Vec<u8>, scan_failure_offsets: &mut Vec<usize>) {
+    load_stack_slot_to_rax(bytes, ECS_SPAWN_ROW_COUNT_SLOT);
+    store_rax_to_stack_slot(bytes, ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT);
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
+        1,
+        scan_failure_offsets,
+    );
+
+    emit_lea_stack_address_to_rax(bytes, ECS_POSITION_PAYLOAD_STORAGE_SLOT);
+    store_rax_to_stack_slot(bytes, ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT);
+    emit_lea_stack_address_to_rax(bytes, ECS_VELOCITY_PAYLOAD_STORAGE_SLOT);
+    store_rax_to_stack_slot(bytes, ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT);
+}
+
 fn emit_compiled_demo_move_query_loop(
     bytes: &mut Vec<u8>,
     query_loop_observable: &NativeMoveQueryLoopObservable,
@@ -1703,7 +1802,7 @@ fn emit_compiled_demo_move_query_loop(
     field_math_failure_offsets: &mut Vec<usize>,
     position_store_failure_offsets: &mut Vec<usize>,
 ) {
-    load_stack_slot_to_rax(bytes, ECS_SPAWN_ROW_COUNT_SLOT);
+    load_stack_slot_to_rax(bytes, ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT);
     store_rax_to_stack_slot(bytes, ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT);
     compare_stack_slot_to_u64(
         bytes,
@@ -1730,27 +1829,31 @@ fn emit_compiled_demo_move_query_loop(
 }
 
 fn emit_query_loop_field_multiply(bytes: &mut Vec<u8>) {
-    emit_movss_xmm_from_stack(bytes, 0, ECS_VELOCITY_PAYLOAD_STORAGE_SLOT);
+    load_stack_slot_to_rax(bytes, ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT);
+    emit_movss_xmm_from_rax(bytes, 0, 0);
     emit_movss_xmm_from_stack(bytes, 1, ECS_RESOURCE_PAYLOAD_STORAGE_SLOT);
     emit_mulss_xmm(bytes, 0, 1);
     emit_movss_stack_from_xmm(bytes, ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT, 0);
 
-    emit_movss_xmm_from_stack(bytes, 0, ECS_VELOCITY_PAYLOAD_STORAGE_SLOT + 4);
+    load_stack_slot_to_rax(bytes, ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT);
+    emit_movss_xmm_from_rax(bytes, 0, 4);
     emit_movss_xmm_from_stack(bytes, 1, ECS_RESOURCE_PAYLOAD_STORAGE_SLOT);
     emit_mulss_xmm(bytes, 0, 1);
     emit_movss_stack_from_xmm(bytes, ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT + 4, 0);
 }
 
 fn emit_query_loop_position_stores(bytes: &mut Vec<u8>) {
-    emit_movss_xmm_from_stack(bytes, 0, ECS_POSITION_PAYLOAD_STORAGE_SLOT);
+    load_stack_slot_to_rax(bytes, ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT);
+    emit_movss_xmm_from_rax(bytes, 0, 0);
     emit_movss_xmm_from_stack(bytes, 1, ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT);
     emit_addss_xmm(bytes, 0, 1);
-    emit_movss_stack_from_xmm(bytes, ECS_POSITION_PAYLOAD_STORAGE_SLOT, 0);
+    emit_movss_rax_from_xmm(bytes, 0, 0);
 
-    emit_movss_xmm_from_stack(bytes, 0, ECS_POSITION_PAYLOAD_STORAGE_SLOT + 4);
+    load_stack_slot_to_rax(bytes, ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT);
+    emit_movss_xmm_from_rax(bytes, 0, 4);
     emit_movss_xmm_from_stack(bytes, 1, ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT + 4);
     emit_addss_xmm(bytes, 0, 1);
-    emit_movss_stack_from_xmm(bytes, ECS_POSITION_PAYLOAD_STORAGE_SLOT + 4, 0);
+    emit_movss_rax_from_xmm(bytes, 4, 0);
 }
 
 fn emit_movss_xmm_from_stack(bytes: &mut Vec<u8>, xmm_register: u8, stack_slot: u8) {
@@ -1763,6 +1866,18 @@ fn emit_movss_stack_from_xmm(bytes: &mut Vec<u8>, stack_slot: u8, xmm_register: 
     bytes.extend_from_slice(&[0xf3, 0x0f, 0x11]);
     bytes.push(0x44 | (xmm_register << 3));
     bytes.extend_from_slice(&[0x24, stack_slot]);
+}
+
+fn emit_movss_xmm_from_rax(bytes: &mut Vec<u8>, xmm_register: u8, field_offset: u8) {
+    bytes.extend_from_slice(&[0xf3, 0x0f, 0x10]);
+    bytes.push(0x40 | (xmm_register << 3));
+    bytes.push(field_offset);
+}
+
+fn emit_movss_rax_from_xmm(bytes: &mut Vec<u8>, field_offset: u8, xmm_register: u8) {
+    bytes.extend_from_slice(&[0xf3, 0x0f, 0x11]);
+    bytes.push(0x40 | (xmm_register << 3));
+    bytes.push(field_offset);
 }
 
 fn emit_mulss_xmm(bytes: &mut Vec<u8>, destination_xmm_register: u8, source_xmm_register: u8) {
@@ -1797,6 +1912,15 @@ fn load_stack_slot_to_rax(bytes: &mut Vec<u8>, stack_slot: u8) {
         bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, stack_slot]); // mov rax, qword ptr [rsp + slot]
     } else {
         bytes.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]); // mov rax, qword ptr [rsp + slot]
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+    }
+}
+
+fn emit_lea_stack_address_to_rax(bytes: &mut Vec<u8>, stack_slot: u8) {
+    if stack_slot <= 127 {
+        bytes.extend_from_slice(&[0x48, 0x8d, 0x44, 0x24, stack_slot]); // lea rax, [rsp + slot]
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x8d, 0x84, 0x24]); // lea rax, [rsp + slot]
         bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
     }
 }
@@ -1965,12 +2089,12 @@ mod tests {
     fn defines_native_ecs_execution_state_layout() {
         let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
 
-        assert_eq!(layout.frame_size, 208);
+        assert_eq!(layout.frame_size, 232);
         assert_eq!(
             layout.zeroed_qword_offsets,
             [
                 0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144,
-                152, 160, 168, 176, 184, 192, 200,
+                152, 160, 168, 176, 184, 192, 200, 208, 216, 224,
             ]
         );
         assert_eq!(
@@ -2112,6 +2236,23 @@ mod tests {
                 },
             }
         );
+        assert_eq!(
+            layout.query_plan,
+            NativeQueryPlanSlots {
+                matched_row_count: NativeEcsSlot {
+                    offset: 208,
+                    byte_len: 8,
+                },
+                position_payload_address: NativeEcsSlot {
+                    offset: 216,
+                    byte_len: 8,
+                },
+                velocity_payload_address: NativeEcsSlot {
+                    offset: 224,
+                    byte_len: 8,
+                },
+            }
+        );
         assert_eq!(ECS_DESCRIPTOR_REGISTRY_SLOTS, [0, 8, 16, 24, 32]);
         assert_eq!(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS, [96, 112, 128, 144, 160]);
         assert_eq!(
@@ -2129,6 +2270,9 @@ mod tests {
         assert_eq!(ECS_STARTUP_RESOURCE_DISPATCH_COUNT_SLOT, 184);
         assert_eq!(ECS_STARTUP_SPAWN_DISPATCH_COUNT_SLOT, 192);
         assert_eq!(ECS_STARTUP_RUN_SCHEDULE_DISPATCH_COUNT_SLOT, 200);
+        assert_eq!(ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT, 208);
+        assert_eq!(ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT, 216);
+        assert_eq!(ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT, 224);
 
         let slots = [
             layout.descriptor_counts.components,
@@ -2154,6 +2298,9 @@ mod tests {
             layout.startup_dispatch.resource_dispatch_count,
             layout.startup_dispatch.spawn_dispatch_count,
             layout.startup_dispatch.run_schedule_dispatch_count,
+            layout.query_plan.matched_row_count,
+            layout.query_plan.position_payload_address,
+            layout.query_plan.velocity_payload_address,
             layout.compiled_move.target_position_payload,
             layout.compiled_move.scanned_row_count,
             layout.compiled_move.field_product_payload,
@@ -2347,41 +2494,17 @@ mod tests {
         assert!(
             contains_subsequence(
                 &text,
-                &[
-                    0x48,
-                    0x8b,
-                    0x44,
-                    0x24,
-                    ECS_SPAWN_ROW_COUNT_SLOT, // mov rax, qword ptr [rsp + 48]
-                    0x48,
-                    0x89,
-                    0x44,
-                    0x24,
-                    ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT, // mov qword ptr [rsp + 80], rax
-                ],
+                &load_store_stack_slot_sequence(
+                    ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
+                    ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT,
+                ),
             ),
-            "generated text should carry the row count into the scan-count slot"
+            "generated text should carry the planned matched row count into the scan-count slot"
         );
         assert!(
             contains_subsequence(
                 &text,
-                &[
-                    0x48,
-                    0xb8,
-                    0x01,
-                    0x00,
-                    0x00,
-                    0x00,
-                    0x00,
-                    0x00,
-                    0x00,
-                    0x00,
-                    0x48,
-                    0x39,
-                    0x44,
-                    0x24,
-                    ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT, // cmp qword ptr [rsp + 80], rax
-                ],
+                &compare_stack_slot_sequence(ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT, 1),
             ),
             "generated text should require exactly one scanned bootstrap row"
         );
@@ -2416,62 +2539,24 @@ mod tests {
         assert!(
             contains_subsequence(
                 &text,
-                &[
-                    0xf3,
-                    0x0f,
-                    0x10,
-                    0x44,
-                    0x24,
-                    ECS_VELOCITY_PAYLOAD_STORAGE_SLOT, // movss xmm0, dword ptr [rsp + 64]
-                    0xf3,
-                    0x0f,
-                    0x10,
-                    0x4c,
-                    0x24,
-                    ECS_RESOURCE_PAYLOAD_STORAGE_SLOT, // movss xmm1, dword ptr [rsp + 40]
-                    0xf3,
-                    0x0f,
-                    0x59,
-                    0xc1, // mulss xmm0, xmm1
-                    0xf3,
-                    0x0f,
-                    0x11,
-                    0x44,
-                    0x24,
-                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT, // movss dword ptr [rsp + 88], xmm0
-                ],
+                &query_plan_component_field_multiply_sequence(
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
             ),
-            "generated text should compute Velocity.x * Time.delta"
+            "generated text should compute Velocity.x * Time.delta through the planned Velocity address"
         );
         assert!(
             contains_subsequence(
                 &text,
-                &[
-                    0xf3,
-                    0x0f,
-                    0x10,
-                    0x44,
-                    0x24,
-                    ECS_VELOCITY_PAYLOAD_STORAGE_SLOT + 4, // movss xmm0, dword ptr [rsp + 68]
-                    0xf3,
-                    0x0f,
-                    0x10,
-                    0x4c,
-                    0x24,
-                    ECS_RESOURCE_PAYLOAD_STORAGE_SLOT, // movss xmm1, dword ptr [rsp + 40]
-                    0xf3,
-                    0x0f,
-                    0x59,
-                    0xc1, // mulss xmm0, xmm1
-                    0xf3,
-                    0x0f,
-                    0x11,
-                    0x44,
-                    0x24,
-                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT + 4, // movss dword ptr [rsp + 92], xmm0
-                ],
+                &query_plan_component_field_multiply_sequence(
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                    4,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT + 4,
+                ),
             ),
-            "generated text should compute Velocity.y * Time.delta"
+            "generated text should compute Velocity.y * Time.delta through the planned Velocity address"
         );
         assert!(
             contains_subsequence(
@@ -2504,62 +2589,24 @@ mod tests {
         assert!(
             contains_subsequence(
                 &text,
-                &[
-                    0xf3,
-                    0x0f,
-                    0x10,
-                    0x44,
-                    0x24,
-                    ECS_POSITION_PAYLOAD_STORAGE_SLOT, // movss xmm0, dword ptr [rsp + 56]
-                    0xf3,
-                    0x0f,
-                    0x10,
-                    0x4c,
-                    0x24,
-                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT, // movss xmm1, dword ptr [rsp + 88]
-                    0xf3,
-                    0x0f,
-                    0x58,
-                    0xc1, // addss xmm0, xmm1
-                    0xf3,
-                    0x0f,
-                    0x11,
-                    0x44,
-                    0x24,
-                    ECS_POSITION_PAYLOAD_STORAGE_SLOT, // movss dword ptr [rsp + 56], xmm0
-                ],
+                &query_plan_position_store_sequence(
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
             ),
-            "generated text should update Position.x from its computed product"
+            "generated text should update Position.x through the planned Position address"
         );
         assert!(
             contains_subsequence(
                 &text,
-                &[
-                    0xf3,
-                    0x0f,
-                    0x10,
-                    0x44,
-                    0x24,
-                    ECS_POSITION_PAYLOAD_STORAGE_SLOT + 4, // movss xmm0, dword ptr [rsp + 60]
-                    0xf3,
-                    0x0f,
-                    0x10,
-                    0x4c,
-                    0x24,
-                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT + 4, // movss xmm1, dword ptr [rsp + 92]
-                    0xf3,
-                    0x0f,
-                    0x58,
-                    0xc1, // addss xmm0, xmm1
-                    0xf3,
-                    0x0f,
-                    0x11,
-                    0x44,
-                    0x24,
-                    ECS_POSITION_PAYLOAD_STORAGE_SLOT + 4, // movss dword ptr [rsp + 60], xmm0
-                ],
+                &query_plan_position_store_sequence(
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                    4,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT + 4,
+                ),
             ),
-            "generated text should update Position.y from its computed product"
+            "generated text should update Position.y through the planned Position address"
         );
         assert!(
             contains_subsequence(
@@ -2622,36 +2669,22 @@ mod tests {
         assert!(
             contains_subsequence(
                 &text,
-                &[
-                    0xf3,
-                    0x0f,
-                    0x59,
-                    0xc1, // mulss xmm0, xmm1
-                    0xf3,
-                    0x0f,
-                    0x11,
-                    0x44,
-                    0x24,
-                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT, // movss dword ptr [rsp + 88], xmm0
-                ],
+                &query_plan_component_field_multiply_sequence(
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
             ),
             "generated text should execute compiled Demo.Move field multiplication"
         );
         assert!(
             contains_subsequence(
                 &text,
-                &[
-                    0xf3,
-                    0x0f,
-                    0x58,
-                    0xc1, // addss xmm0, xmm1
-                    0xf3,
-                    0x0f,
-                    0x11,
-                    0x44,
-                    0x24,
-                    ECS_POSITION_PAYLOAD_STORAGE_SLOT, // movss dword ptr [rsp + 56], xmm0
-                ],
+                &query_plan_position_store_sequence(
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
             ),
             "generated text should execute compiled Demo.Move Position store"
         );
@@ -2791,6 +2824,110 @@ mod tests {
         );
     }
 
+    #[test]
+    fn materializes_native_query_planning_state() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    ECS_SPAWN_ROW_COUNT_SLOT,
+                    ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
+                ),
+            ),
+            "generated text should materialize the query-plan matched row count"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT, 1),
+            ),
+            "generated text should require one planned query row"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &lea_stack_address_store_sequence(
+                    ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                ),
+            ),
+            "generated text should materialize the planned Position payload address"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &lea_stack_address_store_sequence(
+                    ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                ),
+            ),
+            "generated text should materialize the planned Velocity payload address"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
+                    ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT,
+                ),
+            ),
+            "compiled Move should scan through the query-plan row count"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_component_field_multiply_sequence(
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "compiled Move should load Velocity.x through the planned component address"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_position_store_sequence(
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "compiled Move should store Position.x through the planned component address"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_QUERY_LOOP_SCAN_FAILURE_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "generated text should preserve query-plan scan failure"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "generated text should preserve compiled Move success"
+        );
+    }
+
     fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
         haystack
             .windows(needle.len())
@@ -2833,6 +2970,73 @@ mod tests {
     fn mov_eax_one_store_sequence(stack_slot: u8) -> Vec<u8> {
         let mut bytes = vec![0xb8, 0x01, 0x00, 0x00, 0x00]; // mov eax, 1
         append_rax_qword_store(&mut bytes, stack_slot);
+        bytes
+    }
+
+    fn load_store_stack_slot_sequence(load_slot: u8, store_slot: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_load_stack_slot_to_rax(&mut bytes, load_slot);
+        append_rax_qword_store(&mut bytes, store_slot);
+        bytes
+    }
+
+    fn lea_stack_address_store_sequence(source_slot: u8, store_slot: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_lea_stack_address_to_rax(&mut bytes, source_slot);
+        append_rax_qword_store(&mut bytes, store_slot);
+        bytes
+    }
+
+    fn query_plan_component_field_multiply_sequence(
+        address_slot: u8,
+        field_offset: u8,
+        product_slot: u8,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_load_stack_slot_to_rax(&mut bytes, address_slot);
+        append_movss_xmm_from_rax(&mut bytes, 0, field_offset);
+        bytes.extend_from_slice(&[
+            0xf3,
+            0x0f,
+            0x10,
+            0x4c,
+            0x24,
+            ECS_RESOURCE_PAYLOAD_STORAGE_SLOT, // movss xmm1, dword ptr [rsp + 40]
+            0xf3,
+            0x0f,
+            0x59,
+            0xc1, // mulss xmm0, xmm1
+            0xf3,
+            0x0f,
+            0x11,
+            0x44,
+            0x24,
+            product_slot, // movss dword ptr [rsp + product slot], xmm0
+        ]);
+        bytes
+    }
+
+    fn query_plan_position_store_sequence(
+        address_slot: u8,
+        field_offset: u8,
+        product_slot: u8,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_load_stack_slot_to_rax(&mut bytes, address_slot);
+        append_movss_xmm_from_rax(&mut bytes, 0, field_offset);
+        bytes.extend_from_slice(&[
+            0xf3,
+            0x0f,
+            0x10,
+            0x4c,
+            0x24,
+            product_slot, // movss xmm1, dword ptr [rsp + product slot]
+            0xf3,
+            0x0f,
+            0x58,
+            0xc1, // addss xmm0, xmm1
+        ]);
+        append_movss_rax_from_xmm(&mut bytes, field_offset, 0);
         bytes
     }
 
@@ -2896,5 +3100,37 @@ mod tests {
             bytes.extend_from_slice(&[0x48, 0x89, 0x84, 0x24]);
             bytes.extend_from_slice(&(offset as u32).to_le_bytes());
         }
+    }
+
+    fn append_load_stack_slot_to_rax(bytes: &mut Vec<u8>, offset: u8) {
+        if offset == 0 {
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x04, 0x24]);
+        } else if offset <= 127 {
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, offset]);
+        } else {
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]);
+            bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+        }
+    }
+
+    fn append_lea_stack_address_to_rax(bytes: &mut Vec<u8>, offset: u8) {
+        if offset <= 127 {
+            bytes.extend_from_slice(&[0x48, 0x8d, 0x44, 0x24, offset]);
+        } else {
+            bytes.extend_from_slice(&[0x48, 0x8d, 0x84, 0x24]);
+            bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+        }
+    }
+
+    fn append_movss_xmm_from_rax(bytes: &mut Vec<u8>, xmm_register: u8, field_offset: u8) {
+        bytes.extend_from_slice(&[0xf3, 0x0f, 0x10]);
+        bytes.push(0x40 | (xmm_register << 3));
+        bytes.push(field_offset);
+    }
+
+    fn append_movss_rax_from_xmm(bytes: &mut Vec<u8>, field_offset: u8, xmm_register: u8) {
+        bytes.extend_from_slice(&[0xf3, 0x0f, 0x11]);
+        bytes.push(0x40 | (xmm_register << 3));
+        bytes.push(field_offset);
     }
 }
