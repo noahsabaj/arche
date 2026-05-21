@@ -466,12 +466,12 @@ function Add-ZeroQwordStore {
 }
 
 function New-RuntimeStateQwordOffsets {
-    @(0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248)
+    @(0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 264, 272, 280, 288, 296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384)
 }
 
 function New-RuntimeCreatePrefix {
     $bytes = [System.Collections.Generic.List[byte]]::new()
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 256
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 392
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
@@ -485,7 +485,7 @@ function New-RuntimeDestroySuffix {
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
     }
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 256
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 392
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05))
     [byte[]]$bytes.ToArray()
 }
@@ -768,6 +768,44 @@ function Test-CorruptEcsMetadataMagic {
     Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 16
 }
 
+function Test-CorruptEcsComponentDescriptorRecord {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_component_descriptor"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $descriptorSizeOffset = $metadataStart + 137
+    Assert-Equal -Name "ECS Position descriptor size before corruption" -Actual $bytes[$descriptorSizeOffset] -Expected 0x08
+    $bytes[$descriptorSizeOffset] = 0x0c
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+}
+
+function Test-CorruptEcsResourceDescriptorRecord {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_resource_descriptor"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $fieldOffsetOffset = $metadataStart + 299
+    Assert-Equal -Name "ECS Time.delta field offset before corruption" -Actual $bytes[$fieldOffsetOffset] -Expected 0x00
+    $bytes[$fieldOffsetOffset] = 0x04
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+}
+
 function Test-CorruptEcsStartupOperationKind {
     param(
         [Parameter(Mandatory = $true)]
@@ -941,6 +979,11 @@ try {
         -Name "materializes_native_descriptor_record_state" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_descriptor_record_state")
+
+    Invoke-CheckedCommand `
+        -Name "decodes_native_component_resource_descriptor_records" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "decodes_native_component_resource_descriptor_records")
 
     Invoke-CheckedCommand `
         -Name "dispatches_native_startup_operations" `
@@ -1665,6 +1708,8 @@ try {
     Test-EcsMetadataPayload -Path ".\build\move_system"
     Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 47
     Test-CorruptEcsMetadataMagic -Path ".\build\move_system"
+    Test-CorruptEcsComponentDescriptorRecord -Path ".\build\move_system"
+    Test-CorruptEcsResourceDescriptorRecord -Path ".\build\move_system"
     Test-CorruptEcsStartupOperationKind -Path ".\build\move_system"
     Test-CorruptEcsResourcePayload -Path ".\build\move_system"
     Test-CorruptEcsSpawnPayload -Path ".\build\move_system"

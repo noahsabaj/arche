@@ -85,8 +85,9 @@ The proof chain currently demonstrates:
 - Native startup operation dispatch for source-order resource, spawn, and run-schedule operation kinds.
 - Native query-planning state for the bootstrap `Demo.Position + Demo.Velocity` row used by compiled `Demo.Move`.
 - Native compiled schedule state for dispatching `Demo.Main` into compiled `Demo.Move`.
+- Native component/resource descriptor-table decoding from embedded `ARCHEECS` records.
 
-M20 native ECS descriptor-table work is underway. The next proof is decoding native component/resource descriptor records.
+M20 native ECS descriptor-table work is underway. The next proof is decoding native system/query/schedule descriptor records.
 
 ## What This Is Not Yet
 

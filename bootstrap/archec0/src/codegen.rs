@@ -5,13 +5,13 @@ use crate::core::{
 use crate::core_lower;
 use crate::parser::{BinaryOperator, Expression, Program, Statement};
 
-const NATIVE_ECS_QWORD_BYTE_LEN: u8 = 8;
-const NATIVE_ECS_DWORD_BYTE_LEN: u8 = 4;
+const NATIVE_ECS_QWORD_BYTE_LEN: u16 = 8;
+const NATIVE_ECS_DWORD_BYTE_LEN: u16 = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeEcsSlot {
-    offset: u8,
-    byte_len: u8,
+    offset: u16,
+    byte_len: u16,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,6 +69,32 @@ struct NativeCompiledScheduleSlots {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeXyDescriptorSlots {
+    id: NativeEcsSlot,
+    size: NativeEcsSlot,
+    align: NativeEcsSlot,
+    field_count: NativeEcsSlot,
+    x_field_offset: NativeEcsSlot,
+    y_field_offset: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeTimeDescriptorSlots {
+    id: NativeEcsSlot,
+    size: NativeEcsSlot,
+    align: NativeEcsSlot,
+    field_count: NativeEcsSlot,
+    delta_field_offset: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeComponentResourceDescriptorTableSlots {
+    position: NativeXyDescriptorSlots,
+    velocity: NativeXyDescriptorSlots,
+    time: NativeTimeDescriptorSlots,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeCompiledMoveSlots {
     target_position_payload: NativeEcsSlot,
     scanned_row_count: NativeEcsSlot,
@@ -78,22 +104,24 @@ struct NativeCompiledMoveSlots {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeEcsExecutionStateLayout {
     frame_size: u16,
-    zeroed_qword_offsets: [u8; 32],
+    zeroed_qword_offsets: [u16; 49],
     descriptor_counts: NativeDescriptorCountSlots,
     descriptor_records: NativeDescriptorRecordStateSlots,
     startup_state: NativeStartupStateSlots,
     startup_dispatch: NativeStartupDispatchSlots,
     query_plan: NativeQueryPlanSlots,
     compiled_schedule: NativeCompiledScheduleSlots,
+    component_resource_descriptors: NativeComponentResourceDescriptorTableSlots,
     compiled_move: NativeCompiledMoveSlots,
 }
 
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
-        frame_size: 256,
+        frame_size: 392,
         zeroed_qword_offsets: [
             0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152,
-            160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248,
+            160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 264, 272, 280, 288,
+            296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384,
         ],
         descriptor_counts: NativeDescriptorCountSlots {
             components: NativeEcsSlot {
@@ -233,6 +261,82 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
                 byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
             },
         },
+        component_resource_descriptors: NativeComponentResourceDescriptorTableSlots {
+            position: NativeXyDescriptorSlots {
+                id: NativeEcsSlot {
+                    offset: 256,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                size: NativeEcsSlot {
+                    offset: 264,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                align: NativeEcsSlot {
+                    offset: 272,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                field_count: NativeEcsSlot {
+                    offset: 280,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                x_field_offset: NativeEcsSlot {
+                    offset: 288,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                y_field_offset: NativeEcsSlot {
+                    offset: 296,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            velocity: NativeXyDescriptorSlots {
+                id: NativeEcsSlot {
+                    offset: 304,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                size: NativeEcsSlot {
+                    offset: 312,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                align: NativeEcsSlot {
+                    offset: 320,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                field_count: NativeEcsSlot {
+                    offset: 328,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                x_field_offset: NativeEcsSlot {
+                    offset: 336,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                y_field_offset: NativeEcsSlot {
+                    offset: 344,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            time: NativeTimeDescriptorSlots {
+                id: NativeEcsSlot {
+                    offset: 352,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                size: NativeEcsSlot {
+                    offset: 360,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                align: NativeEcsSlot {
+                    offset: 368,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                field_count: NativeEcsSlot {
+                    offset: 376,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                delta_field_offset: NativeEcsSlot {
+                    offset: 384,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+        },
         compiled_move: NativeCompiledMoveSlots {
             target_position_payload: NativeEcsSlot {
                 offset: 72,
@@ -248,82 +352,6 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
             },
         },
     };
-const RUNTIME_CREATE_PREFIX: &[u8] = &[
-    0x48, 0x81, 0xec, 0x00, 0x01, 0x00, 0x00, // sub rsp, frame size
-    0x31, 0xc0, // xor eax, eax
-    0x48, 0x89, 0x04, 0x24, // mov qword ptr [rsp], rax
-    0x48, 0x89, 0x44, 0x24, 0x08, // mov qword ptr [rsp + 8], rax
-    0x48, 0x89, 0x44, 0x24, 0x10, // mov qword ptr [rsp + 16], rax
-    0x48, 0x89, 0x44, 0x24, 0x18, // mov qword ptr [rsp + 24], rax
-    0x48, 0x89, 0x44, 0x24, 0x20, // mov qword ptr [rsp + 32], rax
-    0x48, 0x89, 0x44, 0x24, 0x28, // mov qword ptr [rsp + 40], rax
-    0x48, 0x89, 0x44, 0x24, 0x30, // mov qword ptr [rsp + 48], rax
-    0x48, 0x89, 0x44, 0x24, 0x38, // mov qword ptr [rsp + 56], rax
-    0x48, 0x89, 0x44, 0x24, 0x40, // mov qword ptr [rsp + 64], rax
-    0x48, 0x89, 0x44, 0x24, 0x48, // mov qword ptr [rsp + 72], rax
-    0x48, 0x89, 0x44, 0x24, 0x50, // mov qword ptr [rsp + 80], rax
-    0x48, 0x89, 0x44, 0x24, 0x58, // mov qword ptr [rsp + 88], rax
-    0x48, 0x89, 0x44, 0x24, 0x60, // mov qword ptr [rsp + 96], rax
-    0x48, 0x89, 0x44, 0x24, 0x68, // mov qword ptr [rsp + 104], rax
-    0x48, 0x89, 0x44, 0x24, 0x70, // mov qword ptr [rsp + 112], rax
-    0x48, 0x89, 0x44, 0x24, 0x78, // mov qword ptr [rsp + 120], rax
-    0x48, 0x89, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 128], rax
-    0x48, 0x89, 0x84, 0x24, 0x88, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 136], rax
-    0x48, 0x89, 0x84, 0x24, 0x90, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 144], rax
-    0x48, 0x89, 0x84, 0x24, 0x98, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 152], rax
-    0x48, 0x89, 0x84, 0x24, 0xa0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 160], rax
-    0x48, 0x89, 0x84, 0x24, 0xa8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 168], rax
-    0x48, 0x89, 0x84, 0x24, 0xb0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 176], rax
-    0x48, 0x89, 0x84, 0x24, 0xb8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 184], rax
-    0x48, 0x89, 0x84, 0x24, 0xc0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 192], rax
-    0x48, 0x89, 0x84, 0x24, 0xc8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 200], rax
-    0x48, 0x89, 0x84, 0x24, 0xd0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 208], rax
-    0x48, 0x89, 0x84, 0x24, 0xd8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 216], rax
-    0x48, 0x89, 0x84, 0x24, 0xe0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 224], rax
-    0x48, 0x89, 0x84, 0x24, 0xe8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 232], rax
-    0x48, 0x89, 0x84, 0x24, 0xf0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 240], rax
-    0x48, 0x89, 0x84, 0x24, 0xf8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 248], rax
-];
-
-const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
-    0x31, 0xc0, // xor eax, eax
-    0x48, 0x89, 0x04, 0x24, // mov qword ptr [rsp], rax
-    0x48, 0x89, 0x44, 0x24, 0x08, // mov qword ptr [rsp + 8], rax
-    0x48, 0x89, 0x44, 0x24, 0x10, // mov qword ptr [rsp + 16], rax
-    0x48, 0x89, 0x44, 0x24, 0x18, // mov qword ptr [rsp + 24], rax
-    0x48, 0x89, 0x44, 0x24, 0x20, // mov qword ptr [rsp + 32], rax
-    0x48, 0x89, 0x44, 0x24, 0x28, // mov qword ptr [rsp + 40], rax
-    0x48, 0x89, 0x44, 0x24, 0x30, // mov qword ptr [rsp + 48], rax
-    0x48, 0x89, 0x44, 0x24, 0x38, // mov qword ptr [rsp + 56], rax
-    0x48, 0x89, 0x44, 0x24, 0x40, // mov qword ptr [rsp + 64], rax
-    0x48, 0x89, 0x44, 0x24, 0x48, // mov qword ptr [rsp + 72], rax
-    0x48, 0x89, 0x44, 0x24, 0x50, // mov qword ptr [rsp + 80], rax
-    0x48, 0x89, 0x44, 0x24, 0x58, // mov qword ptr [rsp + 88], rax
-    0x48, 0x89, 0x44, 0x24, 0x60, // mov qword ptr [rsp + 96], rax
-    0x48, 0x89, 0x44, 0x24, 0x68, // mov qword ptr [rsp + 104], rax
-    0x48, 0x89, 0x44, 0x24, 0x70, // mov qword ptr [rsp + 112], rax
-    0x48, 0x89, 0x44, 0x24, 0x78, // mov qword ptr [rsp + 120], rax
-    0x48, 0x89, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 128], rax
-    0x48, 0x89, 0x84, 0x24, 0x88, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 136], rax
-    0x48, 0x89, 0x84, 0x24, 0x90, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 144], rax
-    0x48, 0x89, 0x84, 0x24, 0x98, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 152], rax
-    0x48, 0x89, 0x84, 0x24, 0xa0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 160], rax
-    0x48, 0x89, 0x84, 0x24, 0xa8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 168], rax
-    0x48, 0x89, 0x84, 0x24, 0xb0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 176], rax
-    0x48, 0x89, 0x84, 0x24, 0xb8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 184], rax
-    0x48, 0x89, 0x84, 0x24, 0xc0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 192], rax
-    0x48, 0x89, 0x84, 0x24, 0xc8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 200], rax
-    0x48, 0x89, 0x84, 0x24, 0xd0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 208], rax
-    0x48, 0x89, 0x84, 0x24, 0xd8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 216], rax
-    0x48, 0x89, 0x84, 0x24, 0xe0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 224], rax
-    0x48, 0x89, 0x84, 0x24, 0xe8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 232], rax
-    0x48, 0x89, 0x84, 0x24, 0xf0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 240], rax
-    0x48, 0x89, 0x84, 0x24, 0xf8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 248], rax
-    0x48, 0x81, 0xc4, 0x00, 0x01, 0x00, 0x00, // add rsp, frame size
-    0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, 60
-    0x0f, 0x05, // syscall
-];
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodegenError {
     pub message: String,
@@ -351,7 +379,7 @@ const ECS_DESCRIPTOR_RECORD_OFFSET_FIELD_OFFSETS: [u8; 5] = [20, 36, 52, 68, 84]
 const ECS_DESCRIPTOR_RECORD_BYTE_LEN_FIELD_OFFSETS: [u8; 5] = [24, 40, 56, 72, 88];
 const ECS_EXPECTED_DESCRIPTOR_RECORD_OFFSETS: [u64; 5] = [112, 250, 303, 437, 527];
 const ECS_EXPECTED_DESCRIPTOR_RECORD_BYTE_LENS: [u64; 5] = [138, 53, 134, 90, 50];
-const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [
+const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u16; 5] = [
     NATIVE_ECS_EXECUTION_STATE_LAYOUT
         .descriptor_counts
         .components
@@ -373,7 +401,7 @@ const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [
         .schedules
         .offset,
 ];
-const ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS: [u8; 5] = [
+const ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS: [u16; 5] = [
     NATIVE_ECS_EXECUTION_STATE_LAYOUT
         .descriptor_records
         .components
@@ -400,7 +428,7 @@ const ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS: [u8; 5] = [
         .payload_offset
         .offset,
 ];
-const ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS: [u8; 5] = [
+const ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS: [u16; 5] = [
     NATIVE_ECS_EXECUTION_STATE_LAYOUT
         .descriptor_records
         .components
@@ -427,74 +455,199 @@ const ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS: [u8; 5] = [
         .byte_len
         .offset,
 ];
-const ECS_RESOURCE_PAYLOAD_STORAGE_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_RESOURCE_PAYLOAD_STORAGE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_state
     .time_payload
     .offset;
-const ECS_SPAWN_ROW_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_SPAWN_ROW_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_state
     .row_count
     .offset;
-const ECS_POSITION_PAYLOAD_STORAGE_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_POSITION_PAYLOAD_STORAGE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_state
     .position_payload
     .offset;
-const ECS_VELOCITY_PAYLOAD_STORAGE_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_VELOCITY_PAYLOAD_STORAGE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_state
     .velocity_payload
     .offset;
-const ECS_QUERY_LOOP_TARGET_POSITION_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_QUERY_LOOP_TARGET_POSITION_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .compiled_move
     .target_position_payload
     .offset;
-const ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .compiled_move
     .scanned_row_count
     .offset;
-const ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .compiled_move
     .field_product_payload
     .offset;
-const ECS_STARTUP_OPERATION_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_STARTUP_OPERATION_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_dispatch
     .operation_count
     .offset;
-const ECS_STARTUP_RESOURCE_DISPATCH_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_STARTUP_RESOURCE_DISPATCH_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_dispatch
     .resource_dispatch_count
     .offset;
-const ECS_STARTUP_SPAWN_DISPATCH_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_STARTUP_SPAWN_DISPATCH_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_dispatch
     .spawn_dispatch_count
     .offset;
-const ECS_STARTUP_RUN_SCHEDULE_DISPATCH_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_STARTUP_RUN_SCHEDULE_DISPATCH_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_dispatch
     .run_schedule_dispatch_count
     .offset;
-const ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .query_plan
     .matched_row_count
     .offset;
-const ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .query_plan
     .position_payload_address
     .offset;
-const ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .query_plan
     .velocity_payload_address
     .offset;
-const ECS_COMPILED_SCHEDULE_ID_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_COMPILED_SCHEDULE_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .compiled_schedule
     .schedule_id
     .offset;
-const ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .compiled_schedule
     .scheduled_system_id
     .offset;
-const ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+const ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .compiled_schedule
     .scheduled_system_count
     .offset;
+const ECS_POSITION_DESCRIPTOR_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .position
+    .id
+    .offset;
+const ECS_POSITION_DESCRIPTOR_SIZE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .position
+    .size
+    .offset;
+const ECS_POSITION_DESCRIPTOR_ALIGN_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .position
+    .align
+    .offset;
+const ECS_POSITION_DESCRIPTOR_FIELD_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .position
+    .field_count
+    .offset;
+const ECS_POSITION_DESCRIPTOR_X_FIELD_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .position
+    .x_field_offset
+    .offset;
+const ECS_POSITION_DESCRIPTOR_Y_FIELD_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .position
+    .y_field_offset
+    .offset;
+const ECS_VELOCITY_DESCRIPTOR_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .velocity
+    .id
+    .offset;
+const ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .velocity
+    .size
+    .offset;
+const ECS_VELOCITY_DESCRIPTOR_ALIGN_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .velocity
+    .align
+    .offset;
+const ECS_VELOCITY_DESCRIPTOR_FIELD_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .velocity
+    .field_count
+    .offset;
+const ECS_VELOCITY_DESCRIPTOR_X_FIELD_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .velocity
+    .x_field_offset
+    .offset;
+const ECS_VELOCITY_DESCRIPTOR_Y_FIELD_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .velocity
+    .y_field_offset
+    .offset;
+const ECS_TIME_DESCRIPTOR_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .time
+    .id
+    .offset;
+const ECS_TIME_DESCRIPTOR_SIZE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .time
+    .size
+    .offset;
+const ECS_TIME_DESCRIPTOR_ALIGN_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .time
+    .align
+    .offset;
+const ECS_TIME_DESCRIPTOR_FIELD_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .time
+    .field_count
+    .offset;
+const ECS_TIME_DESCRIPTOR_DELTA_FIELD_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .component_resource_descriptors
+    .time
+    .delta_field_offset
+    .offset;
+const ECS_COMPONENT_RESOURCE_DESCRIPTOR_QWORD_LOADS: [(i32, u16); 3] = [
+    (112, ECS_POSITION_DESCRIPTOR_ID_SLOT),
+    (181, ECS_VELOCITY_DESCRIPTOR_ID_SLOT),
+    (250, ECS_TIME_DESCRIPTOR_ID_SLOT),
+];
+const ECS_COMPONENT_RESOURCE_DESCRIPTOR_DWORD_LOADS: [(i32, u16); 14] = [
+    (137, ECS_POSITION_DESCRIPTOR_SIZE_SLOT),
+    (141, ECS_POSITION_DESCRIPTOR_ALIGN_SLOT),
+    (145, ECS_POSITION_DESCRIPTOR_FIELD_COUNT_SLOT),
+    (161, ECS_POSITION_DESCRIPTOR_X_FIELD_OFFSET_SLOT),
+    (177, ECS_POSITION_DESCRIPTOR_Y_FIELD_OFFSET_SLOT),
+    (206, ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT),
+    (210, ECS_VELOCITY_DESCRIPTOR_ALIGN_SLOT),
+    (214, ECS_VELOCITY_DESCRIPTOR_FIELD_COUNT_SLOT),
+    (230, ECS_VELOCITY_DESCRIPTOR_X_FIELD_OFFSET_SLOT),
+    (246, ECS_VELOCITY_DESCRIPTOR_Y_FIELD_OFFSET_SLOT),
+    (271, ECS_TIME_DESCRIPTOR_SIZE_SLOT),
+    (275, ECS_TIME_DESCRIPTOR_ALIGN_SLOT),
+    (279, ECS_TIME_DESCRIPTOR_FIELD_COUNT_SLOT),
+    (299, ECS_TIME_DESCRIPTOR_DELTA_FIELD_OFFSET_SLOT),
+];
+const ECS_COMPONENT_RESOURCE_DESCRIPTOR_EXPECTED: [(u16, u64); 17] = [
+    (ECS_POSITION_DESCRIPTOR_ID_SLOT, DEMO_POSITION_COMPONENT_ID),
+    (ECS_POSITION_DESCRIPTOR_SIZE_SLOT, 8),
+    (ECS_POSITION_DESCRIPTOR_ALIGN_SLOT, 4),
+    (ECS_POSITION_DESCRIPTOR_FIELD_COUNT_SLOT, 2),
+    (ECS_POSITION_DESCRIPTOR_X_FIELD_OFFSET_SLOT, 0),
+    (ECS_POSITION_DESCRIPTOR_Y_FIELD_OFFSET_SLOT, 4),
+    (ECS_VELOCITY_DESCRIPTOR_ID_SLOT, DEMO_VELOCITY_COMPONENT_ID),
+    (ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT, 8),
+    (ECS_VELOCITY_DESCRIPTOR_ALIGN_SLOT, 4),
+    (ECS_VELOCITY_DESCRIPTOR_FIELD_COUNT_SLOT, 2),
+    (ECS_VELOCITY_DESCRIPTOR_X_FIELD_OFFSET_SLOT, 0),
+    (ECS_VELOCITY_DESCRIPTOR_Y_FIELD_OFFSET_SLOT, 4),
+    (ECS_TIME_DESCRIPTOR_ID_SLOT, DEMO_TIME_RESOURCE_ID),
+    (ECS_TIME_DESCRIPTOR_SIZE_SLOT, 4),
+    (ECS_TIME_DESCRIPTOR_ALIGN_SLOT, 4),
+    (ECS_TIME_DESCRIPTOR_FIELD_COUNT_SLOT, 1),
+    (ECS_TIME_DESCRIPTOR_DELTA_FIELD_OFFSET_SLOT, 0),
+];
 
 const DEMO_POSITION_COMPONENT_ID: u64 = 0x002202c6aeb4f27b;
 const DEMO_VELOCITY_COMPONENT_ID: u64 = 0x2cf8a68bcb7f913b;
@@ -1148,6 +1301,7 @@ fn ecs_metadata_decoder_body(
         bytes.extend_from_slice(&[0x8b, 0x46, *byte_len_offset]); // mov eax, dword ptr [rsi + offset]
         store_rax_to_stack_slot(&mut bytes, stack_slot);
     }
+    emit_component_resource_descriptor_table_decodes(&mut bytes);
 
     bytes.extend_from_slice(&[0x8b, 0x46, ECS_STARTUP_RECORD_COUNT_OFFSET]); // mov eax, dword ptr [rsi + offset]
     store_rax_to_stack_slot(&mut bytes, ECS_STARTUP_OPERATION_COUNT_SLOT);
@@ -1167,12 +1321,7 @@ fn ecs_metadata_decoder_body(
     );
     bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
     bytes.extend_from_slice(&startup_payloads.resource_payload_offset.to_le_bytes());
-    bytes.extend_from_slice(&[
-        0x89,
-        0x44,
-        0x24,
-        ECS_RESOURCE_PAYLOAD_STORAGE_SLOT, // mov dword ptr [rsp + 40], eax
-    ]);
+    store_eax_to_stack_dword_slot(&mut bytes, ECS_RESOURCE_PAYLOAD_STORAGE_SLOT);
 
     emit_startup_operation_dispatch(
         &mut bytes,
@@ -1222,6 +1371,14 @@ fn ecs_metadata_decoder_body(
             &mut bytes,
             stack_slot,
             *expected_byte_len,
+            &mut jump_to_startup_state_failure_offsets,
+        );
+    }
+    for (stack_slot, expected) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_EXPECTED {
+        compare_stack_slot_to_u64(
+            &mut bytes,
+            stack_slot,
+            expected,
             &mut jump_to_startup_state_failure_offsets,
         );
     }
@@ -1414,7 +1571,7 @@ fn ecs_metadata_decoder_body(
         jump_from_query_loop_position_store_failure_to_done_offset + 5,
     );
 
-    let metadata_displacement = (bytes.len() + RUNTIME_DESTROY_SUFFIX.len() - 7) as i32;
+    let metadata_displacement = (bytes.len() + runtime_destroy_suffix().len() - 7) as i32;
     patch_i32(&mut bytes, 3, metadata_displacement);
 
     bytes
@@ -1422,7 +1579,7 @@ fn ecs_metadata_decoder_body(
 
 fn compare_stack_slot_to_u64(
     bytes: &mut Vec<u8>,
-    stack_slot: u8,
+    stack_slot: u16,
     expected: u64,
     jump_offsets: &mut Vec<usize>,
 ) {
@@ -1431,7 +1588,7 @@ fn compare_stack_slot_to_u64(
     if stack_slot == 0 {
         bytes.extend_from_slice(&[0x48, 0x39, 0x04, 0x24]); // cmp qword ptr [rsp], rax
     } else if stack_slot <= 127 {
-        bytes.extend_from_slice(&[0x48, 0x39, 0x44, 0x24, stack_slot]); // cmp qword ptr [rsp + slot], rax
+        bytes.extend_from_slice(&[0x48, 0x39, 0x44, 0x24, stack_slot as u8]); // cmp qword ptr [rsp + slot], rax
     } else {
         bytes.extend_from_slice(&[0x48, 0x39, 0x84, 0x24]); // cmp qword ptr [rsp + slot], rax
         bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
@@ -1446,7 +1603,7 @@ fn emit_startup_operation_dispatch(
     bytes: &mut Vec<u8>,
     operation_kind_offset: i32,
     expected_kind: u32,
-    dispatch_count_slot: u8,
+    dispatch_count_slot: u16,
     jump_offsets: &mut Vec<usize>,
 ) {
     compare_metadata_slot_to_u32(bytes, operation_kind_offset, expected_kind, jump_offsets);
@@ -1467,6 +1624,19 @@ fn compare_metadata_slot_to_u32(
     let jump_offset = bytes.len();
     bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
     jump_offsets.push(jump_offset);
+}
+
+fn emit_component_resource_descriptor_table_decodes(bytes: &mut Vec<u8>) {
+    for (metadata_offset, stack_slot) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_QWORD_LOADS {
+        bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
+        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+        store_rax_to_stack_slot(bytes, stack_slot);
+    }
+    for (metadata_offset, stack_slot) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_DWORD_LOADS {
+        bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
+        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+        store_rax_to_stack_slot(bytes, stack_slot);
+    }
 }
 
 fn emit_native_query_plan_builder(bytes: &mut Vec<u8>, scan_failure_offsets: &mut Vec<usize>) {
@@ -1595,16 +1765,28 @@ fn emit_query_loop_position_stores(bytes: &mut Vec<u8>) {
     emit_movss_rax_from_xmm(bytes, 4, 0);
 }
 
-fn emit_movss_xmm_from_stack(bytes: &mut Vec<u8>, xmm_register: u8, stack_slot: u8) {
+fn emit_movss_xmm_from_stack(bytes: &mut Vec<u8>, xmm_register: u8, stack_slot: u16) {
     bytes.extend_from_slice(&[0xf3, 0x0f, 0x10]);
-    bytes.push(0x44 | (xmm_register << 3));
-    bytes.extend_from_slice(&[0x24, stack_slot]);
+    if stack_slot <= 127 {
+        bytes.push(0x44 | (xmm_register << 3));
+        bytes.extend_from_slice(&[0x24, stack_slot as u8]);
+    } else {
+        bytes.push(0x84 | (xmm_register << 3));
+        bytes.push(0x24);
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+    }
 }
 
-fn emit_movss_stack_from_xmm(bytes: &mut Vec<u8>, stack_slot: u8, xmm_register: u8) {
+fn emit_movss_stack_from_xmm(bytes: &mut Vec<u8>, stack_slot: u16, xmm_register: u8) {
     bytes.extend_from_slice(&[0xf3, 0x0f, 0x11]);
-    bytes.push(0x44 | (xmm_register << 3));
-    bytes.extend_from_slice(&[0x24, stack_slot]);
+    if stack_slot <= 127 {
+        bytes.push(0x44 | (xmm_register << 3));
+        bytes.extend_from_slice(&[0x24, stack_slot as u8]);
+    } else {
+        bytes.push(0x84 | (xmm_register << 3));
+        bytes.push(0x24);
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+    }
 }
 
 fn emit_movss_xmm_from_rax(bytes: &mut Vec<u8>, xmm_register: u8, field_offset: u8) {
@@ -1633,31 +1815,42 @@ fn move_edi_exit_code(bytes: &mut Vec<u8>, exit_code: u8) {
     bytes.extend_from_slice(&[0xbf, exit_code, 0x00, 0x00, 0x00]); // mov edi, exit_code
 }
 
-fn store_rax_to_stack_slot(bytes: &mut Vec<u8>, stack_slot: u8) {
+fn store_rax_to_stack_slot(bytes: &mut Vec<u8>, stack_slot: u16) {
     if stack_slot == 0 {
         bytes.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]); // mov qword ptr [rsp], rax
     } else if stack_slot <= 127 {
-        bytes.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, stack_slot]); // mov qword ptr [rsp + slot], rax
+        bytes.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, stack_slot as u8]); // mov qword ptr [rsp + slot], rax
     } else {
         bytes.extend_from_slice(&[0x48, 0x89, 0x84, 0x24]); // mov qword ptr [rsp + slot], rax
         bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
     }
 }
 
-fn load_stack_slot_to_rax(bytes: &mut Vec<u8>, stack_slot: u8) {
+fn store_eax_to_stack_dword_slot(bytes: &mut Vec<u8>, stack_slot: u16) {
+    if stack_slot == 0 {
+        bytes.extend_from_slice(&[0x89, 0x04, 0x24]); // mov dword ptr [rsp], eax
+    } else if stack_slot <= 127 {
+        bytes.extend_from_slice(&[0x89, 0x44, 0x24, stack_slot as u8]); // mov dword ptr [rsp + slot], eax
+    } else {
+        bytes.extend_from_slice(&[0x89, 0x84, 0x24]); // mov dword ptr [rsp + slot], eax
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+    }
+}
+
+fn load_stack_slot_to_rax(bytes: &mut Vec<u8>, stack_slot: u16) {
     if stack_slot == 0 {
         bytes.extend_from_slice(&[0x48, 0x8b, 0x04, 0x24]); // mov rax, qword ptr [rsp]
     } else if stack_slot <= 127 {
-        bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, stack_slot]); // mov rax, qword ptr [rsp + slot]
+        bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, stack_slot as u8]); // mov rax, qword ptr [rsp + slot]
     } else {
         bytes.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]); // mov rax, qword ptr [rsp + slot]
         bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
     }
 }
 
-fn emit_lea_stack_address_to_rax(bytes: &mut Vec<u8>, stack_slot: u8) {
+fn emit_lea_stack_address_to_rax(bytes: &mut Vec<u8>, stack_slot: u16) {
     if stack_slot <= 127 {
-        bytes.extend_from_slice(&[0x48, 0x8d, 0x44, 0x24, stack_slot]); // lea rax, [rsp + slot]
+        bytes.extend_from_slice(&[0x48, 0x8d, 0x44, 0x24, stack_slot as u8]); // lea rax, [rsp + slot]
     } else {
         bytes.extend_from_slice(&[0x48, 0x8d, 0x84, 0x24]); // lea rax, [rsp + slot]
         bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
@@ -1674,15 +1867,56 @@ fn patch_i32(bytes: &mut [u8], offset: usize, value: i32) {
 }
 
 fn runtime_wrapped_payload(startup_body: &[u8]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(
-        RUNTIME_CREATE_PREFIX.len() + startup_body.len() + RUNTIME_DESTROY_SUFFIX.len(),
-    );
+    let create_prefix = runtime_create_prefix();
+    let destroy_suffix = runtime_destroy_suffix();
+    let mut bytes =
+        Vec::with_capacity(create_prefix.len() + startup_body.len() + destroy_suffix.len());
 
-    bytes.extend_from_slice(RUNTIME_CREATE_PREFIX);
+    bytes.extend_from_slice(&create_prefix);
     bytes.extend_from_slice(startup_body);
-    bytes.extend_from_slice(RUNTIME_DESTROY_SUFFIX);
+    bytes.extend_from_slice(&destroy_suffix);
 
     bytes
+}
+
+fn runtime_create_prefix() -> Vec<u8> {
+    let mut bytes = Vec::new();
+    emit_stack_frame_adjust(
+        &mut bytes,
+        0xec,
+        NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size,
+    );
+    bytes.extend_from_slice(&[0x31, 0xc0]); // xor eax, eax
+    for offset in NATIVE_ECS_EXECUTION_STATE_LAYOUT.zeroed_qword_offsets {
+        store_rax_to_stack_slot(&mut bytes, offset);
+    }
+    bytes
+}
+
+fn runtime_destroy_suffix() -> Vec<u8> {
+    let mut bytes = vec![0x31, 0xc0]; // xor eax, eax
+    for offset in NATIVE_ECS_EXECUTION_STATE_LAYOUT.zeroed_qword_offsets {
+        store_rax_to_stack_slot(&mut bytes, offset);
+    }
+    emit_stack_frame_adjust(
+        &mut bytes,
+        0xc4,
+        NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size,
+    );
+    bytes.extend_from_slice(&[
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, 60
+        0x0f, 0x05, // syscall
+    ]);
+    bytes
+}
+
+fn emit_stack_frame_adjust(bytes: &mut Vec<u8>, opcode: u8, frame_size: u16) {
+    if frame_size <= 127 {
+        bytes.extend_from_slice(&[0x48, 0x83, opcode, frame_size as u8]);
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x81, opcode]);
+        bytes.extend_from_slice(&(frame_size as u32).to_le_bytes());
+    }
 }
 
 fn immediate_exit_body(expression: &Expression) -> Result<Vec<u8>, CodegenError> {
@@ -1828,12 +2062,13 @@ mod tests {
     fn defines_native_ecs_execution_state_layout() {
         let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
 
-        assert_eq!(layout.frame_size, 256);
+        assert_eq!(layout.frame_size, 392);
         assert_eq!(
             layout.zeroed_qword_offsets,
             [
                 0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144,
-                152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248,
+                152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 264, 272,
+                280, 288, 296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384,
             ]
         );
         assert_eq!(
@@ -2009,6 +2244,85 @@ mod tests {
                 },
             }
         );
+        assert_eq!(
+            layout.component_resource_descriptors,
+            NativeComponentResourceDescriptorTableSlots {
+                position: NativeXyDescriptorSlots {
+                    id: NativeEcsSlot {
+                        offset: 256,
+                        byte_len: 8,
+                    },
+                    size: NativeEcsSlot {
+                        offset: 264,
+                        byte_len: 8,
+                    },
+                    align: NativeEcsSlot {
+                        offset: 272,
+                        byte_len: 8,
+                    },
+                    field_count: NativeEcsSlot {
+                        offset: 280,
+                        byte_len: 8,
+                    },
+                    x_field_offset: NativeEcsSlot {
+                        offset: 288,
+                        byte_len: 8,
+                    },
+                    y_field_offset: NativeEcsSlot {
+                        offset: 296,
+                        byte_len: 8,
+                    },
+                },
+                velocity: NativeXyDescriptorSlots {
+                    id: NativeEcsSlot {
+                        offset: 304,
+                        byte_len: 8,
+                    },
+                    size: NativeEcsSlot {
+                        offset: 312,
+                        byte_len: 8,
+                    },
+                    align: NativeEcsSlot {
+                        offset: 320,
+                        byte_len: 8,
+                    },
+                    field_count: NativeEcsSlot {
+                        offset: 328,
+                        byte_len: 8,
+                    },
+                    x_field_offset: NativeEcsSlot {
+                        offset: 336,
+                        byte_len: 8,
+                    },
+                    y_field_offset: NativeEcsSlot {
+                        offset: 344,
+                        byte_len: 8,
+                    },
+                },
+                time: NativeTimeDescriptorSlots {
+                    id: NativeEcsSlot {
+                        offset: 352,
+                        byte_len: 8,
+                    },
+                    size: NativeEcsSlot {
+                        offset: 360,
+                        byte_len: 8,
+                    },
+                    align: NativeEcsSlot {
+                        offset: 368,
+                        byte_len: 8,
+                    },
+                    field_count: NativeEcsSlot {
+                        offset: 376,
+                        byte_len: 8,
+                    },
+                    delta_field_offset: NativeEcsSlot {
+                        offset: 384,
+                        byte_len: 8,
+                    },
+                },
+            }
+        );
         assert_eq!(ECS_DESCRIPTOR_REGISTRY_SLOTS, [0, 8, 16, 24, 32]);
         assert_eq!(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS, [96, 112, 128, 144, 160]);
         assert_eq!(
@@ -2032,6 +2346,23 @@ mod tests {
         assert_eq!(ECS_COMPILED_SCHEDULE_ID_SLOT, 232);
         assert_eq!(ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT, 240);
         assert_eq!(ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT, 248);
+        assert_eq!(ECS_POSITION_DESCRIPTOR_ID_SLOT, 256);
+        assert_eq!(ECS_POSITION_DESCRIPTOR_SIZE_SLOT, 264);
+        assert_eq!(ECS_POSITION_DESCRIPTOR_ALIGN_SLOT, 272);
+        assert_eq!(ECS_POSITION_DESCRIPTOR_FIELD_COUNT_SLOT, 280);
+        assert_eq!(ECS_POSITION_DESCRIPTOR_X_FIELD_OFFSET_SLOT, 288);
+        assert_eq!(ECS_POSITION_DESCRIPTOR_Y_FIELD_OFFSET_SLOT, 296);
+        assert_eq!(ECS_VELOCITY_DESCRIPTOR_ID_SLOT, 304);
+        assert_eq!(ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT, 312);
+        assert_eq!(ECS_VELOCITY_DESCRIPTOR_ALIGN_SLOT, 320);
+        assert_eq!(ECS_VELOCITY_DESCRIPTOR_FIELD_COUNT_SLOT, 328);
+        assert_eq!(ECS_VELOCITY_DESCRIPTOR_X_FIELD_OFFSET_SLOT, 336);
+        assert_eq!(ECS_VELOCITY_DESCRIPTOR_Y_FIELD_OFFSET_SLOT, 344);
+        assert_eq!(ECS_TIME_DESCRIPTOR_ID_SLOT, 352);
+        assert_eq!(ECS_TIME_DESCRIPTOR_SIZE_SLOT, 360);
+        assert_eq!(ECS_TIME_DESCRIPTOR_ALIGN_SLOT, 368);
+        assert_eq!(ECS_TIME_DESCRIPTOR_FIELD_COUNT_SLOT, 376);
+        assert_eq!(ECS_TIME_DESCRIPTOR_DELTA_FIELD_OFFSET_SLOT, 384);
 
         let slots = [
             layout.descriptor_counts.components,
@@ -2066,20 +2397,52 @@ mod tests {
             layout.compiled_move.target_position_payload,
             layout.compiled_move.scanned_row_count,
             layout.compiled_move.field_product_payload,
+            layout.component_resource_descriptors.position.id,
+            layout.component_resource_descriptors.position.size,
+            layout.component_resource_descriptors.position.align,
+            layout.component_resource_descriptors.position.field_count,
+            layout
+                .component_resource_descriptors
+                .position
+                .x_field_offset,
+            layout
+                .component_resource_descriptors
+                .position
+                .y_field_offset,
+            layout.component_resource_descriptors.velocity.id,
+            layout.component_resource_descriptors.velocity.size,
+            layout.component_resource_descriptors.velocity.align,
+            layout.component_resource_descriptors.velocity.field_count,
+            layout
+                .component_resource_descriptors
+                .velocity
+                .x_field_offset,
+            layout
+                .component_resource_descriptors
+                .velocity
+                .y_field_offset,
+            layout.component_resource_descriptors.time.id,
+            layout.component_resource_descriptors.time.size,
+            layout.component_resource_descriptors.time.align,
+            layout.component_resource_descriptors.time.field_count,
+            layout
+                .component_resource_descriptors
+                .time
+                .delta_field_offset,
         ];
         for slot in slots {
             assert!(
-                u16::from(slot.offset) + u16::from(slot.byte_len) <= layout.frame_size,
+                slot.offset + slot.byte_len <= layout.frame_size,
                 "slot {:?} should fit in the native ECS frame",
                 slot
             );
         }
         for (left_index, left) in slots.iter().enumerate() {
             for right in slots.iter().skip(left_index + 1) {
-                let left_start = u16::from(left.offset);
-                let left_end = left_start + u16::from(left.byte_len);
-                let right_start = u16::from(right.offset);
-                let right_end = right_start + u16::from(right.byte_len);
+                let left_start = left.offset;
+                let left_end = left_start + left.byte_len;
+                let right_start = right.offset;
+                let right_end = right_start + right.byte_len;
                 assert!(
                     left_end <= right_start || right_end <= left_start,
                     "semantic slots should not overlap: {:?} and {:?}",
@@ -2094,11 +2457,11 @@ mod tests {
         );
 
         assert_eq!(
-            RUNTIME_CREATE_PREFIX,
+            runtime_create_prefix().as_slice(),
             expected_runtime_create_prefix(&layout).as_slice()
         );
         assert_eq!(
-            RUNTIME_DESTROY_SUFFIX,
+            runtime_destroy_suffix().as_slice(),
             expected_runtime_destroy_suffix(&layout).as_slice()
         );
     }
@@ -2173,6 +2536,125 @@ mod tests {
         assert!(
             contains_subsequence(&text, &compare_stack_slot_sequence(168, 50),),
             "generated text should validate the materialized schedule record byte length"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "generated text should preserve the compiled Move success code"
+        );
+    }
+
+    #[test]
+    fn decodes_native_component_resource_descriptor_records() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert_eq!(
+            ECS_COMPONENT_RESOURCE_DESCRIPTOR_QWORD_LOADS,
+            [
+                (112, ECS_POSITION_DESCRIPTOR_ID_SLOT),
+                (181, ECS_VELOCITY_DESCRIPTOR_ID_SLOT),
+                (250, ECS_TIME_DESCRIPTOR_ID_SLOT),
+            ]
+        );
+        assert_eq!(
+            ECS_COMPONENT_RESOURCE_DESCRIPTOR_DWORD_LOADS,
+            [
+                (137, ECS_POSITION_DESCRIPTOR_SIZE_SLOT),
+                (141, ECS_POSITION_DESCRIPTOR_ALIGN_SLOT),
+                (145, ECS_POSITION_DESCRIPTOR_FIELD_COUNT_SLOT),
+                (161, ECS_POSITION_DESCRIPTOR_X_FIELD_OFFSET_SLOT),
+                (177, ECS_POSITION_DESCRIPTOR_Y_FIELD_OFFSET_SLOT),
+                (206, ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT),
+                (210, ECS_VELOCITY_DESCRIPTOR_ALIGN_SLOT),
+                (214, ECS_VELOCITY_DESCRIPTOR_FIELD_COUNT_SLOT),
+                (230, ECS_VELOCITY_DESCRIPTOR_X_FIELD_OFFSET_SLOT),
+                (246, ECS_VELOCITY_DESCRIPTOR_Y_FIELD_OFFSET_SLOT),
+                (271, ECS_TIME_DESCRIPTOR_SIZE_SLOT),
+                (275, ECS_TIME_DESCRIPTOR_ALIGN_SLOT),
+                (279, ECS_TIME_DESCRIPTOR_FIELD_COUNT_SLOT),
+                (299, ECS_TIME_DESCRIPTOR_DELTA_FIELD_OFFSET_SLOT),
+            ]
+        );
+        assert_eq!(
+            ECS_COMPONENT_RESOURCE_DESCRIPTOR_EXPECTED,
+            [
+                (ECS_POSITION_DESCRIPTOR_ID_SLOT, DEMO_POSITION_COMPONENT_ID),
+                (ECS_POSITION_DESCRIPTOR_SIZE_SLOT, 8),
+                (ECS_POSITION_DESCRIPTOR_ALIGN_SLOT, 4),
+                (ECS_POSITION_DESCRIPTOR_FIELD_COUNT_SLOT, 2),
+                (ECS_POSITION_DESCRIPTOR_X_FIELD_OFFSET_SLOT, 0),
+                (ECS_POSITION_DESCRIPTOR_Y_FIELD_OFFSET_SLOT, 4),
+                (ECS_VELOCITY_DESCRIPTOR_ID_SLOT, DEMO_VELOCITY_COMPONENT_ID),
+                (ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT, 8),
+                (ECS_VELOCITY_DESCRIPTOR_ALIGN_SLOT, 4),
+                (ECS_VELOCITY_DESCRIPTOR_FIELD_COUNT_SLOT, 2),
+                (ECS_VELOCITY_DESCRIPTOR_X_FIELD_OFFSET_SLOT, 0),
+                (ECS_VELOCITY_DESCRIPTOR_Y_FIELD_OFFSET_SLOT, 4),
+                (ECS_TIME_DESCRIPTOR_ID_SLOT, DEMO_TIME_RESOURCE_ID),
+                (ECS_TIME_DESCRIPTOR_SIZE_SLOT, 4),
+                (ECS_TIME_DESCRIPTOR_ALIGN_SLOT, 4),
+                (ECS_TIME_DESCRIPTOR_FIELD_COUNT_SLOT, 1),
+                (ECS_TIME_DESCRIPTOR_DELTA_FIELD_OFFSET_SLOT, 0),
+            ]
+        );
+
+        for (metadata_offset, stack_slot) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_QWORD_LOADS {
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &metadata_qword_load_store_sequence(metadata_offset, stack_slot),
+                ),
+                "generated text should load descriptor qword at metadata offset {} into stack slot {}",
+                metadata_offset,
+                stack_slot
+            );
+        }
+        for (metadata_offset, stack_slot) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_DWORD_LOADS {
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &metadata_dword_disp32_load_qword_store_sequence(metadata_offset, stack_slot),
+                ),
+                "generated text should load descriptor dword at metadata offset {} into stack slot {}",
+                metadata_offset,
+                stack_slot
+            );
+        }
+        for (stack_slot, expected) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_EXPECTED {
+            assert!(
+                contains_subsequence(&text, &compare_stack_slot_sequence(stack_slot, expected),),
+                "generated text should validate descriptor stack slot {} against {}",
+                stack_slot,
+                expected
+            );
+        }
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    ECS_SPAWN_ROW_COUNT_SLOT,
+                    ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
+                ),
+            ),
+            "generated text should preserve native query-plan construction"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &metadata_qword_load_store_sequence(696, ECS_COMPILED_SCHEDULE_ID_SLOT),
+            ),
+            "generated text should preserve compiled schedule state"
         );
         assert!(
             contains_subsequence(
@@ -2826,7 +3308,7 @@ mod tests {
             .any(|window| window == needle)
     }
 
-    fn metadata_dword_load_store_sequence(metadata_offset: u8, stack_slot: u8) -> Vec<u8> {
+    fn metadata_dword_load_store_sequence(metadata_offset: u8, stack_slot: u16) -> Vec<u8> {
         let mut bytes = vec![0x8b, 0x46, metadata_offset]; // mov eax, dword ptr [rsi + offset]
         append_rax_qword_store(&mut bytes, stack_slot);
         bytes
@@ -2834,11 +3316,21 @@ mod tests {
 
     fn metadata_dword_disp32_load_dword_store_sequence(
         metadata_offset: i32,
-        stack_slot: u8,
+        stack_slot: u16,
     ) -> Vec<u8> {
         let mut bytes = vec![0x8b, 0x86]; // mov eax, dword ptr [rsi + offset]
         bytes.extend_from_slice(&metadata_offset.to_le_bytes());
-        bytes.extend_from_slice(&[0x89, 0x44, 0x24, stack_slot]);
+        append_eax_dword_store(&mut bytes, stack_slot);
+        bytes
+    }
+
+    fn metadata_dword_disp32_load_qword_store_sequence(
+        metadata_offset: i32,
+        stack_slot: u16,
+    ) -> Vec<u8> {
+        let mut bytes = vec![0x8b, 0x86]; // mov eax, dword ptr [rsi + offset]
+        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+        append_rax_qword_store(&mut bytes, stack_slot);
         bytes
     }
 
@@ -2850,34 +3342,34 @@ mod tests {
         bytes
     }
 
-    fn metadata_qword_load_store_sequence(metadata_offset: i32, stack_slot: u8) -> Vec<u8> {
+    fn metadata_qword_load_store_sequence(metadata_offset: i32, stack_slot: u16) -> Vec<u8> {
         let mut bytes = vec![0x48, 0x8b, 0x86]; // mov rax, qword ptr [rsi + offset]
         bytes.extend_from_slice(&metadata_offset.to_le_bytes());
         append_rax_qword_store(&mut bytes, stack_slot);
         bytes
     }
 
-    fn mov_eax_one_store_sequence(stack_slot: u8) -> Vec<u8> {
+    fn mov_eax_one_store_sequence(stack_slot: u16) -> Vec<u8> {
         let mut bytes = vec![0xb8, 0x01, 0x00, 0x00, 0x00]; // mov eax, 1
         append_rax_qword_store(&mut bytes, stack_slot);
         bytes
     }
 
-    fn mov_rax_immediate_store_sequence(value: u64, stack_slot: u8) -> Vec<u8> {
+    fn mov_rax_immediate_store_sequence(value: u64, stack_slot: u16) -> Vec<u8> {
         let mut bytes = vec![0x48, 0xb8]; // mov rax, imm64
         bytes.extend_from_slice(&value.to_le_bytes());
         append_rax_qword_store(&mut bytes, stack_slot);
         bytes
     }
 
-    fn load_store_stack_slot_sequence(load_slot: u8, store_slot: u8) -> Vec<u8> {
+    fn load_store_stack_slot_sequence(load_slot: u16, store_slot: u16) -> Vec<u8> {
         let mut bytes = Vec::new();
         append_load_stack_slot_to_rax(&mut bytes, load_slot);
         append_rax_qword_store(&mut bytes, store_slot);
         bytes
     }
 
-    fn lea_stack_address_store_sequence(source_slot: u8, store_slot: u8) -> Vec<u8> {
+    fn lea_stack_address_store_sequence(source_slot: u16, store_slot: u16) -> Vec<u8> {
         let mut bytes = Vec::new();
         append_lea_stack_address_to_rax(&mut bytes, source_slot);
         append_rax_qword_store(&mut bytes, store_slot);
@@ -2885,65 +3377,40 @@ mod tests {
     }
 
     fn query_plan_component_field_multiply_sequence(
-        address_slot: u8,
+        address_slot: u16,
         field_offset: u8,
-        product_slot: u8,
+        product_slot: u16,
     ) -> Vec<u8> {
         let mut bytes = Vec::new();
         append_load_stack_slot_to_rax(&mut bytes, address_slot);
         append_movss_xmm_from_rax(&mut bytes, 0, field_offset);
-        bytes.extend_from_slice(&[
-            0xf3,
-            0x0f,
-            0x10,
-            0x4c,
-            0x24,
-            ECS_RESOURCE_PAYLOAD_STORAGE_SLOT, // movss xmm1, dword ptr [rsp + 40]
-            0xf3,
-            0x0f,
-            0x59,
-            0xc1, // mulss xmm0, xmm1
-            0xf3,
-            0x0f,
-            0x11,
-            0x44,
-            0x24,
-            product_slot, // movss dword ptr [rsp + product slot], xmm0
-        ]);
+        append_movss_xmm_from_stack(&mut bytes, 1, ECS_RESOURCE_PAYLOAD_STORAGE_SLOT);
+        bytes.extend_from_slice(&[0xf3, 0x0f, 0x59, 0xc1]); // mulss xmm0, xmm1
+        append_movss_stack_from_xmm(&mut bytes, product_slot, 0);
         bytes
     }
 
     fn query_plan_position_store_sequence(
-        address_slot: u8,
+        address_slot: u16,
         field_offset: u8,
-        product_slot: u8,
+        product_slot: u16,
     ) -> Vec<u8> {
         let mut bytes = Vec::new();
         append_load_stack_slot_to_rax(&mut bytes, address_slot);
         append_movss_xmm_from_rax(&mut bytes, 0, field_offset);
-        bytes.extend_from_slice(&[
-            0xf3,
-            0x0f,
-            0x10,
-            0x4c,
-            0x24,
-            product_slot, // movss xmm1, dword ptr [rsp + product slot]
-            0xf3,
-            0x0f,
-            0x58,
-            0xc1, // addss xmm0, xmm1
-        ]);
+        append_movss_xmm_from_stack(&mut bytes, 1, product_slot);
+        bytes.extend_from_slice(&[0xf3, 0x0f, 0x58, 0xc1]); // addss xmm0, xmm1
         append_movss_rax_from_xmm(&mut bytes, field_offset, 0);
         bytes
     }
 
-    fn compare_stack_slot_sequence(stack_slot: u8, expected: u64) -> Vec<u8> {
+    fn compare_stack_slot_sequence(stack_slot: u16, expected: u64) -> Vec<u8> {
         let mut bytes = vec![0x48, 0xb8]; // mov rax, imm64
         bytes.extend_from_slice(&expected.to_le_bytes());
         if stack_slot == 0 {
             bytes.extend_from_slice(&[0x48, 0x39, 0x04, 0x24]);
         } else if stack_slot <= 127 {
-            bytes.extend_from_slice(&[0x48, 0x39, 0x44, 0x24, stack_slot]);
+            bytes.extend_from_slice(&[0x48, 0x39, 0x44, 0x24, stack_slot as u8]);
         } else {
             bytes.extend_from_slice(&[0x48, 0x39, 0x84, 0x24]);
             bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
@@ -2984,38 +3451,73 @@ mod tests {
         bytes
     }
 
-    fn append_zero_qword_store(bytes: &mut Vec<u8>, offset: u8) {
+    fn append_zero_qword_store(bytes: &mut Vec<u8>, offset: u16) {
         append_rax_qword_store(bytes, offset);
     }
 
-    fn append_rax_qword_store(bytes: &mut Vec<u8>, offset: u8) {
+    fn append_rax_qword_store(bytes: &mut Vec<u8>, offset: u16) {
         if offset == 0 {
             bytes.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]);
         } else if offset <= 127 {
-            bytes.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset]);
+            bytes.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset as u8]);
         } else {
             bytes.extend_from_slice(&[0x48, 0x89, 0x84, 0x24]);
             bytes.extend_from_slice(&(offset as u32).to_le_bytes());
         }
     }
 
-    fn append_load_stack_slot_to_rax(bytes: &mut Vec<u8>, offset: u8) {
+    fn append_eax_dword_store(bytes: &mut Vec<u8>, offset: u16) {
+        if offset == 0 {
+            bytes.extend_from_slice(&[0x89, 0x04, 0x24]);
+        } else if offset <= 127 {
+            bytes.extend_from_slice(&[0x89, 0x44, 0x24, offset as u8]);
+        } else {
+            bytes.extend_from_slice(&[0x89, 0x84, 0x24]);
+            bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+        }
+    }
+
+    fn append_load_stack_slot_to_rax(bytes: &mut Vec<u8>, offset: u16) {
         if offset == 0 {
             bytes.extend_from_slice(&[0x48, 0x8b, 0x04, 0x24]);
         } else if offset <= 127 {
-            bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, offset]);
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, offset as u8]);
         } else {
             bytes.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]);
             bytes.extend_from_slice(&(offset as u32).to_le_bytes());
         }
     }
 
-    fn append_lea_stack_address_to_rax(bytes: &mut Vec<u8>, offset: u8) {
+    fn append_lea_stack_address_to_rax(bytes: &mut Vec<u8>, offset: u16) {
         if offset <= 127 {
-            bytes.extend_from_slice(&[0x48, 0x8d, 0x44, 0x24, offset]);
+            bytes.extend_from_slice(&[0x48, 0x8d, 0x44, 0x24, offset as u8]);
         } else {
             bytes.extend_from_slice(&[0x48, 0x8d, 0x84, 0x24]);
             bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+        }
+    }
+
+    fn append_movss_xmm_from_stack(bytes: &mut Vec<u8>, xmm_register: u8, stack_slot: u16) {
+        bytes.extend_from_slice(&[0xf3, 0x0f, 0x10]);
+        if stack_slot <= 127 {
+            bytes.push(0x44 | (xmm_register << 3));
+            bytes.extend_from_slice(&[0x24, stack_slot as u8]);
+        } else {
+            bytes.push(0x84 | (xmm_register << 3));
+            bytes.push(0x24);
+            bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+        }
+    }
+
+    fn append_movss_stack_from_xmm(bytes: &mut Vec<u8>, stack_slot: u16, xmm_register: u8) {
+        bytes.extend_from_slice(&[0xf3, 0x0f, 0x11]);
+        if stack_slot <= 127 {
+            bytes.push(0x44 | (xmm_register << 3));
+            bytes.extend_from_slice(&[0x24, stack_slot as u8]);
+        } else {
+            bytes.push(0x84 | (xmm_register << 3));
+            bytes.push(0x24);
+            bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
         }
     }
 
