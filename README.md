@@ -87,8 +87,9 @@ The proof chain currently demonstrates:
 - Native compiled schedule state for dispatching `Demo.Main` into compiled `Demo.Move`.
 - Native component/resource descriptor-table decoding from embedded `ARCHEECS` records.
 - Native system/query/schedule descriptor-table decoding from embedded `ARCHEECS` records.
+- Native startup operation table materialization from embedded `ARCHEECS` records.
 
-M20 native ECS descriptor-table work is underway. The next proof is building the native startup operation table from metadata.
+M20 native ECS descriptor-table work is underway. The next proof is building native query plans from decoded descriptor records.
 
 ## What This Is Not Yet
 

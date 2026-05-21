@@ -466,12 +466,12 @@ function Add-ZeroQwordStore {
 }
 
 function New-RuntimeStateQwordOffsets {
-    @(0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 264, 272, 280, 288, 296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384, 392, 400, 408, 416, 424, 432, 440, 448, 456, 464, 472, 480, 488, 496, 504, 512, 520, 528, 536, 544)
+    0..82 | ForEach-Object { $_ * 8 }
 }
 
 function New-RuntimeCreatePrefix {
     $bytes = [System.Collections.Generic.List[byte]]::new()
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 552
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 664
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
@@ -485,7 +485,7 @@ function New-RuntimeDestroySuffix {
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
     }
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 552
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 664
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05))
     [byte[]]$bytes.ToArray()
 }
@@ -863,6 +863,44 @@ function Test-CorruptEcsScheduleDescriptorRecord {
     Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
 }
 
+function Test-CorruptEcsStartupResourceId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_startup_resource_id"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $resourceIdOffset = $metadataStart + 581
+    Assert-Equal -Name "ECS startup resource id first byte before corruption" -Actual $bytes[$resourceIdOffset] -Expected 0x21
+    $bytes[$resourceIdOffset] = 0x22
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+}
+
+function Test-CorruptEcsStartupSpawnComponentCount {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_startup_spawn_count"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $componentCountOffset = $metadataStart + 614
+    Assert-Equal -Name "ECS startup spawn component count before corruption" -Actual $bytes[$componentCountOffset] -Expected 0x02
+    $bytes[$componentCountOffset] = 0x03
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+}
+
 function Test-CorruptEcsStartupOperationKind {
     param(
         [Parameter(Mandatory = $true)]
@@ -1051,6 +1089,11 @@ try {
         -Name "dispatches_native_startup_operations" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "dispatches_native_startup_operations")
+
+    Invoke-CheckedCommand `
+        -Name "materializes_native_startup_operation_table" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_startup_operation_table")
 
     Invoke-CheckedCommand `
         -Name "materializes_native_query_planning_state" `
@@ -1775,6 +1818,8 @@ try {
     Test-CorruptEcsSystemDescriptorRecord -Path ".\build\move_system"
     Test-CorruptEcsQueryDescriptorRecord -Path ".\build\move_system"
     Test-CorruptEcsScheduleDescriptorRecord -Path ".\build\move_system"
+    Test-CorruptEcsStartupResourceId -Path ".\build\move_system"
+    Test-CorruptEcsStartupSpawnComponentCount -Path ".\build\move_system"
     Test-CorruptEcsStartupOperationKind -Path ".\build\move_system"
     Test-CorruptEcsResourcePayload -Path ".\build\move_system"
     Test-CorruptEcsSpawnPayload -Path ".\build\move_system"
