@@ -977,6 +977,44 @@ function Test-CorruptEcsStartupOperationKind {
     Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 21
 }
 
+function Test-CorruptEcsStartupSpawnOperationKind {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_startup_spawn_operation_kind"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $operationKindOffset = $metadataStart + 610
+    Assert-Equal -Name "ECS startup op 1 kind before corruption" -Actual $bytes[$operationKindOffset] -Expected 0x02
+    $bytes[$operationKindOffset] = 0x09
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 21
+}
+
+function Test-CorruptEcsStartupRunOperationKind {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_startup_run_operation_kind"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $operationKindOffset = $metadataStart + 692
+    Assert-Equal -Name "ECS startup op 2 kind before corruption" -Actual $bytes[$operationKindOffset] -Expected 0x03
+    $bytes[$operationKindOffset] = 0x09
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 21
+}
+
 function Test-CorruptEcsResourcePayload {
     param(
         [Parameter(Mandatory = $true)]
@@ -1156,6 +1194,11 @@ try {
         -Name "dispatches_native_startup_operations" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "dispatches_native_startup_operations")
+
+    Invoke-CheckedCommand `
+        -Name "iterates_native_startup_operation_table_generically" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "iterates_native_startup_operation_table_generically")
 
     Invoke-CheckedCommand `
         -Name "materializes_native_startup_operation_table" `
@@ -1901,6 +1944,8 @@ try {
     Test-CorruptEcsStartupResourceId -Path ".\build\move_system"
     Test-CorruptEcsStartupSpawnComponentCount -Path ".\build\move_system"
     Test-CorruptEcsStartupOperationKind -Path ".\build\move_system"
+    Test-CorruptEcsStartupSpawnOperationKind -Path ".\build\move_system"
+    Test-CorruptEcsStartupRunOperationKind -Path ".\build\move_system"
     Test-CorruptEcsResourcePayload -Path ".\build\move_system"
     Test-CorruptEcsSpawnPayload -Path ".\build\move_system"
     Test-CorruptEcsRunSchedule -Path ".\build\move_system"

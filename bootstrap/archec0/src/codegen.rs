@@ -277,6 +277,21 @@ struct NativeStartupOperationTableModel {
     run_schedule_rows: [NativeRunScheduleStartupOperationSlots; 1],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeStartupOperationHandler {
+    ResourcePayload,
+    Spawn,
+    RunSchedule,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeStartupOperationDispatchRow {
+    handler: NativeStartupOperationHandler,
+    expected_kind: u32,
+    kind_slot: u16,
+    dispatch_count_slot: u16,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeCompiledScheduleTableModel {
@@ -1596,18 +1611,10 @@ const ECS_STARTUP_OPERATION_TABLE_PAYLOAD_OFFSETS: [(u64, u16); 3] = [
     (647, ECS_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT),
     (684, ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT),
 ];
-const ECS_STARTUP_OPERATION_TABLE_EXPECTED: [(u16, u64); 13] = [
-    (
-        ECS_STARTUP_TABLE_RESOURCE_KIND_SLOT,
-        ECS_STARTUP_OP_RESOURCE_PAYLOAD as u64,
-    ),
+const ECS_STARTUP_OPERATION_TABLE_EXPECTED: [(u16, u64); 10] = [
     (ECS_STARTUP_TABLE_RESOURCE_ID_SLOT, DEMO_TIME_RESOURCE_ID),
     (ECS_STARTUP_TABLE_RESOURCE_PAYLOAD_OFFSET_SLOT, 606),
     (ECS_STARTUP_TABLE_RESOURCE_PAYLOAD_LEN_SLOT, 4),
-    (
-        ECS_STARTUP_TABLE_SPAWN_KIND_SLOT,
-        ECS_STARTUP_OP_SPAWN as u64,
-    ),
     (ECS_STARTUP_TABLE_SPAWN_COMPONENT_COUNT_SLOT, 2),
     (
         ECS_STARTUP_TABLE_POSITION_COMPONENT_ID_SLOT,
@@ -1621,10 +1628,26 @@ const ECS_STARTUP_OPERATION_TABLE_EXPECTED: [(u16, u64); 13] = [
     ),
     (ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT, 684),
     (ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_LEN_SLOT, 8),
-    (
-        ECS_STARTUP_TABLE_RUN_SCHEDULE_KIND_SLOT,
-        ECS_STARTUP_OP_RUN_SCHEDULE as u64,
-    ),
+];
+const ECS_STARTUP_OPERATION_DISPATCH_ROWS: [NativeStartupOperationDispatchRow; 3] = [
+    NativeStartupOperationDispatchRow {
+        handler: NativeStartupOperationHandler::ResourcePayload,
+        expected_kind: ECS_STARTUP_OP_RESOURCE_PAYLOAD,
+        kind_slot: ECS_STARTUP_TABLE_RESOURCE_KIND_SLOT,
+        dispatch_count_slot: ECS_STARTUP_RESOURCE_DISPATCH_COUNT_SLOT,
+    },
+    NativeStartupOperationDispatchRow {
+        handler: NativeStartupOperationHandler::Spawn,
+        expected_kind: ECS_STARTUP_OP_SPAWN,
+        kind_slot: ECS_STARTUP_TABLE_SPAWN_KIND_SLOT,
+        dispatch_count_slot: ECS_STARTUP_SPAWN_DISPATCH_COUNT_SLOT,
+    },
+    NativeStartupOperationDispatchRow {
+        handler: NativeStartupOperationHandler::RunSchedule,
+        expected_kind: ECS_STARTUP_OP_RUN_SCHEDULE,
+        kind_slot: ECS_STARTUP_TABLE_RUN_SCHEDULE_KIND_SLOT,
+        dispatch_count_slot: ECS_STARTUP_RUN_SCHEDULE_DISPATCH_COUNT_SLOT,
+    },
 ];
 const ECS_RESOURCE_STARTUP_DESCRIPTOR_RELATIONS: [(u16, u16); 2] = [
     (
@@ -2503,185 +2526,11 @@ fn ecs_metadata_decoder_body(
     emit_descriptor_name_table_decodes(&mut bytes, &mut jump_to_startup_state_failure_offsets);
     emit_startup_operation_table_decodes(&mut bytes);
 
-    bytes.extend_from_slice(&[0x8b, 0x46, ECS_STARTUP_RECORD_COUNT_OFFSET]); // mov eax, dword ptr [rsi + offset]
-    store_rax_to_stack_slot(&mut bytes, ECS_STARTUP_OPERATION_COUNT_SLOT);
-    compare_stack_slot_to_u64(
+    emit_native_startup_operation_table_iteration(
         &mut bytes,
-        ECS_STARTUP_OPERATION_COUNT_SLOT,
-        startup_payloads.startup_record_count as u64,
-        &mut jump_to_run_schedule_dispatch_failure_offsets,
-    );
-
-    emit_startup_operation_dispatch(
-        &mut bytes,
-        ECS_STARTUP_TABLE_RESOURCE_KIND_SLOT,
-        ECS_STARTUP_OP_RESOURCE_PAYLOAD,
-        ECS_STARTUP_RESOURCE_DISPATCH_COUNT_SLOT,
-        &mut jump_to_run_schedule_dispatch_failure_offsets,
-    );
-    for (startup_table_slot, descriptor_slot) in ECS_RESOURCE_STARTUP_DESCRIPTOR_RELATIONS {
-        compare_stack_slots_equal(
-            &mut bytes,
-            startup_table_slot,
-            descriptor_slot,
-            &mut jump_to_startup_state_failure_offsets,
-        );
-    }
-    load_metadata_dword_via_offset_slot(
-        &mut bytes,
-        ECS_STARTUP_TABLE_RESOURCE_PAYLOAD_OFFSET_SLOT,
-        ECS_RESOURCE_PAYLOAD_STORAGE_SLOT,
-    );
-
-    emit_startup_operation_dispatch(
-        &mut bytes,
-        ECS_STARTUP_TABLE_SPAWN_KIND_SLOT,
-        ECS_STARTUP_OP_SPAWN,
-        ECS_STARTUP_SPAWN_DISPATCH_COUNT_SLOT,
-        &mut jump_to_run_schedule_dispatch_failure_offsets,
-    );
-    for (startup_table_slot, descriptor_slot) in ECS_SPAWN_STARTUP_DESCRIPTOR_RELATIONS {
-        compare_stack_slots_equal(
-            &mut bytes,
-            startup_table_slot,
-            descriptor_slot,
-            &mut jump_to_startup_state_failure_offsets,
-        );
-    }
-    bytes.extend_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00]); // mov eax, 1
-    store_rax_to_stack_slot(&mut bytes, ECS_SPAWN_ROW_COUNT_SLOT);
-
-    load_metadata_qword_via_offset_slot(
-        &mut bytes,
-        ECS_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT,
-        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
-    );
-    load_metadata_qword_via_offset_slot(
-        &mut bytes,
-        ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT,
-        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
-    );
-
-    for (expected_count, stack_slot) in ECS_EXPECTED_DESCRIPTOR_COUNTS
-        .iter()
-        .zip(ECS_DESCRIPTOR_REGISTRY_SLOTS)
-    {
-        compare_stack_slot_to_u64(
-            &mut bytes,
-            stack_slot,
-            *expected_count,
-            &mut jump_to_startup_state_failure_offsets,
-        );
-    }
-    for (expected_offset, stack_slot) in ECS_EXPECTED_DESCRIPTOR_RECORD_OFFSETS
-        .iter()
-        .zip(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS)
-    {
-        compare_stack_slot_to_u64(
-            &mut bytes,
-            stack_slot,
-            *expected_offset,
-            &mut jump_to_startup_state_failure_offsets,
-        );
-    }
-    for (expected_byte_len, stack_slot) in ECS_EXPECTED_DESCRIPTOR_RECORD_BYTE_LENS
-        .iter()
-        .zip(ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS)
-    {
-        compare_stack_slot_to_u64(
-            &mut bytes,
-            stack_slot,
-            *expected_byte_len,
-            &mut jump_to_startup_state_failure_offsets,
-        );
-    }
-    for (stack_slot, expected) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_EXPECTED {
-        compare_stack_slot_to_u64(
-            &mut bytes,
-            stack_slot,
-            expected,
-            &mut jump_to_startup_state_failure_offsets,
-        );
-    }
-    for (stack_slot, expected) in ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_EXPECTED {
-        compare_stack_slot_to_u64(
-            &mut bytes,
-            stack_slot,
-            expected,
-            &mut jump_to_startup_state_failure_offsets,
-        );
-    }
-    for (stack_slot, expected) in ECS_STARTUP_OPERATION_TABLE_EXPECTED {
-        compare_stack_slot_to_u64(
-            &mut bytes,
-            stack_slot,
-            expected,
-            &mut jump_to_startup_state_failure_offsets,
-        );
-    }
-    compare_stack_slot_to_u64(
-        &mut bytes,
-        ECS_RESOURCE_PAYLOAD_STORAGE_SLOT,
-        u64::from(u32::from_le_bytes(startup_payloads.resource_payload)),
-        &mut jump_to_startup_state_failure_offsets,
-    );
-    compare_stack_slot_to_u64(
-        &mut bytes,
-        ECS_SPAWN_ROW_COUNT_SLOT,
-        1,
-        &mut jump_to_startup_state_failure_offsets,
-    );
-    compare_stack_slot_to_u64(
-        &mut bytes,
-        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
-        u64::from_le_bytes(startup_payloads.position_payload),
-        &mut jump_to_startup_state_failure_offsets,
-    );
-    compare_stack_slot_to_u64(
-        &mut bytes,
-        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
-        u64::from_le_bytes(startup_payloads.velocity_payload),
-        &mut jump_to_startup_state_failure_offsets,
-    );
-
-    compare_stack_slot_to_u64(
-        &mut bytes,
-        ECS_STARTUP_RESOURCE_DISPATCH_COUNT_SLOT,
-        1,
-        &mut jump_to_run_schedule_dispatch_failure_offsets,
-    );
-    compare_stack_slot_to_u64(
-        &mut bytes,
-        ECS_STARTUP_SPAWN_DISPATCH_COUNT_SLOT,
-        1,
-        &mut jump_to_run_schedule_dispatch_failure_offsets,
-    );
-    bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, target Position payload
-    bytes.extend_from_slice(&query_loop_observable.target_position_payload);
-    store_rax_to_stack_slot(&mut bytes, ECS_QUERY_LOOP_TARGET_POSITION_SLOT);
-    compare_stack_slot_to_u64(
-        &mut bytes,
-        ECS_QUERY_LOOP_TARGET_POSITION_SLOT,
-        u64::from_le_bytes(query_loop_observable.target_position_payload),
-        &mut jump_to_startup_state_failure_offsets,
-    );
-
-    emit_startup_operation_dispatch(
-        &mut bytes,
-        ECS_STARTUP_TABLE_RUN_SCHEDULE_KIND_SLOT,
-        ECS_STARTUP_OP_RUN_SCHEDULE,
-        ECS_STARTUP_RUN_SCHEDULE_DISPATCH_COUNT_SLOT,
-        &mut jump_to_run_schedule_dispatch_failure_offsets,
-    );
-    compare_stack_slot_to_u64(
-        &mut bytes,
-        ECS_STARTUP_RUN_SCHEDULE_DISPATCH_COUNT_SLOT,
-        1,
-        &mut jump_to_run_schedule_dispatch_failure_offsets,
-    );
-    emit_compiled_demo_main_schedule(
-        &mut bytes,
+        &startup_payloads,
         &query_loop_observable,
+        &mut jump_to_startup_state_failure_offsets,
         &mut jump_to_query_loop_scan_failure_offsets,
         &mut jump_to_query_loop_field_math_failure_offsets,
         &mut jump_to_query_loop_position_store_failure_offsets,
@@ -2871,6 +2720,216 @@ fn emit_startup_operation_dispatch(
     );
     bytes.extend_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00]); // mov eax, 1
     store_rax_to_stack_slot(bytes, dispatch_count_slot);
+}
+
+fn emit_native_startup_operation_table_iteration(
+    bytes: &mut Vec<u8>,
+    startup_payloads: &EcsStartupPayloads,
+    query_loop_observable: &NativeMoveQueryLoopObservable,
+    startup_state_failure_offsets: &mut Vec<usize>,
+    scan_failure_offsets: &mut Vec<usize>,
+    field_math_failure_offsets: &mut Vec<usize>,
+    position_store_failure_offsets: &mut Vec<usize>,
+    dispatch_failure_offsets: &mut Vec<usize>,
+) {
+    bytes.extend_from_slice(&[0x8b, 0x46, ECS_STARTUP_RECORD_COUNT_OFFSET]); // mov eax, dword ptr [rsi + offset]
+    store_rax_to_stack_slot(bytes, ECS_STARTUP_OPERATION_COUNT_SLOT);
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_STARTUP_OPERATION_COUNT_SLOT,
+        startup_payloads.startup_record_count as u64,
+        dispatch_failure_offsets,
+    );
+
+    for row in ECS_STARTUP_OPERATION_DISPATCH_ROWS {
+        emit_startup_operation_dispatch_row(bytes, row, dispatch_failure_offsets);
+        match row.handler {
+            NativeStartupOperationHandler::ResourcePayload => {
+                emit_resource_payload_startup_operation_handler(
+                    bytes,
+                    startup_state_failure_offsets,
+                )
+            }
+            NativeStartupOperationHandler::Spawn => {
+                emit_spawn_startup_operation_handler(bytes, startup_state_failure_offsets)
+            }
+            NativeStartupOperationHandler::RunSchedule => {
+                emit_run_schedule_startup_operation_handler(
+                    bytes,
+                    startup_payloads,
+                    query_loop_observable,
+                    startup_state_failure_offsets,
+                    scan_failure_offsets,
+                    field_math_failure_offsets,
+                    position_store_failure_offsets,
+                    dispatch_failure_offsets,
+                )
+            }
+        }
+    }
+}
+
+fn emit_startup_operation_dispatch_row(
+    bytes: &mut Vec<u8>,
+    row: NativeStartupOperationDispatchRow,
+    jump_offsets: &mut Vec<usize>,
+) {
+    emit_startup_operation_dispatch(
+        bytes,
+        row.kind_slot,
+        row.expected_kind,
+        row.dispatch_count_slot,
+        jump_offsets,
+    );
+}
+
+fn emit_resource_payload_startup_operation_handler(
+    bytes: &mut Vec<u8>,
+    jump_offsets: &mut Vec<usize>,
+) {
+    for (startup_table_slot, descriptor_slot) in ECS_RESOURCE_STARTUP_DESCRIPTOR_RELATIONS {
+        compare_stack_slots_equal(bytes, startup_table_slot, descriptor_slot, jump_offsets);
+    }
+    load_metadata_dword_via_offset_slot(
+        bytes,
+        ECS_STARTUP_TABLE_RESOURCE_PAYLOAD_OFFSET_SLOT,
+        ECS_RESOURCE_PAYLOAD_STORAGE_SLOT,
+    );
+}
+
+fn emit_spawn_startup_operation_handler(bytes: &mut Vec<u8>, jump_offsets: &mut Vec<usize>) {
+    for (startup_table_slot, descriptor_slot) in ECS_SPAWN_STARTUP_DESCRIPTOR_RELATIONS {
+        compare_stack_slots_equal(bytes, startup_table_slot, descriptor_slot, jump_offsets);
+    }
+    bytes.extend_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00]); // mov eax, 1
+    store_rax_to_stack_slot(bytes, ECS_SPAWN_ROW_COUNT_SLOT);
+
+    load_metadata_qword_via_offset_slot(
+        bytes,
+        ECS_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT,
+        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+    );
+    load_metadata_qword_via_offset_slot(
+        bytes,
+        ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT,
+        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+    );
+}
+
+fn emit_run_schedule_startup_operation_handler(
+    bytes: &mut Vec<u8>,
+    startup_payloads: &EcsStartupPayloads,
+    query_loop_observable: &NativeMoveQueryLoopObservable,
+    startup_state_failure_offsets: &mut Vec<usize>,
+    scan_failure_offsets: &mut Vec<usize>,
+    field_math_failure_offsets: &mut Vec<usize>,
+    position_store_failure_offsets: &mut Vec<usize>,
+    dispatch_failure_offsets: &mut Vec<usize>,
+) {
+    emit_startup_operation_state_validations(
+        bytes,
+        startup_payloads,
+        query_loop_observable,
+        startup_state_failure_offsets,
+        dispatch_failure_offsets,
+    );
+    emit_compiled_demo_main_schedule(
+        bytes,
+        query_loop_observable,
+        scan_failure_offsets,
+        field_math_failure_offsets,
+        position_store_failure_offsets,
+        dispatch_failure_offsets,
+    );
+}
+
+fn emit_startup_operation_state_validations(
+    bytes: &mut Vec<u8>,
+    startup_payloads: &EcsStartupPayloads,
+    query_loop_observable: &NativeMoveQueryLoopObservable,
+    startup_state_failure_offsets: &mut Vec<usize>,
+    dispatch_failure_offsets: &mut Vec<usize>,
+) {
+    for (expected_count, stack_slot) in ECS_EXPECTED_DESCRIPTOR_COUNTS
+        .iter()
+        .zip(ECS_DESCRIPTOR_REGISTRY_SLOTS)
+    {
+        compare_stack_slot_to_u64(
+            bytes,
+            stack_slot,
+            *expected_count,
+            startup_state_failure_offsets,
+        );
+    }
+    for (expected_offset, stack_slot) in ECS_EXPECTED_DESCRIPTOR_RECORD_OFFSETS
+        .iter()
+        .zip(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS)
+    {
+        compare_stack_slot_to_u64(
+            bytes,
+            stack_slot,
+            *expected_offset,
+            startup_state_failure_offsets,
+        );
+    }
+    for (expected_byte_len, stack_slot) in ECS_EXPECTED_DESCRIPTOR_RECORD_BYTE_LENS
+        .iter()
+        .zip(ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS)
+    {
+        compare_stack_slot_to_u64(
+            bytes,
+            stack_slot,
+            *expected_byte_len,
+            startup_state_failure_offsets,
+        );
+    }
+    for (stack_slot, expected) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_EXPECTED {
+        compare_stack_slot_to_u64(bytes, stack_slot, expected, startup_state_failure_offsets);
+    }
+    for (stack_slot, expected) in ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_EXPECTED {
+        compare_stack_slot_to_u64(bytes, stack_slot, expected, startup_state_failure_offsets);
+    }
+    for (stack_slot, expected) in ECS_STARTUP_OPERATION_TABLE_EXPECTED {
+        compare_stack_slot_to_u64(bytes, stack_slot, expected, startup_state_failure_offsets);
+    }
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_RESOURCE_PAYLOAD_STORAGE_SLOT,
+        u64::from(u32::from_le_bytes(startup_payloads.resource_payload)),
+        startup_state_failure_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_SPAWN_ROW_COUNT_SLOT,
+        1,
+        startup_state_failure_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+        u64::from_le_bytes(startup_payloads.position_payload),
+        startup_state_failure_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+        u64::from_le_bytes(startup_payloads.velocity_payload),
+        startup_state_failure_offsets,
+    );
+
+    for row in ECS_STARTUP_OPERATION_DISPATCH_ROWS {
+        compare_stack_slot_to_u64(bytes, row.dispatch_count_slot, 1, dispatch_failure_offsets);
+    }
+
+    bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, target Position payload
+    bytes.extend_from_slice(&query_loop_observable.target_position_payload);
+    store_rax_to_stack_slot(bytes, ECS_QUERY_LOOP_TARGET_POSITION_SLOT);
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_QUERY_LOOP_TARGET_POSITION_SLOT,
+        u64::from_le_bytes(query_loop_observable.target_position_payload),
+        startup_state_failure_offsets,
+    );
 }
 
 fn emit_component_resource_descriptor_table_decodes(bytes: &mut Vec<u8>) {
@@ -5630,6 +5689,140 @@ mod tests {
     }
 
     #[test]
+    fn iterates_native_startup_operation_table_generically() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        assert_eq!(
+            ECS_STARTUP_OPERATION_DISPATCH_ROWS,
+            [
+                NativeStartupOperationDispatchRow {
+                    handler: NativeStartupOperationHandler::ResourcePayload,
+                    expected_kind: ECS_STARTUP_OP_RESOURCE_PAYLOAD,
+                    kind_slot: ECS_STARTUP_TABLE_RESOURCE_KIND_SLOT,
+                    dispatch_count_slot: ECS_STARTUP_RESOURCE_DISPATCH_COUNT_SLOT,
+                },
+                NativeStartupOperationDispatchRow {
+                    handler: NativeStartupOperationHandler::Spawn,
+                    expected_kind: ECS_STARTUP_OP_SPAWN,
+                    kind_slot: ECS_STARTUP_TABLE_SPAWN_KIND_SLOT,
+                    dispatch_count_slot: ECS_STARTUP_SPAWN_DISPATCH_COUNT_SLOT,
+                },
+                NativeStartupOperationDispatchRow {
+                    handler: NativeStartupOperationHandler::RunSchedule,
+                    expected_kind: ECS_STARTUP_OP_RUN_SCHEDULE,
+                    kind_slot: ECS_STARTUP_TABLE_RUN_SCHEDULE_KIND_SLOT,
+                    dispatch_count_slot: ECS_STARTUP_RUN_SCHEDULE_DISPATCH_COUNT_SLOT,
+                },
+            ]
+        );
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert!(
+            contains_ordered_subsequences(
+                &text,
+                &[
+                    compare_stack_slot_sequence(
+                        ECS_STARTUP_TABLE_RESOURCE_KIND_SLOT,
+                        ECS_STARTUP_OP_RESOURCE_PAYLOAD as u64,
+                    ),
+                    metadata_dword_via_offset_slot_to_dword_store_sequence(
+                        ECS_STARTUP_TABLE_RESOURCE_PAYLOAD_OFFSET_SLOT,
+                        ECS_RESOURCE_PAYLOAD_STORAGE_SLOT,
+                    ),
+                    compare_stack_slot_sequence(
+                        ECS_STARTUP_TABLE_SPAWN_KIND_SLOT,
+                        ECS_STARTUP_OP_SPAWN as u64,
+                    ),
+                    mov_eax_one_store_sequence(ECS_SPAWN_ROW_COUNT_SLOT),
+                    metadata_qword_via_offset_slot_to_qword_store_sequence(
+                        ECS_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT,
+                        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                    ),
+                    metadata_qword_via_offset_slot_to_qword_store_sequence(
+                        ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT,
+                        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+                    ),
+                    compare_stack_slot_sequence(
+                        ECS_STARTUP_TABLE_RUN_SCHEDULE_KIND_SLOT,
+                        ECS_STARTUP_OP_RUN_SCHEDULE as u64,
+                    ),
+                    load_store_stack_slot_sequence(
+                        ECS_STARTUP_TABLE_RUN_SCHEDULE_ID_SLOT,
+                        ECS_COMPILED_SCHEDULE_ID_SLOT,
+                    ),
+                ],
+            ),
+            "generated text should walk startup operation rows and invoke handlers in source order"
+        );
+
+        for row in ECS_STARTUP_OPERATION_DISPATCH_ROWS {
+            assert!(
+                contains_subsequence(&text, &mov_eax_one_store_sequence(row.dispatch_count_slot)),
+                "generated text should record dispatch count for {:?}",
+                row.handler
+            );
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &compare_stack_slot_sequence(row.dispatch_count_slot, 1)
+                ),
+                "generated text should validate dispatch count for {:?}",
+                row.handler
+            );
+        }
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_component_field_multiply_sequence(
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "generated text should preserve compiled Demo.Move field math"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_position_store_sequence(
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "generated text should preserve compiled Demo.Move Position stores"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "generated text should preserve compiled Move success"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_RUN_SCHEDULE_DISPATCH_FAILURE_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "generated text should preserve startup dispatch failure"
+        );
+    }
+
+    #[test]
     fn materializes_native_startup_operation_table() {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
@@ -6423,6 +6616,20 @@ mod tests {
         haystack
             .windows(needle.len())
             .any(|window| window == needle)
+    }
+
+    fn contains_ordered_subsequences(haystack: &[u8], needles: &[Vec<u8>]) -> bool {
+        let mut search_start = 0usize;
+        for needle in needles {
+            let Some(relative_index) = haystack[search_start..]
+                .windows(needle.len())
+                .position(|window| window == needle)
+            else {
+                return false;
+            };
+            search_start += relative_index + needle.len();
+        }
+        true
     }
 
     fn metadata_dword_load_store_sequence(metadata_offset: u8, stack_slot: u16) -> Vec<u8> {
