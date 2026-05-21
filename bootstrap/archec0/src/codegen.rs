@@ -207,6 +207,45 @@ struct NativeEcsExecutionStateLayout {
     compiled_move: NativeCompiledMoveSlots,
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeDescriptorTableModel {
+    component_rows: [NativeXyDescriptorSlots; 2],
+    resource_rows: [NativeTimeDescriptorSlots; 1],
+    system_rows: [NativeMoveSystemDescriptorSlots; 1],
+    query_rows: [NativeMoversQueryDescriptorSlots; 1],
+    schedule_rows: [NativeMainScheduleDescriptorSlots; 1],
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeStartupOperationTableModel {
+    resource_payload_rows: [NativeResourceStartupOperationSlots; 1],
+    spawn_rows: [NativeSpawnStartupOperationSlots; 1],
+    run_schedule_rows: [NativeRunScheduleStartupOperationSlots; 1],
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeCompiledScheduleTableModel {
+    rows: [NativeCompiledScheduleSlots; 1],
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeQueryPlanTableModel {
+    rows: [NativeDescriptorBackedQueryPlanSlots; 1],
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeEcsTableModel {
+    descriptors: NativeDescriptorTableModel,
+    startup_operations: NativeStartupOperationTableModel,
+    compiled_schedules: NativeCompiledScheduleTableModel,
+    query_plans: NativeQueryPlanTableModel,
+}
+
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
         frame_size: 760,
@@ -653,6 +692,48 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
             },
         },
     };
+
+#[allow(dead_code)]
+const NATIVE_ECS_TABLE_MODEL: NativeEcsTableModel = NativeEcsTableModel {
+    descriptors: NativeDescriptorTableModel {
+        component_rows: [
+            NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .component_resource_descriptors
+                .position,
+            NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .component_resource_descriptors
+                .velocity,
+        ],
+        resource_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
+            .component_resource_descriptors
+            .time],
+        system_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
+            .system_query_schedule_descriptors
+            .move_system],
+        query_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
+            .system_query_schedule_descriptors
+            .movers_query],
+        schedule_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
+            .system_query_schedule_descriptors
+            .main_schedule],
+    },
+    startup_operations: NativeStartupOperationTableModel {
+        resource_payload_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
+            .startup_operations
+            .resource],
+        spawn_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT.startup_operations.spawn],
+        run_schedule_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
+            .startup_operations
+            .run_schedule],
+    },
+    compiled_schedules: NativeCompiledScheduleTableModel {
+        rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT.compiled_schedule],
+    },
+    query_plans: NativeQueryPlanTableModel {
+        rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_backed_query_plan],
+    },
+};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodegenError {
     pub message: String,
@@ -3808,6 +3889,198 @@ mod tests {
         assert_eq!(
             runtime_destroy_suffix().as_slice(),
             expected_runtime_destroy_suffix(&layout).as_slice()
+        );
+    }
+
+    #[test]
+    fn defines_reusable_native_ecs_table_model() {
+        let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
+        let model = NATIVE_ECS_TABLE_MODEL;
+
+        assert_eq!(layout.frame_size, 760);
+        assert_eq!(model.descriptors.component_rows.len(), 2);
+        assert_eq!(model.descriptors.resource_rows.len(), 1);
+        assert_eq!(model.descriptors.system_rows.len(), 1);
+        assert_eq!(model.descriptors.query_rows.len(), 1);
+        assert_eq!(model.descriptors.schedule_rows.len(), 1);
+        assert_eq!(model.startup_operations.resource_payload_rows.len(), 1);
+        assert_eq!(model.startup_operations.spawn_rows.len(), 1);
+        assert_eq!(model.startup_operations.run_schedule_rows.len(), 1);
+        assert_eq!(model.compiled_schedules.rows.len(), 1);
+        assert_eq!(model.query_plans.rows.len(), 1);
+
+        assert_eq!(
+            model.descriptors.component_rows,
+            [
+                layout.component_resource_descriptors.position,
+                layout.component_resource_descriptors.velocity,
+            ]
+        );
+        assert_eq!(
+            model.descriptors.resource_rows,
+            [layout.component_resource_descriptors.time]
+        );
+        assert_eq!(
+            model.descriptors.system_rows,
+            [layout.system_query_schedule_descriptors.move_system]
+        );
+        assert_eq!(
+            model.descriptors.query_rows,
+            [layout.system_query_schedule_descriptors.movers_query]
+        );
+        assert_eq!(
+            model.descriptors.schedule_rows,
+            [layout.system_query_schedule_descriptors.main_schedule]
+        );
+        assert_eq!(
+            model.startup_operations.resource_payload_rows,
+            [layout.startup_operations.resource]
+        );
+        assert_eq!(
+            model.startup_operations.spawn_rows,
+            [layout.startup_operations.spawn]
+        );
+        assert_eq!(
+            model.startup_operations.run_schedule_rows,
+            [layout.startup_operations.run_schedule]
+        );
+        assert_eq!(model.compiled_schedules.rows, [layout.compiled_schedule]);
+        assert_eq!(
+            model.query_plans.rows,
+            [layout.descriptor_backed_query_plan]
+        );
+
+        let position = model.descriptors.component_rows[0];
+        assert_eq!(
+            [
+                position.id.offset,
+                position.size.offset,
+                position.align.offset,
+                position.field_count.offset,
+                position.x_field_offset.offset,
+                position.y_field_offset.offset,
+            ],
+            [256, 264, 272, 280, 288, 296]
+        );
+        let velocity = model.descriptors.component_rows[1];
+        assert_eq!(
+            [
+                velocity.id.offset,
+                velocity.size.offset,
+                velocity.align.offset,
+                velocity.field_count.offset,
+                velocity.x_field_offset.offset,
+                velocity.y_field_offset.offset,
+            ],
+            [304, 312, 320, 328, 336, 344]
+        );
+        let time = model.descriptors.resource_rows[0];
+        assert_eq!(
+            [
+                time.id.offset,
+                time.size.offset,
+                time.align.offset,
+                time.field_count.offset,
+                time.delta_field_offset.offset,
+            ],
+            [352, 360, 368, 376, 384]
+        );
+
+        let move_system = model.descriptors.system_rows[0];
+        assert_eq!(
+            [
+                move_system.id.offset,
+                move_system.param_count.offset,
+                move_system.resource_param_kind.offset,
+                move_system.resource_param_resource_id.offset,
+                move_system.query_param_kind.offset,
+                move_system.query_param_term_count.offset,
+                move_system.query_term0_access.offset,
+                move_system.query_term0_component_id.offset,
+                move_system.query_term1_access.offset,
+                move_system.query_term1_component_id.offset,
+            ],
+            [392, 400, 408, 416, 424, 432, 440, 448, 456, 464]
+        );
+        let movers_query = model.descriptors.query_rows[0];
+        assert_eq!(
+            [
+                movers_query.id.offset,
+                movers_query.term_count.offset,
+                movers_query.term0_access.offset,
+                movers_query.term0_component_id.offset,
+                movers_query.term1_access.offset,
+                movers_query.term1_component_id.offset,
+            ],
+            [472, 480, 488, 496, 504, 512]
+        );
+        let main_schedule = model.descriptors.schedule_rows[0];
+        assert_eq!(
+            [
+                main_schedule.id.offset,
+                main_schedule.item_count.offset,
+                main_schedule.run_item_kind.offset,
+                main_schedule.run_system_id.offset,
+            ],
+            [520, 528, 536, 544]
+        );
+
+        let resource = model.startup_operations.resource_payload_rows[0];
+        assert_eq!(
+            [
+                resource.kind.offset,
+                resource.resource_id.offset,
+                resource.payload_offset.offset,
+                resource.payload_len.offset,
+            ],
+            [552, 560, 568, 576]
+        );
+        let spawn = model.startup_operations.spawn_rows[0];
+        assert_eq!(
+            [
+                spawn.kind.offset,
+                spawn.component_count.offset,
+                spawn.position_component_id.offset,
+                spawn.position_payload_offset.offset,
+                spawn.position_payload_len.offset,
+                spawn.velocity_component_id.offset,
+                spawn.velocity_payload_offset.offset,
+                spawn.velocity_payload_len.offset,
+            ],
+            [584, 592, 600, 608, 616, 624, 632, 640]
+        );
+        let run_schedule = model.startup_operations.run_schedule_rows[0];
+        assert_eq!(
+            [run_schedule.kind.offset, run_schedule.schedule_id.offset],
+            [648, 656]
+        );
+
+        let compiled_schedule = model.compiled_schedules.rows[0];
+        assert_eq!(
+            [
+                compiled_schedule.schedule_id.offset,
+                compiled_schedule.scheduled_system_id.offset,
+                compiled_schedule.scheduled_system_count.offset,
+            ],
+            [232, 240, 248]
+        );
+        let query_plan = model.query_plans.rows[0];
+        assert_eq!(
+            [
+                query_plan.query_id.offset,
+                query_plan.term_count.offset,
+                query_plan.position.access.offset,
+                query_plan.position.component_id.offset,
+                query_plan.position.size.offset,
+                query_plan.position.x_field_offset.offset,
+                query_plan.position.y_field_offset.offset,
+                query_plan.velocity.access.offset,
+                query_plan.velocity.component_id.offset,
+                query_plan.velocity.size.offset,
+                query_plan.velocity.x_field_offset.offset,
+                query_plan.velocity.y_field_offset.offset,
+            ],
+            [664, 672, 680, 688, 696, 704, 712, 720, 728, 736, 744, 752]
         );
     }
 

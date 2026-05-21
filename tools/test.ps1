@@ -1071,6 +1071,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_ecs_execution_state_layout")
 
     Invoke-CheckedCommand `
+        -Name "defines_reusable_native_ecs_table_model" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_reusable_native_ecs_table_model")
+
+    Invoke-CheckedCommand `
         -Name "materializes_native_descriptor_record_state" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_descriptor_record_state")
