@@ -167,6 +167,23 @@ struct NativeStartupOperationTableSlots {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativePlannedComponentDescriptorSlots {
+    access: NativeEcsSlot,
+    component_id: NativeEcsSlot,
+    size: NativeEcsSlot,
+    x_field_offset: NativeEcsSlot,
+    y_field_offset: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeDescriptorBackedQueryPlanSlots {
+    query_id: NativeEcsSlot,
+    term_count: NativeEcsSlot,
+    position: NativePlannedComponentDescriptorSlots,
+    velocity: NativePlannedComponentDescriptorSlots,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeCompiledMoveSlots {
     target_position_payload: NativeEcsSlot,
     scanned_row_count: NativeEcsSlot,
@@ -176,7 +193,7 @@ struct NativeCompiledMoveSlots {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeEcsExecutionStateLayout {
     frame_size: u16,
-    zeroed_qword_offsets: [u16; 83],
+    zeroed_qword_offsets: [u16; 95],
     descriptor_counts: NativeDescriptorCountSlots,
     descriptor_records: NativeDescriptorRecordStateSlots,
     startup_state: NativeStartupStateSlots,
@@ -186,18 +203,20 @@ struct NativeEcsExecutionStateLayout {
     component_resource_descriptors: NativeComponentResourceDescriptorTableSlots,
     system_query_schedule_descriptors: NativeSystemQueryScheduleDescriptorTableSlots,
     startup_operations: NativeStartupOperationTableSlots,
+    descriptor_backed_query_plan: NativeDescriptorBackedQueryPlanSlots,
     compiled_move: NativeCompiledMoveSlots,
 }
 
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
-        frame_size: 664,
+        frame_size: 760,
         zeroed_qword_offsets: [
             0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152,
             160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 264, 272, 280, 288,
             296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384, 392, 400, 408, 416, 424,
             432, 440, 448, 456, 464, 472, 480, 488, 496, 504, 512, 520, 528, 536, 544, 552, 560,
-            568, 576, 584, 592, 600, 608, 616, 624, 632, 640, 648, 656,
+            568, 576, 584, 592, 600, 608, 616, 624, 632, 640, 648, 656, 664, 672, 680, 688, 696,
+            704, 712, 720, 728, 736, 744, 752,
         ],
         descriptor_counts: NativeDescriptorCountSlots {
             components: NativeEcsSlot {
@@ -561,6 +580,60 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
                 },
                 schedule_id: NativeEcsSlot {
                     offset: 656,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+        },
+        descriptor_backed_query_plan: NativeDescriptorBackedQueryPlanSlots {
+            query_id: NativeEcsSlot {
+                offset: 664,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            term_count: NativeEcsSlot {
+                offset: 672,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            position: NativePlannedComponentDescriptorSlots {
+                access: NativeEcsSlot {
+                    offset: 680,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                component_id: NativeEcsSlot {
+                    offset: 688,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                size: NativeEcsSlot {
+                    offset: 696,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                x_field_offset: NativeEcsSlot {
+                    offset: 704,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                y_field_offset: NativeEcsSlot {
+                    offset: 712,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            velocity: NativePlannedComponentDescriptorSlots {
+                access: NativeEcsSlot {
+                    offset: 720,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                component_id: NativeEcsSlot {
+                    offset: 728,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                size: NativeEcsSlot {
+                    offset: 736,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                x_field_offset: NativeEcsSlot {
+                    offset: 744,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                y_field_offset: NativeEcsSlot {
+                    offset: 752,
                     byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
                 },
             },
@@ -1006,6 +1079,68 @@ const ECS_STARTUP_TABLE_RUN_SCHEDULE_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_L
     .run_schedule
     .schedule_id
     .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_QUERY_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_backed_query_plan
+    .query_id
+    .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_TERM_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_backed_query_plan
+    .term_count
+    .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_POSITION_ACCESS_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_backed_query_plan
+    .position
+    .access
+    .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_POSITION_COMPONENT_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_backed_query_plan
+    .position
+    .component_id
+    .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_POSITION_SIZE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_backed_query_plan
+    .position
+    .size
+    .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_POSITION_X_FIELD_OFFSET_SLOT: u16 =
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_backed_query_plan
+        .position
+        .x_field_offset
+        .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_POSITION_Y_FIELD_OFFSET_SLOT: u16 =
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_backed_query_plan
+        .position
+        .y_field_offset
+        .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_ACCESS_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_backed_query_plan
+    .velocity
+    .access
+    .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_COMPONENT_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_backed_query_plan
+    .velocity
+    .component_id
+    .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_SIZE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_backed_query_plan
+    .velocity
+    .size
+    .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_X_FIELD_OFFSET_SLOT: u16 =
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_backed_query_plan
+        .velocity
+        .x_field_offset
+        .offset;
+const ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_Y_FIELD_OFFSET_SLOT: u16 =
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_backed_query_plan
+        .velocity
+        .y_field_offset
+        .offset;
 const ECS_COMPONENT_RESOURCE_DESCRIPTOR_QWORD_LOADS: [(i32, u16); 3] = [
     (112, ECS_POSITION_DESCRIPTOR_ID_SLOT),
     (181, ECS_VELOCITY_DESCRIPTOR_ID_SLOT),
@@ -1156,6 +1291,67 @@ const ECS_STARTUP_OPERATION_TABLE_EXPECTED: [(u16, u64); 13] = [
         ECS_STARTUP_TABLE_RUN_SCHEDULE_KIND_SLOT,
         ECS_STARTUP_OP_RUN_SCHEDULE as u64,
     ),
+];
+const ECS_DESCRIPTOR_QUERY_PLAN_COPIES: [(u16, u16); 12] = [
+    (
+        ECS_MOVERS_QUERY_DESCRIPTOR_ID_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_QUERY_ID_SLOT,
+    ),
+    (
+        ECS_MOVERS_QUERY_DESCRIPTOR_TERM_COUNT_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_TERM_COUNT_SLOT,
+    ),
+    (
+        ECS_MOVERS_QUERY_TERM0_ACCESS_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_POSITION_ACCESS_SLOT,
+    ),
+    (
+        ECS_MOVERS_QUERY_TERM0_COMPONENT_ID_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_POSITION_COMPONENT_ID_SLOT,
+    ),
+    (
+        ECS_POSITION_DESCRIPTOR_SIZE_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_POSITION_SIZE_SLOT,
+    ),
+    (
+        ECS_POSITION_DESCRIPTOR_X_FIELD_OFFSET_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_POSITION_X_FIELD_OFFSET_SLOT,
+    ),
+    (
+        ECS_POSITION_DESCRIPTOR_Y_FIELD_OFFSET_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_POSITION_Y_FIELD_OFFSET_SLOT,
+    ),
+    (
+        ECS_MOVERS_QUERY_TERM1_ACCESS_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_ACCESS_SLOT,
+    ),
+    (
+        ECS_MOVERS_QUERY_TERM1_COMPONENT_ID_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_COMPONENT_ID_SLOT,
+    ),
+    (
+        ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_SIZE_SLOT,
+    ),
+    (
+        ECS_VELOCITY_DESCRIPTOR_X_FIELD_OFFSET_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_X_FIELD_OFFSET_SLOT,
+    ),
+    (
+        ECS_VELOCITY_DESCRIPTOR_Y_FIELD_OFFSET_SLOT,
+        ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_Y_FIELD_OFFSET_SLOT,
+    ),
+];
+const ECS_DESCRIPTOR_QUERY_PLAN_EXPECTED: [(u16, u64); 9] = [
+    (ECS_DESCRIPTOR_QUERY_PLAN_TERM_COUNT_SLOT, 2),
+    (ECS_DESCRIPTOR_QUERY_PLAN_POSITION_ACCESS_SLOT, 2),
+    (ECS_DESCRIPTOR_QUERY_PLAN_POSITION_SIZE_SLOT, 8),
+    (ECS_DESCRIPTOR_QUERY_PLAN_POSITION_X_FIELD_OFFSET_SLOT, 0),
+    (ECS_DESCRIPTOR_QUERY_PLAN_POSITION_Y_FIELD_OFFSET_SLOT, 4),
+    (ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_ACCESS_SLOT, 1),
+    (ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_SIZE_SLOT, 8),
+    (ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_X_FIELD_OFFSET_SLOT, 0),
+    (ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_Y_FIELD_OFFSET_SLOT, 4),
 ];
 
 const DEMO_POSITION_COMPONENT_ID: u64 = 0x002202c6aeb4f27b;
@@ -2214,6 +2410,27 @@ fn compare_stack_slot_to_u64(
     jump_offsets.push(jump_offset);
 }
 
+fn compare_stack_slots_equal(
+    bytes: &mut Vec<u8>,
+    left_slot: u16,
+    right_slot: u16,
+    jump_offsets: &mut Vec<usize>,
+) {
+    load_stack_slot_to_rax(bytes, left_slot);
+    if right_slot == 0 {
+        bytes.extend_from_slice(&[0x48, 0x39, 0x04, 0x24]); // cmp qword ptr [rsp], rax
+    } else if right_slot <= 127 {
+        bytes.extend_from_slice(&[0x48, 0x39, 0x44, 0x24, right_slot as u8]); // cmp qword ptr [rsp + slot], rax
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x39, 0x84, 0x24]); // cmp qword ptr [rsp + slot], rax
+        bytes.extend_from_slice(&(right_slot as u32).to_le_bytes());
+    }
+
+    let jump_offset = bytes.len();
+    bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
+    jump_offsets.push(jump_offset);
+}
+
 fn emit_startup_operation_dispatch(
     bytes: &mut Vec<u8>,
     operation_kind_slot: u16,
@@ -2288,6 +2505,38 @@ fn load_metadata_qword_via_offset_slot(bytes: &mut Vec<u8>, offset_slot: u16, ta
 }
 
 fn emit_native_query_plan_builder(bytes: &mut Vec<u8>, scan_failure_offsets: &mut Vec<usize>) {
+    for (source_slot, target_slot) in ECS_DESCRIPTOR_QUERY_PLAN_COPIES {
+        load_stack_slot_to_rax(bytes, source_slot);
+        store_rax_to_stack_slot(bytes, target_slot);
+    }
+    for (stack_slot, expected) in ECS_DESCRIPTOR_QUERY_PLAN_EXPECTED {
+        compare_stack_slot_to_u64(bytes, stack_slot, expected, scan_failure_offsets);
+    }
+    compare_stack_slots_equal(
+        bytes,
+        ECS_DESCRIPTOR_QUERY_PLAN_POSITION_COMPONENT_ID_SLOT,
+        ECS_POSITION_DESCRIPTOR_ID_SLOT,
+        scan_failure_offsets,
+    );
+    compare_stack_slots_equal(
+        bytes,
+        ECS_DESCRIPTOR_QUERY_PLAN_POSITION_COMPONENT_ID_SLOT,
+        ECS_STARTUP_TABLE_POSITION_COMPONENT_ID_SLOT,
+        scan_failure_offsets,
+    );
+    compare_stack_slots_equal(
+        bytes,
+        ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_COMPONENT_ID_SLOT,
+        ECS_VELOCITY_DESCRIPTOR_ID_SLOT,
+        scan_failure_offsets,
+    );
+    compare_stack_slots_equal(
+        bytes,
+        ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_COMPONENT_ID_SLOT,
+        ECS_STARTUP_TABLE_VELOCITY_COMPONENT_ID_SLOT,
+        scan_failure_offsets,
+    );
+
     load_stack_slot_to_rax(bytes, ECS_SPAWN_ROW_COUNT_SLOT);
     store_rax_to_stack_slot(bytes, ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT);
     compare_stack_slot_to_u64(
@@ -2708,8 +2957,8 @@ mod tests {
     fn defines_native_ecs_execution_state_layout() {
         let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
 
-        assert_eq!(layout.frame_size, 664);
-        let expected_zeroed_qword_offsets: Vec<u16> = (0..=656).step_by(8).collect();
+        assert_eq!(layout.frame_size, 760);
+        let expected_zeroed_qword_offsets: Vec<u16> = (0..=752).step_by(8).collect();
         assert_eq!(
             layout.zeroed_qword_offsets.as_slice(),
             expected_zeroed_qword_offsets.as_slice()
@@ -3124,6 +3373,63 @@ mod tests {
                 },
             }
         );
+        assert_eq!(
+            layout.descriptor_backed_query_plan,
+            NativeDescriptorBackedQueryPlanSlots {
+                query_id: NativeEcsSlot {
+                    offset: 664,
+                    byte_len: 8,
+                },
+                term_count: NativeEcsSlot {
+                    offset: 672,
+                    byte_len: 8,
+                },
+                position: NativePlannedComponentDescriptorSlots {
+                    access: NativeEcsSlot {
+                        offset: 680,
+                        byte_len: 8,
+                    },
+                    component_id: NativeEcsSlot {
+                        offset: 688,
+                        byte_len: 8,
+                    },
+                    size: NativeEcsSlot {
+                        offset: 696,
+                        byte_len: 8,
+                    },
+                    x_field_offset: NativeEcsSlot {
+                        offset: 704,
+                        byte_len: 8,
+                    },
+                    y_field_offset: NativeEcsSlot {
+                        offset: 712,
+                        byte_len: 8,
+                    },
+                },
+                velocity: NativePlannedComponentDescriptorSlots {
+                    access: NativeEcsSlot {
+                        offset: 720,
+                        byte_len: 8,
+                    },
+                    component_id: NativeEcsSlot {
+                        offset: 728,
+                        byte_len: 8,
+                    },
+                    size: NativeEcsSlot {
+                        offset: 736,
+                        byte_len: 8,
+                    },
+                    x_field_offset: NativeEcsSlot {
+                        offset: 744,
+                        byte_len: 8,
+                    },
+                    y_field_offset: NativeEcsSlot {
+                        offset: 752,
+                        byte_len: 8,
+                    },
+                },
+            }
+        );
         assert_eq!(ECS_DESCRIPTOR_REGISTRY_SLOTS, [0, 8, 16, 24, 32]);
         assert_eq!(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS, [96, 112, 128, 144, 160]);
         assert_eq!(
@@ -3198,6 +3504,18 @@ mod tests {
         assert_eq!(ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_LEN_SLOT, 640);
         assert_eq!(ECS_STARTUP_TABLE_RUN_SCHEDULE_KIND_SLOT, 648);
         assert_eq!(ECS_STARTUP_TABLE_RUN_SCHEDULE_ID_SLOT, 656);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_QUERY_ID_SLOT, 664);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_TERM_COUNT_SLOT, 672);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_POSITION_ACCESS_SLOT, 680);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_POSITION_COMPONENT_ID_SLOT, 688);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_POSITION_SIZE_SLOT, 696);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_POSITION_X_FIELD_OFFSET_SLOT, 704);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_POSITION_Y_FIELD_OFFSET_SLOT, 712);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_ACCESS_SLOT, 720);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_COMPONENT_ID_SLOT, 728);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_SIZE_SLOT, 736);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_X_FIELD_OFFSET_SLOT, 744);
+        assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_Y_FIELD_OFFSET_SLOT, 752);
 
         let slots = [
             layout.descriptor_counts.components,
@@ -3349,6 +3667,18 @@ mod tests {
             layout.startup_operations.spawn.velocity_payload_len,
             layout.startup_operations.run_schedule.kind,
             layout.startup_operations.run_schedule.schedule_id,
+            layout.descriptor_backed_query_plan.query_id,
+            layout.descriptor_backed_query_plan.term_count,
+            layout.descriptor_backed_query_plan.position.access,
+            layout.descriptor_backed_query_plan.position.component_id,
+            layout.descriptor_backed_query_plan.position.size,
+            layout.descriptor_backed_query_plan.position.x_field_offset,
+            layout.descriptor_backed_query_plan.position.y_field_offset,
+            layout.descriptor_backed_query_plan.velocity.access,
+            layout.descriptor_backed_query_plan.velocity.component_id,
+            layout.descriptor_backed_query_plan.velocity.size,
+            layout.descriptor_backed_query_plan.velocity.x_field_offset,
+            layout.descriptor_backed_query_plan.velocity.y_field_offset,
         ];
         for slot in slots {
             assert!(
@@ -4197,7 +4527,7 @@ mod tests {
             ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
         let startup_payloads = startup_payloads(&metadata).expect("startup payloads parse");
 
-        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 664);
+        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 760);
         assert_eq!(startup_payloads.resource_operation_kind_offset, 577);
         assert_eq!(startup_payloads.resource_id_offset, 581);
         assert_eq!(startup_payloads.resource_id, DEMO_TIME_RESOURCE_ID);
@@ -4427,6 +4757,26 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
+                    ECS_MOVERS_QUERY_DESCRIPTOR_ID_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_QUERY_ID_SLOT,
+                ),
+            ),
+            "generated text should materialize query descriptor identity into query-plan state"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slots_equal_sequence(
+                    ECS_DESCRIPTOR_QUERY_PLAN_POSITION_COMPONENT_ID_SLOT,
+                    ECS_POSITION_DESCRIPTOR_ID_SLOT,
+                ),
+            ),
+            "generated text should validate planned Position against decoded Position descriptor state"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
                     ECS_SPAWN_ROW_COUNT_SLOT,
                     ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
                 ),
@@ -4511,6 +4861,195 @@ mod tests {
                 &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
             ),
             "generated text should preserve compiled Move success"
+        );
+    }
+
+    #[test]
+    fn builds_native_query_plan_from_descriptor_records() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 760);
+        assert_eq!(
+            ECS_DESCRIPTOR_QUERY_PLAN_COPIES,
+            [
+                (
+                    ECS_MOVERS_QUERY_DESCRIPTOR_ID_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_QUERY_ID_SLOT,
+                ),
+                (
+                    ECS_MOVERS_QUERY_DESCRIPTOR_TERM_COUNT_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_TERM_COUNT_SLOT,
+                ),
+                (
+                    ECS_MOVERS_QUERY_TERM0_ACCESS_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_POSITION_ACCESS_SLOT,
+                ),
+                (
+                    ECS_MOVERS_QUERY_TERM0_COMPONENT_ID_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_POSITION_COMPONENT_ID_SLOT,
+                ),
+                (
+                    ECS_POSITION_DESCRIPTOR_SIZE_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_POSITION_SIZE_SLOT,
+                ),
+                (
+                    ECS_POSITION_DESCRIPTOR_X_FIELD_OFFSET_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_POSITION_X_FIELD_OFFSET_SLOT,
+                ),
+                (
+                    ECS_POSITION_DESCRIPTOR_Y_FIELD_OFFSET_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_POSITION_Y_FIELD_OFFSET_SLOT,
+                ),
+                (
+                    ECS_MOVERS_QUERY_TERM1_ACCESS_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_ACCESS_SLOT,
+                ),
+                (
+                    ECS_MOVERS_QUERY_TERM1_COMPONENT_ID_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_COMPONENT_ID_SLOT,
+                ),
+                (
+                    ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_SIZE_SLOT,
+                ),
+                (
+                    ECS_VELOCITY_DESCRIPTOR_X_FIELD_OFFSET_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_X_FIELD_OFFSET_SLOT,
+                ),
+                (
+                    ECS_VELOCITY_DESCRIPTOR_Y_FIELD_OFFSET_SLOT,
+                    ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_Y_FIELD_OFFSET_SLOT,
+                ),
+            ]
+        );
+
+        for (source_slot, target_slot) in ECS_DESCRIPTOR_QUERY_PLAN_COPIES {
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &load_store_stack_slot_sequence(source_slot, target_slot),
+                ),
+                "generated text should copy decoded descriptor slot {} into query-plan slot {}",
+                source_slot,
+                target_slot
+            );
+        }
+        for (stack_slot, expected) in ECS_DESCRIPTOR_QUERY_PLAN_EXPECTED {
+            assert!(
+                contains_subsequence(&text, &compare_stack_slot_sequence(stack_slot, expected),),
+                "generated text should validate query-plan stack slot {} against {}",
+                stack_slot,
+                expected
+            );
+        }
+        for (left_slot, right_slot) in [
+            (
+                ECS_DESCRIPTOR_QUERY_PLAN_POSITION_COMPONENT_ID_SLOT,
+                ECS_POSITION_DESCRIPTOR_ID_SLOT,
+            ),
+            (
+                ECS_DESCRIPTOR_QUERY_PLAN_POSITION_COMPONENT_ID_SLOT,
+                ECS_STARTUP_TABLE_POSITION_COMPONENT_ID_SLOT,
+            ),
+            (
+                ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_COMPONENT_ID_SLOT,
+                ECS_VELOCITY_DESCRIPTOR_ID_SLOT,
+            ),
+            (
+                ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_COMPONENT_ID_SLOT,
+                ECS_STARTUP_TABLE_VELOCITY_COMPONENT_ID_SLOT,
+            ),
+        ] {
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &compare_stack_slots_equal_sequence(left_slot, right_slot),
+                ),
+                "generated text should compare query-plan slot {} against stack slot {}",
+                left_slot,
+                right_slot
+            );
+        }
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    ECS_SPAWN_ROW_COUNT_SLOT,
+                    ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
+                ),
+            ),
+            "generated text should still materialize one matched row after descriptor-backed planning"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &lea_stack_address_store_sequence(
+                    ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                ),
+            ),
+            "generated text should still materialize planned Position payload address"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &lea_stack_address_store_sequence(
+                    ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                ),
+            ),
+            "generated text should still materialize planned Velocity payload address"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_component_field_multiply_sequence(
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "compiled Move should keep consuming planned Velocity payload addresses"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_position_store_sequence(
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "compiled Move should keep consuming planned Position payload addresses"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "generated text should preserve compiled Move success"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_QUERY_LOOP_SCAN_FAILURE_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "generated text should preserve query-plan failure"
         );
     }
 
@@ -4748,6 +5287,20 @@ mod tests {
         } else {
             bytes.extend_from_slice(&[0x48, 0x39, 0x84, 0x24]);
             bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+        }
+        bytes
+    }
+
+    fn compare_stack_slots_equal_sequence(left_slot: u16, right_slot: u16) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_load_stack_slot_to_rax(&mut bytes, left_slot);
+        if right_slot == 0 {
+            bytes.extend_from_slice(&[0x48, 0x39, 0x04, 0x24]);
+        } else if right_slot <= 127 {
+            bytes.extend_from_slice(&[0x48, 0x39, 0x44, 0x24, right_slot as u8]);
+        } else {
+            bytes.extend_from_slice(&[0x48, 0x39, 0x84, 0x24]);
+            bytes.extend_from_slice(&(right_slot as u32).to_le_bytes());
         }
         bytes
     }

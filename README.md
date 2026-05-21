@@ -88,8 +88,9 @@ The proof chain currently demonstrates:
 - Native component/resource descriptor-table decoding from embedded `ARCHEECS` records.
 - Native system/query/schedule descriptor-table decoding from embedded `ARCHEECS` records.
 - Native startup operation table materialization from embedded `ARCHEECS` records.
+- Native query-plan construction from decoded descriptor records.
 
-M20 native ECS descriptor-table work is underway. The next proof is building native query plans from decoded descriptor records.
+M20 native ECS descriptor-table work is underway. The next proof is executing `move_system` from decoded native ECS tables.
 
 ## What This Is Not Yet
 

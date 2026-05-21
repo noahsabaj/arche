@@ -52,9 +52,9 @@ Source file -> parsed ECS program -> Arche Core -> runtime world -> schedule -> 
 
 Current missing links:
 
-- Native executable startup can validate embedded `ARCHEECS` metadata, register descriptor counts, materialize descriptor section record offsets/lengths, decode component/resource/system/query/schedule descriptor records into explicit stack-resident descriptor-table state, materialize source-order startup operation records into a native startup operation table, dispatch table-backed resource/spawn/run operations, apply the `Demo.Time` resource payload, create one bootstrap-native spawn row, dispatch `run Demo.Main`, materialize compiled schedule state for `Demo.Main -> Demo.Move`, build explicit native query-planning state, and execute compiled `Demo.Move` query-loop code over the planned row through a named native ECS execution-state layout.
+- Native executable startup can validate embedded `ARCHEECS` metadata, register descriptor counts, materialize descriptor section record offsets/lengths, decode component/resource/system/query/schedule descriptor records into explicit stack-resident descriptor-table state, materialize source-order startup operation records into a native startup operation table, dispatch table-backed resource/spawn/run operations, apply the `Demo.Time` resource payload, create one bootstrap-native spawn row, dispatch `run Demo.Main`, materialize compiled schedule state for `Demo.Main -> Demo.Move`, build native query-plan state from decoded descriptor records, and execute compiled `Demo.Move` query-loop code over the planned row through a named native ECS execution-state layout.
 - `move_system.arc --emit-core` can print the lowered `Demo.Move` query-loop body.
-- The next missing link is building native query plans from decoded descriptor records.
+- The next missing link is executing `move_system` from fully decoded native ECS tables.
 
 ## Integration Debt
 
@@ -62,9 +62,9 @@ These are intentional gaps created by narrow proof milestones.
 
 Current gaps:
 
-- Generated native binaries can carry complete decoded `ARCHEECS` metadata, and native startup can validate its envelope, register descriptor counts, materialize descriptor record offsets/lengths, decode component/resource/system/query/schedule descriptor records, materialize startup operation records into a stack-resident table, dispatch table-backed resource/spawn/run startup operation handlers, apply the first resource payload, create one spawn row, dispatch `run Demo.Main`, materialize compiled schedule state, build explicit query-planning state, and execute compiled `Demo.Move` query-loop code through named stack-resident execution state.
+- Generated native binaries can carry complete decoded `ARCHEECS` metadata, and native startup can validate its envelope, register descriptor counts, materialize descriptor record offsets/lengths, decode component/resource/system/query/schedule descriptor records, materialize startup operation records into a stack-resident table, dispatch table-backed resource/spawn/run startup operation handlers, apply the first resource payload, create one spawn row, dispatch `run Demo.Main`, materialize compiled schedule state, build query-plan state from decoded descriptor records, and execute compiled `Demo.Move` query-loop code through named stack-resident execution state.
 - Source-level startup resource, spawn, and schedule execution now drives runtime ECS state, but not generated executable ECS state.
-- System declarations, query metadata, Core query-loop bodies, compiled native `Demo.Move` row scan/math/store code, native query-planning state, compiled schedule state, and a named native execution-state layout exist, but query planning is still fixture-specific rather than driven from decoded descriptor records.
+- System declarations, query metadata, Core query-loop bodies, compiled native `Demo.Move` row scan/math/store code, native query-planning state, compiled schedule state, startup operation table state, and a named native execution-state layout exist, but the final `move_system` proof still needs to be framed as execution from decoded native ECS tables end to end.
 - M10/M14 Move behavior is proven through a runtime application path; M18 proves the equivalent generated native fixture path.
 - Runtime schedule execution is source-driven in tests; native schedule execution is compiled-state-backed only for the current `Demo.Main -> Demo.Move` fixture, not general.
 
@@ -114,13 +114,13 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M20-004 | Build native query plan from descriptor records | Native query planning uses decoded descriptor records instead of fixture-specific slots. |
+| M20-005 | Execute move_system from decoded native ECS tables | Generated `move_system` executes through decoded native ECS descriptor and startup tables. |
 
 ### Backlog
 
 | Issue | Title | Done when |
 |---|---|---|
-| M20-005 | Execute move_system from decoded native ECS tables | Generated `move_system` executes through decoded native ECS descriptor and startup tables. |
+| - | - | Empty. |
 
 ### Doing
 
@@ -249,6 +249,7 @@ Board rules:
 | M20-001 | Decode native component and resource descriptor records | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml decodes_native_component_resource_descriptor_records` passed, proving generated rich-ECS native text decodes `Demo.Position`, `Demo.Velocity`, and `Demo.Time` numeric descriptor record fields from embedded `ARCHEECS` metadata into explicit stack-resident descriptor-table slots; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with generated-binary corruption checks for `Demo.Position` descriptor size and `Demo.Time.delta` field offset exiting `17`, while preserving valid `move_system` exit `47` and existing corrupt metadata/payload/startup-operation/run-schedule proofs. This was component/resource descriptor-record decoding only: no system/query/schedule record decoding, startup operation table, general query planner, metadata format change, Core/runtime behavior change, or generated success-code change was added. Implementation commit: `842da2b0`. |
 | M20-002 | Decode native system, query, and schedule descriptor records | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml decodes_native_system_query_schedule_descriptor_records` passed, proving generated rich-ECS native text decodes `Demo.Move`, `Demo.Move.movers`, and `Demo.Main` numeric descriptor record fields from embedded `ARCHEECS` metadata into explicit stack-resident descriptor-table slots; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with generated-binary corruption checks for `Demo.Move` param count, `Demo.Move.movers` query term count, and `Demo.Main` schedule item kind exiting `17`, while preserving valid `move_system` exit `47` and existing corrupt metadata/payload/startup-operation/run-schedule proofs. This was system/query/schedule descriptor-record decoding only: no startup operation table, general query planner, metadata format change, Core/runtime behavior change, or generated success-code change was added. Implementation commit: `d411abf8`. |
 | M20-003 | Build native startup operation table from metadata | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml materializes_native_startup_operation_table` passed, proving generated rich-ECS native text decodes resource, spawn, and run-schedule startup operation records from embedded `ARCHEECS` metadata into explicit stack-resident startup operation table slots, dispatches operation handlers through table kind slots, loads resource/spawn payloads through table payload-offset slots, and materializes compiled schedule state from the run-schedule table entry; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with generated-binary corruption checks for startup resource id and spawn component count exiting `17`, startup operation kind exiting `21`, and run schedule id exiting `21`, while preserving valid `move_system` exit `47`. This was fixture-specific native startup table materialization only: no general startup loop, query planner rewrite, metadata format change, Core/runtime behavior change, or generated success-code change was added. Implementation commit: `70194d98`. |
+| M20-004 | Build native query plan from descriptor records | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml builds_native_query_plan_from_descriptor_records` passed, proving generated rich-ECS native text copies decoded `Demo.Move.movers`, `Demo.Position`, and `Demo.Velocity` descriptor-table values into descriptor-backed native query-plan slots, validates planned component IDs against decoded component descriptors and startup spawn table entries, and still feeds planned payload addresses into compiled `Demo.Move`; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed while preserving valid `move_system` exit `47` and existing corrupt metadata, descriptor, startup table, payload, and run-schedule failure proofs. This was fixture-specific native descriptor-backed query planning only: no general query planner, metadata format change, Core/runtime behavior change, or generated success-code change was added. Implementation commit: `PENDING_HASH`. |
 
 ## Milestones
 
@@ -1747,19 +1748,19 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| M20-003 materializes resource/spawn/run startup operation records into explicit native table slots only | 98/100 |
-| `tools/test.ps1` includes `materializes_native_startup_operation_table` plus generated-binary startup table corruption checks while keeping valid `move_system` exit `47` | 99/100 |
+| M20-004 builds native query-plan state from decoded query/component descriptor records only | 98/100 |
+| `tools/test.ps1` includes `builds_native_query_plan_from_descriptor_records` while keeping valid `move_system` exit `47` and existing generated-binary corruption checks | 99/100 |
 | Existing M0-M20 parser, runtime unit, layout, Core, executable, component metadata, ECS metadata, diagnostic, native startup, and e2e proofs remain passing | 98/100 |
-| Board state moves M20-003 to Done and promotes M20-004 as the next proof | 98/100 |
-| Controlled M20 backlog remains limited to table-driven query planning and decoded native ECS table execution | 97/100 |
+| Board state moves M20-004 to Done and promotes M20-005 as the next proof | 98/100 |
+| Controlled M20 backlog is empty after promoting final decoded native ECS table execution proof | 97/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- The active board has only `M20-004` in `Ready`.
+- The active board has only `M20-005` in `Ready`.
 - `Doing` is empty.
-- `Backlog` contains M20-005 only.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, completed M18, completed M19, M20-001, M20-002, and M20-003.
+- `Backlog` is empty.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, completed M18, completed M19, M20-001, M20-002, M20-003, and M20-004.
 - Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, M16-001 through M16-005, M17-001 through M17-005, M18-001 through M18-005, M19-001 through M19-005, and M20-001 through M20-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, M18 native codegen for compiled query loops, and M19 native ECS execution state are complete. M20 native ECS descriptor-table decoding is underway; table-driven native query planning is next.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, M18 native codegen for compiled query loops, and M19 native ECS execution state are complete. M20 native ECS descriptor-table decoding is underway; final decoded native ECS table execution is next.

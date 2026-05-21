@@ -466,12 +466,12 @@ function Add-ZeroQwordStore {
 }
 
 function New-RuntimeStateQwordOffsets {
-    0..82 | ForEach-Object { $_ * 8 }
+    0..94 | ForEach-Object { $_ * 8 }
 }
 
 function New-RuntimeCreatePrefix {
     $bytes = [System.Collections.Generic.List[byte]]::new()
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 664
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 760
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
@@ -485,7 +485,7 @@ function New-RuntimeDestroySuffix {
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
     }
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 664
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 760
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05))
     [byte[]]$bytes.ToArray()
 }
@@ -1099,6 +1099,11 @@ try {
         -Name "materializes_native_query_planning_state" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_query_planning_state")
+
+    Invoke-CheckedCommand `
+        -Name "builds_native_query_plan_from_descriptor_records" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_native_query_plan_from_descriptor_records")
 
     Invoke-CheckedCommand `
         -Name "executes_compiled_schedule_from_native_state" `
