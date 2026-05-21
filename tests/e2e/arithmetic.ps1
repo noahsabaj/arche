@@ -40,44 +40,86 @@ function Assert-Equal {
     }
 }
 
-function New-RuntimeCreatePrefix {
-    [byte[]]@(
-        0x48, 0x83, 0xec, 0x60,
-        0x31, 0xc0,
-        0x48, 0x89, 0x04, 0x24,
-        0x48, 0x89, 0x44, 0x24, 0x08,
-        0x48, 0x89, 0x44, 0x24, 0x10,
-        0x48, 0x89, 0x44, 0x24, 0x18,
-        0x48, 0x89, 0x44, 0x24, 0x20,
-        0x48, 0x89, 0x44, 0x24, 0x28,
-        0x48, 0x89, 0x44, 0x24, 0x30,
-        0x48, 0x89, 0x44, 0x24, 0x38,
-        0x48, 0x89, 0x44, 0x24, 0x40,
-        0x48, 0x89, 0x44, 0x24, 0x48,
-        0x48, 0x89, 0x44, 0x24, 0x50,
-        0x48, 0x89, 0x44, 0x24, 0x58
+function Add-ByteSequence {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[byte]] $Bytes,
+
+        [Parameter(Mandatory = $true)]
+        [byte[]] $Sequence
     )
+
+    foreach ($byte in $Sequence) {
+        [void] $Bytes.Add($byte)
+    }
+}
+
+function Add-StackFrameAdjust {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[byte]] $Bytes,
+
+        [Parameter(Mandatory = $true)]
+        [byte] $Opcode,
+
+        [Parameter(Mandatory = $true)]
+        [int] $FrameSize
+    )
+
+    if ($FrameSize -le 127) {
+        Add-ByteSequence -Bytes $Bytes -Sequence ([byte[]]@(0x48, 0x83, $Opcode, [byte]$FrameSize))
+        return
+    }
+
+    Add-ByteSequence -Bytes $Bytes -Sequence ([byte[]]@(0x48, 0x81, $Opcode))
+    Add-ByteSequence -Bytes $Bytes -Sequence ([BitConverter]::GetBytes([UInt32]$FrameSize))
+}
+
+function Add-ZeroQwordStore {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[byte]] $Bytes,
+
+        [Parameter(Mandatory = $true)]
+        [int] $Offset
+    )
+
+    if ($Offset -eq 0) {
+        Add-ByteSequence -Bytes $Bytes -Sequence ([byte[]]@(0x48, 0x89, 0x04, 0x24))
+    } elseif ($Offset -le 127) {
+        Add-ByteSequence -Bytes $Bytes -Sequence ([byte[]]@(0x48, 0x89, 0x44, 0x24, [byte]$Offset))
+    } else {
+        Add-ByteSequence -Bytes $Bytes -Sequence ([byte[]]@(0x48, 0x89, 0x84, 0x24))
+        Add-ByteSequence -Bytes $Bytes -Sequence ([BitConverter]::GetBytes([UInt32]$Offset))
+    }
+}
+
+function New-RuntimeStateQwordOffsets {
+    @(0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152, 160, 168)
+}
+
+function New-RuntimeCreatePrefix {
+    $bytes = [System.Collections.Generic.List[byte]]::new()
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 176
+    Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
+    foreach ($offset in (New-RuntimeStateQwordOffsets)) {
+        Add-ZeroQwordStore -Bytes $bytes -Offset $offset
+    }
+    [byte[]]$bytes.ToArray()
 }
 
 function New-RuntimeDestroySuffix {
-    [byte[]]@(
-        0x31, 0xc0,
-        0x48, 0x89, 0x04, 0x24,
-        0x48, 0x89, 0x44, 0x24, 0x08,
-        0x48, 0x89, 0x44, 0x24, 0x10,
-        0x48, 0x89, 0x44, 0x24, 0x18,
-        0x48, 0x89, 0x44, 0x24, 0x20,
-        0x48, 0x89, 0x44, 0x24, 0x28,
-        0x48, 0x89, 0x44, 0x24, 0x30,
-        0x48, 0x89, 0x44, 0x24, 0x38,
-        0x48, 0x89, 0x44, 0x24, 0x40,
-        0x48, 0x89, 0x44, 0x24, 0x48,
-        0x48, 0x89, 0x44, 0x24, 0x50,
-        0x48, 0x89, 0x44, 0x24, 0x58,
-        0x48, 0x83, 0xc4, 0x60,
-        0xb8, 0x3c, 0x00, 0x00, 0x00,
-        0x0f, 0x05
-    )
+    $bytes = [System.Collections.Generic.List[byte]]::new()
+    Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
+    foreach ($offset in (New-RuntimeStateQwordOffsets)) {
+        Add-ZeroQwordStore -Bytes $bytes -Offset $offset
+    }
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 176
+    Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05))
+    [byte[]]$bytes.ToArray()
 }
 
 function New-RuntimeWrappedText {

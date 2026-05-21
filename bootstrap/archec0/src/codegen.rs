@@ -24,6 +24,21 @@ struct NativeDescriptorCountSlots {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeDescriptorSectionSlots {
+    payload_offset: NativeEcsSlot,
+    byte_len: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeDescriptorRecordStateSlots {
+    components: NativeDescriptorSectionSlots,
+    resources: NativeDescriptorSectionSlots,
+    systems: NativeDescriptorSectionSlots,
+    queries: NativeDescriptorSectionSlots,
+    schedules: NativeDescriptorSectionSlots,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeStartupStateSlots {
     time_payload: NativeEcsSlot,
     row_count: NativeEcsSlot,
@@ -41,16 +56,20 @@ struct NativeCompiledMoveSlots {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeEcsExecutionStateLayout {
     frame_size: u8,
-    zeroed_qword_offsets: [u8; 12],
+    zeroed_qword_offsets: [u8; 22],
     descriptor_counts: NativeDescriptorCountSlots,
+    descriptor_records: NativeDescriptorRecordStateSlots,
     startup_state: NativeStartupStateSlots,
     compiled_move: NativeCompiledMoveSlots,
 }
 
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
-        frame_size: 96,
-        zeroed_qword_offsets: [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88],
+        frame_size: 176,
+        zeroed_qword_offsets: [
+            0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152,
+            160, 168,
+        ],
         descriptor_counts: NativeDescriptorCountSlots {
             components: NativeEcsSlot {
                 offset: 0,
@@ -71,6 +90,58 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
             schedules: NativeEcsSlot {
                 offset: 32,
                 byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+        },
+        descriptor_records: NativeDescriptorRecordStateSlots {
+            components: NativeDescriptorSectionSlots {
+                payload_offset: NativeEcsSlot {
+                    offset: 96,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 104,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            resources: NativeDescriptorSectionSlots {
+                payload_offset: NativeEcsSlot {
+                    offset: 112,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 120,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            systems: NativeDescriptorSectionSlots {
+                payload_offset: NativeEcsSlot {
+                    offset: 128,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 136,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            queries: NativeDescriptorSectionSlots {
+                payload_offset: NativeEcsSlot {
+                    offset: 144,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 152,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            schedules: NativeDescriptorSectionSlots {
+                payload_offset: NativeEcsSlot {
+                    offset: 160,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 168,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
             },
         },
         startup_state: NativeStartupStateSlots {
@@ -110,9 +181,12 @@ const NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE: u8 = NATIVE_ECS_EXECUTION_STATE_LAY
 
 const RUNTIME_CREATE_PREFIX: &[u8] = &[
     0x48,
-    0x83,
+    0x81,
     0xec,
-    NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE, // sub rsp, frame size
+    NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE,
+    0x00,
+    0x00,
+    0x00, // sub rsp, frame size
     0x31,
     0xc0, // xor eax, eax
     0x48,
@@ -174,6 +248,74 @@ const RUNTIME_CREATE_PREFIX: &[u8] = &[
     0x44,
     0x24,
     0x58, // mov qword ptr [rsp + 88], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x60, // mov qword ptr [rsp + 96], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x68, // mov qword ptr [rsp + 104], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x70, // mov qword ptr [rsp + 112], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x78, // mov qword ptr [rsp + 120], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0x80,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 128], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0x88,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 136], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0x90,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 144], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0x98,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 152], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0xa0,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 160], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0xa8,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 168], rax
 ];
 
 const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
@@ -239,9 +381,80 @@ const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
     0x24,
     0x58, // mov qword ptr [rsp + 88], rax
     0x48,
-    0x83,
+    0x89,
+    0x44,
+    0x24,
+    0x60, // mov qword ptr [rsp + 96], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x68, // mov qword ptr [rsp + 104], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x70, // mov qword ptr [rsp + 112], rax
+    0x48,
+    0x89,
+    0x44,
+    0x24,
+    0x78, // mov qword ptr [rsp + 120], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0x80,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 128], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0x88,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 136], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0x90,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 144], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0x98,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 152], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0xa0,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 160], rax
+    0x48,
+    0x89,
+    0x84,
+    0x24,
+    0xa8,
+    0x00,
+    0x00,
+    0x00, // mov qword ptr [rsp + 168], rax
+    0x48,
+    0x81,
     0xc4,
-    NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE, // add rsp, frame size
+    NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE,
+    0x00,
+    0x00,
+    0x00, // add rsp, frame size
     0xb8,
     0x3c,
     0x00,
@@ -272,6 +485,10 @@ const ECS_STARTUP_OP_SPAWN: u32 = 2;
 const ECS_STARTUP_OP_RUN_SCHEDULE: u32 = 3;
 const ECS_EXPECTED_DESCRIPTOR_COUNTS: [u64; 5] = [2, 1, 1, 1, 1];
 const ECS_DESCRIPTOR_RECORD_COUNT_OFFSETS: [u8; 5] = [28, 44, 60, 76, 92];
+const ECS_DESCRIPTOR_RECORD_OFFSET_FIELD_OFFSETS: [u8; 5] = [20, 36, 52, 68, 84];
+const ECS_DESCRIPTOR_RECORD_BYTE_LEN_FIELD_OFFSETS: [u8; 5] = [24, 40, 56, 72, 88];
+const ECS_EXPECTED_DESCRIPTOR_RECORD_OFFSETS: [u64; 5] = [112, 250, 303, 437, 527];
+const ECS_EXPECTED_DESCRIPTOR_RECORD_BYTE_LENS: [u64; 5] = [138, 53, 134, 90, 50];
 const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [
     NATIVE_ECS_EXECUTION_STATE_LAYOUT
         .descriptor_counts
@@ -292,6 +509,60 @@ const ECS_DESCRIPTOR_REGISTRY_SLOTS: [u8; 5] = [
     NATIVE_ECS_EXECUTION_STATE_LAYOUT
         .descriptor_counts
         .schedules
+        .offset,
+];
+const ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS: [u8; 5] = [
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_records
+        .components
+        .payload_offset
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_records
+        .resources
+        .payload_offset
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_records
+        .systems
+        .payload_offset
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_records
+        .queries
+        .payload_offset
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_records
+        .schedules
+        .payload_offset
+        .offset,
+];
+const ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS: [u8; 5] = [
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_records
+        .components
+        .byte_len
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_records
+        .resources
+        .byte_len
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_records
+        .systems
+        .byte_len
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_records
+        .queries
+        .byte_len
+        .offset,
+    NATIVE_ECS_EXECUTION_STATE_LAYOUT
+        .descriptor_records
+        .schedules
+        .byte_len
         .offset,
 ];
 const ECS_RESOURCE_PAYLOAD_STORAGE_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
@@ -898,6 +1169,20 @@ fn ecs_metadata_decoder_body(
         bytes.extend_from_slice(&[0x8b, 0x46, *count_offset]); // mov eax, dword ptr [rsi + offset]
         store_rax_to_stack_slot(&mut bytes, stack_slot);
     }
+    for (record_offset, stack_slot) in ECS_DESCRIPTOR_RECORD_OFFSET_FIELD_OFFSETS
+        .iter()
+        .zip(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS)
+    {
+        bytes.extend_from_slice(&[0x8b, 0x46, *record_offset]); // mov eax, dword ptr [rsi + offset]
+        store_rax_to_stack_slot(&mut bytes, stack_slot);
+    }
+    for (byte_len_offset, stack_slot) in ECS_DESCRIPTOR_RECORD_BYTE_LEN_FIELD_OFFSETS
+        .iter()
+        .zip(ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS)
+    {
+        bytes.extend_from_slice(&[0x8b, 0x46, *byte_len_offset]); // mov eax, dword ptr [rsi + offset]
+        store_rax_to_stack_slot(&mut bytes, stack_slot);
+    }
 
     bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
     bytes.extend_from_slice(&startup_payloads.resource_payload_offset.to_le_bytes());
@@ -927,6 +1212,28 @@ fn ecs_metadata_decoder_body(
             &mut bytes,
             stack_slot,
             *expected_count,
+            &mut jump_to_startup_state_failure_offsets,
+        );
+    }
+    for (expected_offset, stack_slot) in ECS_EXPECTED_DESCRIPTOR_RECORD_OFFSETS
+        .iter()
+        .zip(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS)
+    {
+        compare_stack_slot_to_u64(
+            &mut bytes,
+            stack_slot,
+            *expected_offset,
+            &mut jump_to_startup_state_failure_offsets,
+        );
+    }
+    for (expected_byte_len, stack_slot) in ECS_EXPECTED_DESCRIPTOR_RECORD_BYTE_LENS
+        .iter()
+        .zip(ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS)
+    {
+        compare_stack_slot_to_u64(
+            &mut bytes,
+            stack_slot,
+            *expected_byte_len,
             &mut jump_to_startup_state_failure_offsets,
         );
     }
@@ -1114,8 +1421,11 @@ fn compare_stack_slot_to_u64(
     bytes.extend_from_slice(&expected.to_le_bytes());
     if stack_slot == 0 {
         bytes.extend_from_slice(&[0x48, 0x39, 0x04, 0x24]); // cmp qword ptr [rsp], rax
-    } else {
+    } else if stack_slot <= 127 {
         bytes.extend_from_slice(&[0x48, 0x39, 0x44, 0x24, stack_slot]); // cmp qword ptr [rsp + slot], rax
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x39, 0x84, 0x24]); // cmp qword ptr [rsp + slot], rax
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
     }
 
     let jump_offset = bytes.len();
@@ -1225,16 +1535,22 @@ fn move_edi_exit_code(bytes: &mut Vec<u8>, exit_code: u8) {
 fn store_rax_to_stack_slot(bytes: &mut Vec<u8>, stack_slot: u8) {
     if stack_slot == 0 {
         bytes.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]); // mov qword ptr [rsp], rax
-    } else {
+    } else if stack_slot <= 127 {
         bytes.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, stack_slot]); // mov qword ptr [rsp + slot], rax
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x89, 0x84, 0x24]); // mov qword ptr [rsp + slot], rax
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
     }
 }
 
 fn load_stack_slot_to_rax(bytes: &mut Vec<u8>, stack_slot: u8) {
     if stack_slot == 0 {
         bytes.extend_from_slice(&[0x48, 0x8b, 0x04, 0x24]); // mov rax, qword ptr [rsp]
-    } else {
+    } else if stack_slot <= 127 {
         bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, stack_slot]); // mov rax, qword ptr [rsp + slot]
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]); // mov rax, qword ptr [rsp + slot]
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
     }
 }
 
@@ -1402,10 +1718,13 @@ mod tests {
     fn defines_native_ecs_execution_state_layout() {
         let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
 
-        assert_eq!(layout.frame_size, 96);
+        assert_eq!(layout.frame_size, 176);
         assert_eq!(
             layout.zeroed_qword_offsets,
-            [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88]
+            [
+                0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144,
+                152, 160, 168,
+            ]
         );
         assert_eq!(
             layout.descriptor_counts,
@@ -1429,6 +1748,61 @@ mod tests {
                 schedules: NativeEcsSlot {
                     offset: 32,
                     byte_len: 8,
+                },
+            }
+        );
+        assert_eq!(
+            layout.descriptor_records,
+            NativeDescriptorRecordStateSlots {
+                components: NativeDescriptorSectionSlots {
+                    payload_offset: NativeEcsSlot {
+                        offset: 96,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 104,
+                        byte_len: 8,
+                    },
+                },
+                resources: NativeDescriptorSectionSlots {
+                    payload_offset: NativeEcsSlot {
+                        offset: 112,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 120,
+                        byte_len: 8,
+                    },
+                },
+                systems: NativeDescriptorSectionSlots {
+                    payload_offset: NativeEcsSlot {
+                        offset: 128,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 136,
+                        byte_len: 8,
+                    },
+                },
+                queries: NativeDescriptorSectionSlots {
+                    payload_offset: NativeEcsSlot {
+                        offset: 144,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 152,
+                        byte_len: 8,
+                    },
+                },
+                schedules: NativeDescriptorSectionSlots {
+                    payload_offset: NativeEcsSlot {
+                        offset: 160,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 168,
+                        byte_len: 8,
+                    },
                 },
             }
         );
@@ -1471,6 +1845,11 @@ mod tests {
             }
         );
         assert_eq!(ECS_DESCRIPTOR_REGISTRY_SLOTS, [0, 8, 16, 24, 32]);
+        assert_eq!(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS, [96, 112, 128, 144, 160]);
+        assert_eq!(
+            ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS,
+            [104, 120, 136, 152, 168]
+        );
         assert_eq!(ECS_RESOURCE_PAYLOAD_STORAGE_SLOT, 40);
         assert_eq!(ECS_SPAWN_ROW_COUNT_SLOT, 48);
         assert_eq!(ECS_POSITION_PAYLOAD_STORAGE_SLOT, 56);
@@ -1485,6 +1864,16 @@ mod tests {
             layout.descriptor_counts.systems,
             layout.descriptor_counts.queries,
             layout.descriptor_counts.schedules,
+            layout.descriptor_records.components.payload_offset,
+            layout.descriptor_records.components.byte_len,
+            layout.descriptor_records.resources.payload_offset,
+            layout.descriptor_records.resources.byte_len,
+            layout.descriptor_records.systems.payload_offset,
+            layout.descriptor_records.systems.byte_len,
+            layout.descriptor_records.queries.payload_offset,
+            layout.descriptor_records.queries.byte_len,
+            layout.descriptor_records.schedules.payload_offset,
+            layout.descriptor_records.schedules.byte_len,
             layout.startup_state.time_payload,
             layout.startup_state.row_count,
             layout.startup_state.position_payload,
@@ -1523,6 +1912,86 @@ mod tests {
         assert_eq!(
             RUNTIME_DESTROY_SUFFIX,
             expected_runtime_destroy_suffix(&layout).as_slice()
+        );
+    }
+
+    #[test]
+    fn materializes_native_descriptor_record_state() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert_eq!(
+            ECS_DESCRIPTOR_RECORD_OFFSET_FIELD_OFFSETS,
+            [20, 36, 52, 68, 84]
+        );
+        assert_eq!(
+            ECS_DESCRIPTOR_RECORD_BYTE_LEN_FIELD_OFFSETS,
+            [24, 40, 56, 72, 88]
+        );
+        assert_eq!(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS, [96, 112, 128, 144, 160]);
+        assert_eq!(
+            ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS,
+            [104, 120, 136, 152, 168]
+        );
+        assert_eq!(
+            ECS_EXPECTED_DESCRIPTOR_RECORD_OFFSETS,
+            [112, 250, 303, 437, 527]
+        );
+        assert_eq!(
+            ECS_EXPECTED_DESCRIPTOR_RECORD_BYTE_LENS,
+            [138, 53, 134, 90, 50]
+        );
+
+        for (metadata_offset, stack_slot) in ECS_DESCRIPTOR_RECORD_OFFSET_FIELD_OFFSETS
+            .iter()
+            .zip(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS)
+        {
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &metadata_dword_load_store_sequence(*metadata_offset, stack_slot),
+                ),
+                "generated text should store descriptor section offset {} into stack slot {}",
+                metadata_offset,
+                stack_slot
+            );
+        }
+        for (metadata_offset, stack_slot) in ECS_DESCRIPTOR_RECORD_BYTE_LEN_FIELD_OFFSETS
+            .iter()
+            .zip(ECS_DESCRIPTOR_RECORD_BYTE_LEN_SLOTS)
+        {
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &metadata_dword_load_store_sequence(*metadata_offset, stack_slot),
+                ),
+                "generated text should store descriptor section length {} into stack slot {}",
+                metadata_offset,
+                stack_slot
+            );
+        }
+        assert!(
+            contains_subsequence(&text, &compare_stack_slot_sequence(128, 303),),
+            "generated text should validate the materialized system record offset"
+        );
+        assert!(
+            contains_subsequence(&text, &compare_stack_slot_sequence(168, 50),),
+            "generated text should validate the materialized schedule record byte length"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "generated text should preserve the compiled Move success code"
         );
     }
 
@@ -1934,15 +2403,35 @@ mod tests {
             .any(|window| window == needle)
     }
 
+    fn metadata_dword_load_store_sequence(metadata_offset: u8, stack_slot: u8) -> Vec<u8> {
+        let mut bytes = vec![0x8b, 0x46, metadata_offset]; // mov eax, dword ptr [rsi + offset]
+        append_rax_qword_store(&mut bytes, stack_slot);
+        bytes
+    }
+
+    fn compare_stack_slot_sequence(stack_slot: u8, expected: u64) -> Vec<u8> {
+        let mut bytes = vec![0x48, 0xb8]; // mov rax, imm64
+        bytes.extend_from_slice(&expected.to_le_bytes());
+        if stack_slot == 0 {
+            bytes.extend_from_slice(&[0x48, 0x39, 0x04, 0x24]);
+        } else if stack_slot <= 127 {
+            bytes.extend_from_slice(&[0x48, 0x39, 0x44, 0x24, stack_slot]);
+        } else {
+            bytes.extend_from_slice(&[0x48, 0x39, 0x84, 0x24]);
+            bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+        }
+        bytes
+    }
+
     fn expected_runtime_create_prefix(layout: &NativeEcsExecutionStateLayout) -> Vec<u8> {
-        let mut bytes = vec![
-            0x48,
-            0x83,
-            0xec,
-            layout.frame_size, // sub rsp, frame size
-            0x31,
-            0xc0, // xor eax, eax
-        ];
+        let mut bytes = Vec::new();
+        if layout.frame_size <= 127 {
+            bytes.extend_from_slice(&[0x48, 0x83, 0xec, layout.frame_size]);
+        } else {
+            bytes.extend_from_slice(&[0x48, 0x81, 0xec]);
+            bytes.extend_from_slice(&(layout.frame_size as u32).to_le_bytes());
+        }
+        bytes.extend_from_slice(&[0x31, 0xc0]); // xor eax, eax
         for offset in layout.zeroed_qword_offsets {
             append_zero_qword_store(&mut bytes, offset);
         }
@@ -1954,27 +2443,31 @@ mod tests {
         for offset in layout.zeroed_qword_offsets {
             append_zero_qword_store(&mut bytes, offset);
         }
+        if layout.frame_size <= 127 {
+            bytes.extend_from_slice(&[0x48, 0x83, 0xc4, layout.frame_size]);
+        } else {
+            bytes.extend_from_slice(&[0x48, 0x81, 0xc4]);
+            bytes.extend_from_slice(&(layout.frame_size as u32).to_le_bytes());
+        }
         bytes.extend_from_slice(&[
-            0x48,
-            0x83,
-            0xc4,
-            layout.frame_size, // add rsp, frame size
-            0xb8,
-            0x3c,
-            0x00,
-            0x00,
-            0x00, // mov eax, 60
-            0x0f,
-            0x05, // syscall
+            0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, 60
+            0x0f, 0x05, // syscall
         ]);
         bytes
     }
 
     fn append_zero_qword_store(bytes: &mut Vec<u8>, offset: u8) {
+        append_rax_qword_store(bytes, offset);
+    }
+
+    fn append_rax_qword_store(bytes: &mut Vec<u8>, offset: u8) {
         if offset == 0 {
             bytes.extend_from_slice(&[0x48, 0x89, 0x04, 0x24]);
-        } else {
+        } else if offset <= 127 {
             bytes.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, offset]);
+        } else {
+            bytes.extend_from_slice(&[0x48, 0x89, 0x84, 0x24]);
+            bytes.extend_from_slice(&(offset as u32).to_le_bytes());
         }
     }
 }
