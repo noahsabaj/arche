@@ -1211,6 +1211,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "iterates_native_startup_operation_table_generically")
 
     Invoke-CheckedCommand `
+        -Name "iterates_native_startup_operation_table_rows_by_count" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "iterates_native_startup_operation_table_rows_by_count")
+
+    Invoke-CheckedCommand `
         -Name "materializes_native_startup_operation_table" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_startup_operation_table")

@@ -449,6 +449,16 @@ struct NativeDescriptorTableIterationRow {
     dword_load_len: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeStartupOperationTableIterationRow {
+    cursor_table: NativeTableIterationKind,
+    cursor_row_index: usize,
+    expected_table_count: u64,
+    count_slot: NativeEcsSlot,
+    primary_slot: NativeEcsSlot,
+    dispatch_row: NativeStartupOperationDispatchRow,
+}
+
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
         frame_size: 856,
@@ -2011,6 +2021,41 @@ const ECS_STARTUP_OPERATION_DISPATCH_ROWS: [NativeStartupOperationDispatchRow; 3
         dispatch_count_slot: ECS_STARTUP_RUN_SCHEDULE_DISPATCH_COUNT_SLOT,
     },
 ];
+const ECS_STARTUP_OPERATION_TABLE_ITERATION_ROWS: [NativeStartupOperationTableIterationRow; 3] = [
+    NativeStartupOperationTableIterationRow {
+        cursor_table: NativeTableIterationKind::StartupOperations,
+        cursor_row_index: 0,
+        expected_table_count: 3,
+        count_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .startup_operations
+            .count_slot
+            .unwrap(),
+        primary_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS.startup_operations.rows[0].primary_slot,
+        dispatch_row: ECS_STARTUP_OPERATION_DISPATCH_ROWS[0],
+    },
+    NativeStartupOperationTableIterationRow {
+        cursor_table: NativeTableIterationKind::StartupOperations,
+        cursor_row_index: 1,
+        expected_table_count: 3,
+        count_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .startup_operations
+            .count_slot
+            .unwrap(),
+        primary_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS.startup_operations.rows[1].primary_slot,
+        dispatch_row: ECS_STARTUP_OPERATION_DISPATCH_ROWS[1],
+    },
+    NativeStartupOperationTableIterationRow {
+        cursor_table: NativeTableIterationKind::StartupOperations,
+        cursor_row_index: 2,
+        expected_table_count: 3,
+        count_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .startup_operations
+            .count_slot
+            .unwrap(),
+        primary_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS.startup_operations.rows[2].primary_slot,
+        dispatch_row: ECS_STARTUP_OPERATION_DISPATCH_ROWS[2],
+    },
+];
 const ECS_RESOURCE_STARTUP_DESCRIPTOR_RELATIONS: [(u16, u16); 2] = [
     (
         ECS_STARTUP_TABLE_RESOURCE_ID_SLOT,
@@ -3062,16 +3107,16 @@ fn emit_native_startup_operation_table_iteration(
 ) {
     bytes.extend_from_slice(&[0x8b, 0x46, ECS_STARTUP_RECORD_COUNT_OFFSET]); // mov eax, dword ptr [rsi + offset]
     store_rax_to_stack_slot(bytes, ECS_STARTUP_OPERATION_COUNT_SLOT);
-    compare_stack_slot_to_u64(
-        bytes,
-        ECS_STARTUP_OPERATION_COUNT_SLOT,
-        startup_payloads.startup_record_count as u64,
-        dispatch_failure_offsets,
-    );
 
-    for row in ECS_STARTUP_OPERATION_DISPATCH_ROWS {
-        emit_startup_operation_dispatch_row(bytes, row, dispatch_failure_offsets);
-        match row.handler {
+    for row in ECS_STARTUP_OPERATION_TABLE_ITERATION_ROWS {
+        compare_stack_slot_to_u64(
+            bytes,
+            row.count_slot.offset,
+            startup_payloads.startup_record_count as u64,
+            dispatch_failure_offsets,
+        );
+        emit_startup_operation_dispatch_row(bytes, row.dispatch_row, dispatch_failure_offsets);
+        match row.dispatch_row.handler {
             NativeStartupOperationHandler::ResourcePayload => {
                 emit_resource_payload_startup_operation_handler(
                     bytes,
@@ -6570,6 +6615,94 @@ mod tests {
                 ],
             ),
             "generated text should preserve startup dispatch failure"
+        );
+    }
+
+    #[test]
+    fn iterates_native_startup_operation_table_rows_by_count() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let cursors = NATIVE_ECS_TABLE_ITERATION_CURSORS;
+        let rows = ECS_STARTUP_OPERATION_TABLE_ITERATION_ROWS;
+        assert_eq!(
+            rows,
+            [
+                NativeStartupOperationTableIterationRow {
+                    cursor_table: NativeTableIterationKind::StartupOperations,
+                    cursor_row_index: 0,
+                    expected_table_count: 3,
+                    count_slot: cursors.startup_operations.count_slot.unwrap(),
+                    primary_slot: cursors.startup_operations.rows[0].primary_slot,
+                    dispatch_row: ECS_STARTUP_OPERATION_DISPATCH_ROWS[0],
+                },
+                NativeStartupOperationTableIterationRow {
+                    cursor_table: NativeTableIterationKind::StartupOperations,
+                    cursor_row_index: 1,
+                    expected_table_count: 3,
+                    count_slot: cursors.startup_operations.count_slot.unwrap(),
+                    primary_slot: cursors.startup_operations.rows[1].primary_slot,
+                    dispatch_row: ECS_STARTUP_OPERATION_DISPATCH_ROWS[1],
+                },
+                NativeStartupOperationTableIterationRow {
+                    cursor_table: NativeTableIterationKind::StartupOperations,
+                    cursor_row_index: 2,
+                    expected_table_count: 3,
+                    count_slot: cursors.startup_operations.count_slot.unwrap(),
+                    primary_slot: cursors.startup_operations.rows[2].primary_slot,
+                    dispatch_row: ECS_STARTUP_OPERATION_DISPATCH_ROWS[2],
+                },
+            ]
+        );
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        let mut search_start = 0usize;
+        for row in rows {
+            assert_eq!(row.primary_slot.offset, row.dispatch_row.kind_slot);
+            let count_sequence =
+                compare_stack_slot_sequence(row.count_slot.offset, row.expected_table_count);
+            let dispatch_sequence = compare_stack_slot_sequence(
+                row.dispatch_row.kind_slot,
+                row.dispatch_row.expected_kind as u64,
+            );
+            let count_index = find_subsequence_from(&text, &count_sequence, search_start)
+                .expect("startup row should compare its table count before dispatch");
+            let dispatch_index = find_subsequence_from(&text, &dispatch_sequence, count_index)
+                .expect("startup row should dispatch after count validation");
+            assert!(
+                count_index < dispatch_index,
+                "startup row {:?} should count-check before dispatch",
+                row
+            );
+            search_start = dispatch_index + dispatch_sequence.len();
+        }
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "startup row count iteration should preserve compiled Move success"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_RUN_SCHEDULE_DISPATCH_FAILURE_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "startup row count mismatch should use startup dispatch failure"
         );
     }
 
