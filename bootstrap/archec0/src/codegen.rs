@@ -335,6 +335,21 @@ struct NativeQueryPlanBuildRow {
     terms: [NativeQueryPlanTermBuildRow; 2],
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeCompiledScheduleBuildRow {
+    startup_schedule_id_slot: u16,
+    descriptor_schedule_id_slot: u16,
+    descriptor_item_count_slot: u16,
+    descriptor_run_system_id_slot: u16,
+    system_descriptor_id_slot: u16,
+    compiled_schedule_id_slot: u16,
+    compiled_scheduled_system_id_slot: u16,
+    compiled_scheduled_system_count_slot: u16,
+    expected_scheduled_system_count: u64,
+    expected_scheduled_system_id: u64,
+    query_plan_row_index: usize,
+}
+
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeCompiledScheduleTableModel {
@@ -1777,30 +1792,20 @@ const ECS_QUERY_PLAN_BUILD_ROWS: [NativeQueryPlanBuildRow; 1] = [NativeQueryPlan
         },
     ],
 }];
-const ECS_COMPILED_SCHEDULE_COPIES: [(u16, u16); 3] = [
-    (
-        ECS_STARTUP_TABLE_RUN_SCHEDULE_ID_SLOT,
-        ECS_COMPILED_SCHEDULE_ID_SLOT,
-    ),
-    (
-        ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT,
-        ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT,
-    ),
-    (
-        ECS_MAIN_SCHEDULE_DESCRIPTOR_ITEM_COUNT_SLOT,
-        ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT,
-    ),
-];
-const ECS_COMPILED_SCHEDULE_DESCRIPTOR_RELATIONS: [(u16, u16); 2] = [
-    (
-        ECS_COMPILED_SCHEDULE_ID_SLOT,
-        ECS_MAIN_SCHEDULE_DESCRIPTOR_ID_SLOT,
-    ),
-    (
-        ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT,
-        ECS_MOVE_SYSTEM_DESCRIPTOR_ID_SLOT,
-    ),
-];
+const ECS_COMPILED_SCHEDULE_BUILD_ROWS: [NativeCompiledScheduleBuildRow; 1] =
+    [NativeCompiledScheduleBuildRow {
+        startup_schedule_id_slot: ECS_STARTUP_TABLE_RUN_SCHEDULE_ID_SLOT,
+        descriptor_schedule_id_slot: ECS_MAIN_SCHEDULE_DESCRIPTOR_ID_SLOT,
+        descriptor_item_count_slot: ECS_MAIN_SCHEDULE_DESCRIPTOR_ITEM_COUNT_SLOT,
+        descriptor_run_system_id_slot: ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT,
+        system_descriptor_id_slot: ECS_MOVE_SYSTEM_DESCRIPTOR_ID_SLOT,
+        compiled_schedule_id_slot: ECS_COMPILED_SCHEDULE_ID_SLOT,
+        compiled_scheduled_system_id_slot: ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT,
+        compiled_scheduled_system_count_slot: ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT,
+        expected_scheduled_system_count: 1,
+        expected_scheduled_system_id: DEMO_MOVE_SYSTEM_ID,
+        query_plan_row_index: 0,
+    }];
 
 const DEMO_POSITION_COMPONENT_ID: u64 = 0x002202c6aeb4f27b;
 const DEMO_VELOCITY_COMPONENT_ID: u64 = 0x2cf8a68bcb7f913b;
@@ -3123,10 +3128,12 @@ fn load_metadata_qword_via_offset_slot(bytes: &mut Vec<u8>, offset_slot: u16, ta
     store_rax_to_stack_slot(bytes, target_slot);
 }
 
-fn emit_native_query_plan_builder(bytes: &mut Vec<u8>, scan_failure_offsets: &mut Vec<usize>) {
-    for row in ECS_QUERY_PLAN_BUILD_ROWS {
-        emit_native_query_plan_build_row(bytes, row, scan_failure_offsets);
-    }
+fn emit_native_query_plan_builder(
+    bytes: &mut Vec<u8>,
+    row: NativeQueryPlanBuildRow,
+    scan_failure_offsets: &mut Vec<usize>,
+) {
+    emit_native_query_plan_build_row(bytes, row, scan_failure_offsets);
 }
 
 fn emit_native_query_plan_build_row(
@@ -3234,33 +3241,65 @@ fn emit_compiled_demo_main_schedule(
     position_store_failure_offsets: &mut Vec<usize>,
     dispatch_failure_offsets: &mut Vec<usize>,
 ) {
-    for (source_slot, target_slot) in ECS_COMPILED_SCHEDULE_COPIES {
-        load_stack_slot_to_rax(bytes, source_slot);
-        store_rax_to_stack_slot(bytes, target_slot);
-    }
-    for (compiled_schedule_slot, descriptor_slot) in ECS_COMPILED_SCHEDULE_DESCRIPTOR_RELATIONS {
-        compare_stack_slots_equal(
+    for row in ECS_COMPILED_SCHEDULE_BUILD_ROWS {
+        emit_compiled_schedule_build_row(
             bytes,
-            compiled_schedule_slot,
-            descriptor_slot,
+            row,
+            query_loop_observable,
+            scan_failure_offsets,
+            field_math_failure_offsets,
+            position_store_failure_offsets,
             dispatch_failure_offsets,
         );
     }
+}
 
-    compare_stack_slot_to_u64(
+fn emit_compiled_schedule_build_row(
+    bytes: &mut Vec<u8>,
+    row: NativeCompiledScheduleBuildRow,
+    query_loop_observable: &NativeMoveQueryLoopObservable,
+    scan_failure_offsets: &mut Vec<usize>,
+    field_math_failure_offsets: &mut Vec<usize>,
+    position_store_failure_offsets: &mut Vec<usize>,
+    dispatch_failure_offsets: &mut Vec<usize>,
+) {
+    load_stack_slot_to_rax(bytes, row.startup_schedule_id_slot);
+    store_rax_to_stack_slot(bytes, row.compiled_schedule_id_slot);
+    load_stack_slot_to_rax(bytes, row.descriptor_run_system_id_slot);
+    store_rax_to_stack_slot(bytes, row.compiled_scheduled_system_id_slot);
+    load_stack_slot_to_rax(bytes, row.descriptor_item_count_slot);
+    store_rax_to_stack_slot(bytes, row.compiled_scheduled_system_count_slot);
+
+    compare_stack_slots_equal(
         bytes,
-        ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT,
-        1,
+        row.compiled_schedule_id_slot,
+        row.descriptor_schedule_id_slot,
+        dispatch_failure_offsets,
+    );
+    compare_stack_slots_equal(
+        bytes,
+        row.compiled_scheduled_system_id_slot,
+        row.system_descriptor_id_slot,
         dispatch_failure_offsets,
     );
     compare_stack_slot_to_u64(
         bytes,
-        ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT,
-        query_loop_observable.schedule_run_system_id,
+        row.compiled_scheduled_system_count_slot,
+        row.expected_scheduled_system_count,
+        dispatch_failure_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        row.compiled_scheduled_system_id_slot,
+        row.expected_scheduled_system_id,
         dispatch_failure_offsets,
     );
 
-    emit_native_query_plan_builder(bytes, scan_failure_offsets);
+    emit_native_query_plan_builder(
+        bytes,
+        ECS_QUERY_PLAN_BUILD_ROWS[row.query_plan_row_index],
+        scan_failure_offsets,
+    );
     emit_compiled_demo_move_query_loop(
         bytes,
         query_loop_observable,
@@ -6628,13 +6667,14 @@ mod tests {
 
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
+        let schedule_row = ECS_COMPILED_SCHEDULE_BUILD_ROWS[0];
 
         assert!(
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
-                    ECS_STARTUP_TABLE_RUN_SCHEDULE_ID_SLOT,
-                    ECS_COMPILED_SCHEDULE_ID_SLOT,
+                    schedule_row.startup_schedule_id_slot,
+                    schedule_row.compiled_schedule_id_slot,
                 ),
             ),
             "generated text should load the run Demo.Main schedule id into compiled schedule state"
@@ -6643,8 +6683,8 @@ mod tests {
             contains_subsequence(
                 &text,
                 &compare_stack_slots_equal_sequence(
-                    ECS_COMPILED_SCHEDULE_ID_SLOT,
-                    ECS_MAIN_SCHEDULE_DESCRIPTOR_ID_SLOT,
+                    schedule_row.compiled_schedule_id_slot,
+                    schedule_row.descriptor_schedule_id_slot,
                 ),
             ),
             "generated text should validate the compiled Demo.Main schedule id against decoded schedule state"
@@ -6653,8 +6693,8 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
-                    ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT,
-                    ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT,
+                    schedule_row.descriptor_run_system_id_slot,
+                    schedule_row.compiled_scheduled_system_id_slot,
                 ),
             ),
             "generated text should copy the decoded scheduled Demo.Move system id"
@@ -6663,8 +6703,8 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
-                    ECS_MAIN_SCHEDULE_DESCRIPTOR_ITEM_COUNT_SLOT,
-                    ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT,
+                    schedule_row.descriptor_item_count_slot,
+                    schedule_row.compiled_scheduled_system_count_slot,
                 ),
             ),
             "generated text should copy the decoded scheduled system count"
@@ -6672,7 +6712,10 @@ mod tests {
         assert!(
             contains_subsequence(
                 &text,
-                &compare_stack_slot_sequence(ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT, 1),
+                &compare_stack_slot_sequence(
+                    schedule_row.compiled_scheduled_system_count_slot,
+                    schedule_row.expected_scheduled_system_count,
+                ),
             ),
             "generated text should validate the compiled scheduled system count"
         );
@@ -6680,8 +6723,8 @@ mod tests {
             contains_subsequence(
                 &text,
                 &compare_stack_slots_equal_sequence(
-                    ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT,
-                    ECS_MOVE_SYSTEM_DESCRIPTOR_ID_SLOT,
+                    schedule_row.compiled_scheduled_system_id_slot,
+                    schedule_row.system_descriptor_id_slot,
                 ),
             ),
             "generated text should validate the compiled scheduled system id against decoded system state before query planning"
@@ -6741,6 +6784,186 @@ mod tests {
     }
 
     #[test]
+    fn executes_compiled_schedules_from_table_rows_generically() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let model = NATIVE_ECS_TABLE_MODEL;
+        let startup_run = model.startup_operations.run_schedule_rows[0];
+        let main_schedule = model.descriptors.schedule_rows[0].slots;
+        let move_system = model.descriptors.system_rows[0].slots;
+        let compiled_schedule = model.compiled_schedules.rows[0];
+        let row = ECS_COMPILED_SCHEDULE_BUILD_ROWS[0];
+
+        assert_eq!(ECS_COMPILED_SCHEDULE_BUILD_ROWS.len(), 1);
+        assert_eq!(
+            row,
+            NativeCompiledScheduleBuildRow {
+                startup_schedule_id_slot: startup_run.schedule_id.offset,
+                descriptor_schedule_id_slot: main_schedule.id.offset,
+                descriptor_item_count_slot: main_schedule.item_count.offset,
+                descriptor_run_system_id_slot: main_schedule.run_system_id.offset,
+                system_descriptor_id_slot: move_system.id.offset,
+                compiled_schedule_id_slot: compiled_schedule.schedule_id.offset,
+                compiled_scheduled_system_id_slot: compiled_schedule.scheduled_system_id.offset,
+                compiled_scheduled_system_count_slot: compiled_schedule
+                    .scheduled_system_count
+                    .offset,
+                expected_scheduled_system_count: 1,
+                expected_scheduled_system_id: DEMO_MOVE_SYSTEM_ID,
+                query_plan_row_index: 0,
+            }
+        );
+        assert_eq!(
+            ECS_QUERY_PLAN_BUILD_ROWS[row.query_plan_row_index].plan_query_id_slot,
+            model.query_plans.rows[0].query_id.offset
+        );
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    row.startup_schedule_id_slot,
+                    row.compiled_schedule_id_slot,
+                ),
+            ),
+            "generated text should copy the startup run row schedule id through the schedule build row"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    row.descriptor_run_system_id_slot,
+                    row.compiled_scheduled_system_id_slot,
+                ),
+            ),
+            "generated text should copy the decoded scheduled system id through the schedule build row"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    row.descriptor_item_count_slot,
+                    row.compiled_scheduled_system_count_slot,
+                ),
+            ),
+            "generated text should copy the decoded scheduled system count through the schedule build row"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slots_equal_sequence(
+                    row.compiled_schedule_id_slot,
+                    row.descriptor_schedule_id_slot,
+                ),
+            ),
+            "generated text should validate compiled schedule id against decoded schedule row"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slots_equal_sequence(
+                    row.compiled_scheduled_system_id_slot,
+                    row.system_descriptor_id_slot,
+                ),
+            ),
+            "generated text should validate compiled system id against decoded system row"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(
+                    row.compiled_scheduled_system_count_slot,
+                    row.expected_scheduled_system_count,
+                ),
+            ),
+            "generated text should validate the expected scheduled-system count"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(
+                    row.compiled_scheduled_system_id_slot,
+                    row.expected_scheduled_system_id,
+                ),
+            ),
+            "generated text should validate the expected scheduled Demo.Move system id"
+        );
+
+        let query_plan_row = ECS_QUERY_PLAN_BUILD_ROWS[row.query_plan_row_index];
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    query_plan_row.query_id_slot,
+                    query_plan_row.plan_query_id_slot,
+                ),
+            ),
+            "compiled schedule execution should dispatch into the table-row query-plan builder"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slots_equal_sequence(
+                    query_plan_row.plan_term_count_slot,
+                    query_plan_row.system_query_term_count_slot,
+                ),
+            ),
+            "query planning should still validate against decoded system query-param state"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_component_field_multiply_sequence(
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "compiled schedule execution should still emit compiled Demo.Move field math"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_position_store_sequence(
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "compiled schedule execution should still emit compiled Demo.Move Position stores"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "generated text should preserve compiled schedule success"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_RUN_SCHEDULE_DISPATCH_FAILURE_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "generated text should expose compiled schedule dispatch failure"
+        );
+    }
+
+    #[test]
     fn executes_move_system_from_decoded_native_ecs_tables() {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
@@ -6776,25 +6999,47 @@ mod tests {
                 descriptor_slot
             );
         }
-        for (source_slot, target_slot) in ECS_COMPILED_SCHEDULE_COPIES {
+        let schedule_build_row = ECS_COMPILED_SCHEDULE_BUILD_ROWS[0];
+        for (source_slot, target_slot) in [
+            (
+                schedule_build_row.startup_schedule_id_slot,
+                schedule_build_row.compiled_schedule_id_slot,
+            ),
+            (
+                schedule_build_row.descriptor_run_system_id_slot,
+                schedule_build_row.compiled_scheduled_system_id_slot,
+            ),
+            (
+                schedule_build_row.descriptor_item_count_slot,
+                schedule_build_row.compiled_scheduled_system_count_slot,
+            ),
+        ] {
             assert!(
                 contains_subsequence(
                     &text,
                     &load_store_stack_slot_sequence(source_slot, target_slot),
                 ),
-                "compiled schedule should copy decoded/table slot {} into slot {}",
+                "compiled schedule should copy decoded/table slot {} into slot {} through its build row",
                 source_slot,
                 target_slot
             );
         }
-        for (compiled_schedule_slot, descriptor_slot) in ECS_COMPILED_SCHEDULE_DESCRIPTOR_RELATIONS
-        {
+        for (compiled_schedule_slot, descriptor_slot) in [
+            (
+                schedule_build_row.compiled_schedule_id_slot,
+                schedule_build_row.descriptor_schedule_id_slot,
+            ),
+            (
+                schedule_build_row.compiled_scheduled_system_id_slot,
+                schedule_build_row.system_descriptor_id_slot,
+            ),
+        ] {
             assert!(
                 contains_subsequence(
                     &text,
                     &compare_stack_slots_equal_sequence(compiled_schedule_slot, descriptor_slot),
                 ),
-                "compiled schedule slot {} should be checked against decoded descriptor slot {}",
+                "compiled schedule slot {} should be checked against decoded descriptor slot {} through its build row",
                 compiled_schedule_slot,
                 descriptor_slot
             );

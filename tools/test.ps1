@@ -1231,6 +1231,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_compiled_schedule_from_native_state")
 
     Invoke-CheckedCommand `
+        -Name "executes_compiled_schedules_from_table_rows_generically" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_compiled_schedules_from_table_rows_generically")
+
+    Invoke-CheckedCommand `
         -Name "emits_native_query_loop_row_scan_skeleton" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "emits_native_query_loop_row_scan_skeleton")
