@@ -62,6 +62,13 @@ struct NativeQueryPlanSlots {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeCompiledScheduleSlots {
+    schedule_id: NativeEcsSlot,
+    scheduled_system_id: NativeEcsSlot,
+    scheduled_system_count: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeCompiledMoveSlots {
     target_position_payload: NativeEcsSlot,
     scanned_row_count: NativeEcsSlot,
@@ -70,22 +77,23 @@ struct NativeCompiledMoveSlots {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeEcsExecutionStateLayout {
-    frame_size: u8,
-    zeroed_qword_offsets: [u8; 29],
+    frame_size: u16,
+    zeroed_qword_offsets: [u8; 32],
     descriptor_counts: NativeDescriptorCountSlots,
     descriptor_records: NativeDescriptorRecordStateSlots,
     startup_state: NativeStartupStateSlots,
     startup_dispatch: NativeStartupDispatchSlots,
     query_plan: NativeQueryPlanSlots,
+    compiled_schedule: NativeCompiledScheduleSlots,
     compiled_move: NativeCompiledMoveSlots,
 }
 
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
-        frame_size: 232,
+        frame_size: 256,
         zeroed_qword_offsets: [
             0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152,
-            160, 168, 176, 184, 192, 200, 208, 216, 224,
+            160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248,
         ],
         descriptor_counts: NativeDescriptorCountSlots {
             components: NativeEcsSlot {
@@ -211,6 +219,20 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
                 byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
             },
         },
+        compiled_schedule: NativeCompiledScheduleSlots {
+            schedule_id: NativeEcsSlot {
+                offset: 232,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            scheduled_system_id: NativeEcsSlot {
+                offset: 240,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            scheduled_system_count: NativeEcsSlot {
+                offset: 248,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+        },
         compiled_move: NativeCompiledMoveSlots {
             target_position_payload: NativeEcsSlot {
                 offset: 72,
@@ -226,403 +248,80 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
             },
         },
     };
-const NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size;
-
 const RUNTIME_CREATE_PREFIX: &[u8] = &[
-    0x48,
-    0x81,
-    0xec,
-    NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE,
-    0x00,
-    0x00,
-    0x00, // sub rsp, frame size
-    0x31,
-    0xc0, // xor eax, eax
-    0x48,
-    0x89,
-    0x04,
-    0x24, // mov qword ptr [rsp], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x08, // mov qword ptr [rsp + 8], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x10, // mov qword ptr [rsp + 16], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x18, // mov qword ptr [rsp + 24], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x20, // mov qword ptr [rsp + 32], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x28, // mov qword ptr [rsp + 40], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x30, // mov qword ptr [rsp + 48], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x38, // mov qword ptr [rsp + 56], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x40, // mov qword ptr [rsp + 64], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x48, // mov qword ptr [rsp + 72], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x50, // mov qword ptr [rsp + 80], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x58, // mov qword ptr [rsp + 88], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x60, // mov qword ptr [rsp + 96], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x68, // mov qword ptr [rsp + 104], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x70, // mov qword ptr [rsp + 112], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x78, // mov qword ptr [rsp + 120], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0x80,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 128], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0x88,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 136], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0x90,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 144], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0x98,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 152], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xa0,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 160], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xa8,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 168], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xb0,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 176], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xb8,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 184], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xc0,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 192], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xc8,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 200], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xd0,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 208], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xd8,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 216], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xe0,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 224], rax
+    0x48, 0x81, 0xec, 0x00, 0x01, 0x00, 0x00, // sub rsp, frame size
+    0x31, 0xc0, // xor eax, eax
+    0x48, 0x89, 0x04, 0x24, // mov qword ptr [rsp], rax
+    0x48, 0x89, 0x44, 0x24, 0x08, // mov qword ptr [rsp + 8], rax
+    0x48, 0x89, 0x44, 0x24, 0x10, // mov qword ptr [rsp + 16], rax
+    0x48, 0x89, 0x44, 0x24, 0x18, // mov qword ptr [rsp + 24], rax
+    0x48, 0x89, 0x44, 0x24, 0x20, // mov qword ptr [rsp + 32], rax
+    0x48, 0x89, 0x44, 0x24, 0x28, // mov qword ptr [rsp + 40], rax
+    0x48, 0x89, 0x44, 0x24, 0x30, // mov qword ptr [rsp + 48], rax
+    0x48, 0x89, 0x44, 0x24, 0x38, // mov qword ptr [rsp + 56], rax
+    0x48, 0x89, 0x44, 0x24, 0x40, // mov qword ptr [rsp + 64], rax
+    0x48, 0x89, 0x44, 0x24, 0x48, // mov qword ptr [rsp + 72], rax
+    0x48, 0x89, 0x44, 0x24, 0x50, // mov qword ptr [rsp + 80], rax
+    0x48, 0x89, 0x44, 0x24, 0x58, // mov qword ptr [rsp + 88], rax
+    0x48, 0x89, 0x44, 0x24, 0x60, // mov qword ptr [rsp + 96], rax
+    0x48, 0x89, 0x44, 0x24, 0x68, // mov qword ptr [rsp + 104], rax
+    0x48, 0x89, 0x44, 0x24, 0x70, // mov qword ptr [rsp + 112], rax
+    0x48, 0x89, 0x44, 0x24, 0x78, // mov qword ptr [rsp + 120], rax
+    0x48, 0x89, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 128], rax
+    0x48, 0x89, 0x84, 0x24, 0x88, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 136], rax
+    0x48, 0x89, 0x84, 0x24, 0x90, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 144], rax
+    0x48, 0x89, 0x84, 0x24, 0x98, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 152], rax
+    0x48, 0x89, 0x84, 0x24, 0xa0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 160], rax
+    0x48, 0x89, 0x84, 0x24, 0xa8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 168], rax
+    0x48, 0x89, 0x84, 0x24, 0xb0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 176], rax
+    0x48, 0x89, 0x84, 0x24, 0xb8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 184], rax
+    0x48, 0x89, 0x84, 0x24, 0xc0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 192], rax
+    0x48, 0x89, 0x84, 0x24, 0xc8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 200], rax
+    0x48, 0x89, 0x84, 0x24, 0xd0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 208], rax
+    0x48, 0x89, 0x84, 0x24, 0xd8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 216], rax
+    0x48, 0x89, 0x84, 0x24, 0xe0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 224], rax
+    0x48, 0x89, 0x84, 0x24, 0xe8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 232], rax
+    0x48, 0x89, 0x84, 0x24, 0xf0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 240], rax
+    0x48, 0x89, 0x84, 0x24, 0xf8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 248], rax
 ];
 
 const RUNTIME_DESTROY_SUFFIX: &[u8] = &[
-    0x31,
-    0xc0, // xor eax, eax
-    0x48,
-    0x89,
-    0x04,
-    0x24, // mov qword ptr [rsp], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x08, // mov qword ptr [rsp + 8], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x10, // mov qword ptr [rsp + 16], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x18, // mov qword ptr [rsp + 24], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x20, // mov qword ptr [rsp + 32], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x28, // mov qword ptr [rsp + 40], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x30, // mov qword ptr [rsp + 48], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x38, // mov qword ptr [rsp + 56], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x40, // mov qword ptr [rsp + 64], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x48, // mov qword ptr [rsp + 72], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x50, // mov qword ptr [rsp + 80], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x58, // mov qword ptr [rsp + 88], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x60, // mov qword ptr [rsp + 96], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x68, // mov qword ptr [rsp + 104], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x70, // mov qword ptr [rsp + 112], rax
-    0x48,
-    0x89,
-    0x44,
-    0x24,
-    0x78, // mov qword ptr [rsp + 120], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0x80,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 128], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0x88,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 136], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0x90,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 144], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0x98,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 152], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xa0,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 160], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xa8,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 168], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xb0,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 176], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xb8,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 184], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xc0,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 192], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xc8,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 200], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xd0,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 208], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xd8,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 216], rax
-    0x48,
-    0x89,
-    0x84,
-    0x24,
-    0xe0,
-    0x00,
-    0x00,
-    0x00, // mov qword ptr [rsp + 224], rax
-    0x48,
-    0x81,
-    0xc4,
-    NATIVE_ECS_EXECUTION_STATE_FRAME_SIZE,
-    0x00,
-    0x00,
-    0x00, // add rsp, frame size
-    0xb8,
-    0x3c,
-    0x00,
-    0x00,
-    0x00, // mov eax, 60
-    0x0f,
-    0x05, // syscall
+    0x31, 0xc0, // xor eax, eax
+    0x48, 0x89, 0x04, 0x24, // mov qword ptr [rsp], rax
+    0x48, 0x89, 0x44, 0x24, 0x08, // mov qword ptr [rsp + 8], rax
+    0x48, 0x89, 0x44, 0x24, 0x10, // mov qword ptr [rsp + 16], rax
+    0x48, 0x89, 0x44, 0x24, 0x18, // mov qword ptr [rsp + 24], rax
+    0x48, 0x89, 0x44, 0x24, 0x20, // mov qword ptr [rsp + 32], rax
+    0x48, 0x89, 0x44, 0x24, 0x28, // mov qword ptr [rsp + 40], rax
+    0x48, 0x89, 0x44, 0x24, 0x30, // mov qword ptr [rsp + 48], rax
+    0x48, 0x89, 0x44, 0x24, 0x38, // mov qword ptr [rsp + 56], rax
+    0x48, 0x89, 0x44, 0x24, 0x40, // mov qword ptr [rsp + 64], rax
+    0x48, 0x89, 0x44, 0x24, 0x48, // mov qword ptr [rsp + 72], rax
+    0x48, 0x89, 0x44, 0x24, 0x50, // mov qword ptr [rsp + 80], rax
+    0x48, 0x89, 0x44, 0x24, 0x58, // mov qword ptr [rsp + 88], rax
+    0x48, 0x89, 0x44, 0x24, 0x60, // mov qword ptr [rsp + 96], rax
+    0x48, 0x89, 0x44, 0x24, 0x68, // mov qword ptr [rsp + 104], rax
+    0x48, 0x89, 0x44, 0x24, 0x70, // mov qword ptr [rsp + 112], rax
+    0x48, 0x89, 0x44, 0x24, 0x78, // mov qword ptr [rsp + 120], rax
+    0x48, 0x89, 0x84, 0x24, 0x80, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 128], rax
+    0x48, 0x89, 0x84, 0x24, 0x88, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 136], rax
+    0x48, 0x89, 0x84, 0x24, 0x90, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 144], rax
+    0x48, 0x89, 0x84, 0x24, 0x98, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 152], rax
+    0x48, 0x89, 0x84, 0x24, 0xa0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 160], rax
+    0x48, 0x89, 0x84, 0x24, 0xa8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 168], rax
+    0x48, 0x89, 0x84, 0x24, 0xb0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 176], rax
+    0x48, 0x89, 0x84, 0x24, 0xb8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 184], rax
+    0x48, 0x89, 0x84, 0x24, 0xc0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 192], rax
+    0x48, 0x89, 0x84, 0x24, 0xc8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 200], rax
+    0x48, 0x89, 0x84, 0x24, 0xd0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 208], rax
+    0x48, 0x89, 0x84, 0x24, 0xd8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 216], rax
+    0x48, 0x89, 0x84, 0x24, 0xe0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 224], rax
+    0x48, 0x89, 0x84, 0x24, 0xe8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 232], rax
+    0x48, 0x89, 0x84, 0x24, 0xf0, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 240], rax
+    0x48, 0x89, 0x84, 0x24, 0xf8, 0x00, 0x00, 0x00, // mov qword ptr [rsp + 248], rax
+    0x48, 0x81, 0xc4, 0x00, 0x01, 0x00, 0x00, // add rsp, frame size
+    0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, 60
+    0x0f, 0x05, // syscall
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -783,6 +482,18 @@ const ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT: u8 = NATIVE_ECS_EXECUTION_ST
 const ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .query_plan
     .velocity_payload_address
+    .offset;
+const ECS_COMPILED_SCHEDULE_ID_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .compiled_schedule
+    .schedule_id
+    .offset;
+const ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .compiled_schedule
+    .scheduled_system_id
+    .offset;
+const ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT: u8 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .compiled_schedule
+    .scheduled_system_count
     .offset;
 
 const DEMO_POSITION_COMPONENT_ID: u64 = 0x002202c6aeb4f27b;
@@ -1574,19 +1285,14 @@ fn ecs_metadata_decoder_body(
         1,
         &mut jump_to_run_schedule_dispatch_failure_offsets,
     );
-    compare_metadata_slot_to_u64(
+    emit_compiled_demo_main_schedule(
         &mut bytes,
-        startup_payloads.run_schedule_id_offset,
-        DEMO_MAIN_SCHEDULE_ID,
-        &mut jump_to_run_schedule_dispatch_failure_offsets,
-    );
-    emit_native_query_plan_builder(&mut bytes, &mut jump_to_query_loop_scan_failure_offsets);
-    emit_compiled_demo_move_query_loop(
-        &mut bytes,
+        &startup_payloads,
         &query_loop_observable,
         &mut jump_to_query_loop_scan_failure_offsets,
         &mut jump_to_query_loop_field_math_failure_offsets,
         &mut jump_to_query_loop_position_store_failure_offsets,
+        &mut jump_to_run_schedule_dispatch_failure_offsets,
     );
 
     move_edi_exit_code(&mut bytes, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE);
@@ -1736,22 +1442,6 @@ fn compare_stack_slot_to_u64(
     jump_offsets.push(jump_offset);
 }
 
-fn compare_metadata_slot_to_u64(
-    bytes: &mut Vec<u8>,
-    metadata_offset: i32,
-    expected: u64,
-    jump_offsets: &mut Vec<usize>,
-) {
-    bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
-    bytes.extend_from_slice(&expected.to_le_bytes());
-    bytes.extend_from_slice(&[0x48, 0x39, 0x86]); // cmp qword ptr [rsi + offset], rax
-    bytes.extend_from_slice(&metadata_offset.to_le_bytes());
-
-    let jump_offset = bytes.len();
-    bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
-    jump_offsets.push(jump_offset);
-}
-
 fn emit_startup_operation_dispatch(
     bytes: &mut Vec<u8>,
     operation_kind_offset: i32,
@@ -1793,6 +1483,55 @@ fn emit_native_query_plan_builder(bytes: &mut Vec<u8>, scan_failure_offsets: &mu
     store_rax_to_stack_slot(bytes, ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT);
     emit_lea_stack_address_to_rax(bytes, ECS_VELOCITY_PAYLOAD_STORAGE_SLOT);
     store_rax_to_stack_slot(bytes, ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT);
+}
+
+fn emit_compiled_demo_main_schedule(
+    bytes: &mut Vec<u8>,
+    startup_payloads: &EcsStartupPayloads,
+    query_loop_observable: &NativeMoveQueryLoopObservable,
+    scan_failure_offsets: &mut Vec<usize>,
+    field_math_failure_offsets: &mut Vec<usize>,
+    position_store_failure_offsets: &mut Vec<usize>,
+    dispatch_failure_offsets: &mut Vec<usize>,
+) {
+    bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
+    bytes.extend_from_slice(&startup_payloads.run_schedule_id_offset.to_le_bytes());
+    store_rax_to_stack_slot(bytes, ECS_COMPILED_SCHEDULE_ID_SLOT);
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_COMPILED_SCHEDULE_ID_SLOT,
+        query_loop_observable.schedule_id,
+        dispatch_failure_offsets,
+    );
+
+    bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, scheduled system id
+    bytes.extend_from_slice(&query_loop_observable.schedule_run_system_id.to_le_bytes());
+    store_rax_to_stack_slot(bytes, ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT);
+
+    bytes.extend_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00]); // mov eax, 1
+    store_rax_to_stack_slot(bytes, ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT);
+
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT,
+        1,
+        dispatch_failure_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT,
+        query_loop_observable.schedule_run_system_id,
+        dispatch_failure_offsets,
+    );
+
+    emit_native_query_plan_builder(bytes, scan_failure_offsets);
+    emit_compiled_demo_move_query_loop(
+        bytes,
+        query_loop_observable,
+        scan_failure_offsets,
+        field_math_failure_offsets,
+        position_store_failure_offsets,
+    );
 }
 
 fn emit_compiled_demo_move_query_loop(
@@ -2089,12 +1828,12 @@ mod tests {
     fn defines_native_ecs_execution_state_layout() {
         let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
 
-        assert_eq!(layout.frame_size, 232);
+        assert_eq!(layout.frame_size, 256);
         assert_eq!(
             layout.zeroed_qword_offsets,
             [
                 0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144,
-                152, 160, 168, 176, 184, 192, 200, 208, 216, 224,
+                152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248,
             ]
         );
         assert_eq!(
@@ -2253,6 +1992,23 @@ mod tests {
                 },
             }
         );
+        assert_eq!(
+            layout.compiled_schedule,
+            NativeCompiledScheduleSlots {
+                schedule_id: NativeEcsSlot {
+                    offset: 232,
+                    byte_len: 8,
+                },
+                scheduled_system_id: NativeEcsSlot {
+                    offset: 240,
+                    byte_len: 8,
+                },
+                scheduled_system_count: NativeEcsSlot {
+                    offset: 248,
+                    byte_len: 8,
+                },
+            }
+        );
         assert_eq!(ECS_DESCRIPTOR_REGISTRY_SLOTS, [0, 8, 16, 24, 32]);
         assert_eq!(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS, [96, 112, 128, 144, 160]);
         assert_eq!(
@@ -2273,6 +2029,9 @@ mod tests {
         assert_eq!(ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT, 208);
         assert_eq!(ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT, 216);
         assert_eq!(ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT, 224);
+        assert_eq!(ECS_COMPILED_SCHEDULE_ID_SLOT, 232);
+        assert_eq!(ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT, 240);
+        assert_eq!(ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT, 248);
 
         let slots = [
             layout.descriptor_counts.components,
@@ -2301,22 +2060,28 @@ mod tests {
             layout.query_plan.matched_row_count,
             layout.query_plan.position_payload_address,
             layout.query_plan.velocity_payload_address,
+            layout.compiled_schedule.schedule_id,
+            layout.compiled_schedule.scheduled_system_id,
+            layout.compiled_schedule.scheduled_system_count,
             layout.compiled_move.target_position_payload,
             layout.compiled_move.scanned_row_count,
             layout.compiled_move.field_product_payload,
         ];
         for slot in slots {
             assert!(
-                slot.offset + slot.byte_len <= layout.frame_size,
+                u16::from(slot.offset) + u16::from(slot.byte_len) <= layout.frame_size,
                 "slot {:?} should fit in the native ECS frame",
                 slot
             );
         }
         for (left_index, left) in slots.iter().enumerate() {
             for right in slots.iter().skip(left_index + 1) {
+                let left_start = u16::from(left.offset);
+                let left_end = left_start + u16::from(left.byte_len);
+                let right_start = u16::from(right.offset);
+                let right_end = right_start + u16::from(right.byte_len);
                 assert!(
-                    left.offset + left.byte_len <= right.offset
-                        || right.offset + right.byte_len <= left.offset,
+                    left_end <= right_start || right_end <= left_start,
                     "semantic slots should not overlap: {:?} and {:?}",
                     left,
                     right
@@ -2657,14 +2422,19 @@ mod tests {
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        let mut run_schedule_check = vec![0x48, 0xb8];
-        run_schedule_check.extend_from_slice(&DEMO_MAIN_SCHEDULE_ID.to_le_bytes());
-        run_schedule_check.extend_from_slice(&[0x48, 0x39, 0x86]);
-        run_schedule_check.extend_from_slice(&696_i32.to_le_bytes());
-        run_schedule_check.extend_from_slice(&[0x0f, 0x85]);
         assert!(
-            contains_subsequence(&text, &run_schedule_check),
-            "generated text should read and validate startup run Demo.Main"
+            contains_subsequence(
+                &text,
+                &metadata_qword_load_store_sequence(696, ECS_COMPILED_SCHEDULE_ID_SLOT),
+            ),
+            "generated text should materialize startup run Demo.Main into compiled schedule state"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(ECS_COMPILED_SCHEDULE_ID_SLOT, DEMO_MAIN_SCHEDULE_ID),
+            ),
+            "generated text should validate compiled schedule state for Demo.Main"
         );
         assert!(
             contains_subsequence(
@@ -2798,7 +2568,14 @@ mod tests {
         assert!(
             contains_subsequence(
                 &text,
-                &metadata_u64_compare_sequence(696, DEMO_MAIN_SCHEDULE_ID)
+                &metadata_qword_load_store_sequence(696, ECS_COMPILED_SCHEDULE_ID_SLOT)
+            ),
+            "generated text should preserve run Demo.Main materialization"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(ECS_COMPILED_SCHEDULE_ID_SLOT, DEMO_MAIN_SCHEDULE_ID),
             ),
             "generated text should preserve run Demo.Main validation"
         );
@@ -2928,6 +2705,121 @@ mod tests {
         );
     }
 
+    #[test]
+    fn executes_compiled_schedule_from_native_state() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &metadata_qword_load_store_sequence(696, ECS_COMPILED_SCHEDULE_ID_SLOT),
+            ),
+            "generated text should load the run Demo.Main schedule id into compiled schedule state"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(ECS_COMPILED_SCHEDULE_ID_SLOT, DEMO_MAIN_SCHEDULE_ID),
+            ),
+            "generated text should validate the compiled Demo.Main schedule id"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &mov_rax_immediate_store_sequence(
+                    DEMO_MOVE_SYSTEM_ID,
+                    ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT,
+                ),
+            ),
+            "generated text should store the Core-derived scheduled Demo.Move system id"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &mov_eax_one_store_sequence(ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT),
+            ),
+            "generated text should store one scheduled system in compiled schedule state"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(ECS_COMPILED_SCHEDULED_SYSTEM_COUNT_SLOT, 1),
+            ),
+            "generated text should validate the compiled scheduled system count"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(
+                    ECS_COMPILED_SCHEDULED_SYSTEM_ID_SLOT,
+                    DEMO_MOVE_SYSTEM_ID,
+                ),
+            ),
+            "generated text should validate the compiled scheduled system id before query planning"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    ECS_SPAWN_ROW_COUNT_SLOT,
+                    ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
+                ),
+            ),
+            "compiled schedule execution should build query-plan state before Demo.Move"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_component_field_multiply_sequence(
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "compiled schedule execution should emit Demo.Move field math"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_position_store_sequence(
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "compiled schedule execution should emit Demo.Move Position stores"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "generated text should preserve compiled schedule success"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[
+                    0xbf,
+                    ECS_RUN_SCHEDULE_DISPATCH_FAILURE_EXIT_CODE,
+                    0x00,
+                    0x00,
+                    0x00
+                ],
+            ),
+            "generated text should expose compiled schedule dispatch failure"
+        );
+    }
+
     fn contains_subsequence(haystack: &[u8], needle: &[u8]) -> bool {
         haystack
             .windows(needle.len())
@@ -2958,17 +2850,22 @@ mod tests {
         bytes
     }
 
-    fn metadata_u64_compare_sequence(metadata_offset: i32, expected: u64) -> Vec<u8> {
-        let mut bytes = vec![0x48, 0xb8]; // mov rax, imm64
-        bytes.extend_from_slice(&expected.to_le_bytes());
-        bytes.extend_from_slice(&[0x48, 0x39, 0x86]); // cmp qword ptr [rsi + offset], rax
+    fn metadata_qword_load_store_sequence(metadata_offset: i32, stack_slot: u8) -> Vec<u8> {
+        let mut bytes = vec![0x48, 0x8b, 0x86]; // mov rax, qword ptr [rsi + offset]
         bytes.extend_from_slice(&metadata_offset.to_le_bytes());
-        bytes.extend_from_slice(&[0x0f, 0x85]); // jne failure
+        append_rax_qword_store(&mut bytes, stack_slot);
         bytes
     }
 
     fn mov_eax_one_store_sequence(stack_slot: u8) -> Vec<u8> {
         let mut bytes = vec![0xb8, 0x01, 0x00, 0x00, 0x00]; // mov eax, 1
+        append_rax_qword_store(&mut bytes, stack_slot);
+        bytes
+    }
+
+    fn mov_rax_immediate_store_sequence(value: u64, stack_slot: u8) -> Vec<u8> {
+        let mut bytes = vec![0x48, 0xb8]; // mov rax, imm64
+        bytes.extend_from_slice(&value.to_le_bytes());
         append_rax_qword_store(&mut bytes, stack_slot);
         bytes
     }
@@ -3057,7 +2954,7 @@ mod tests {
     fn expected_runtime_create_prefix(layout: &NativeEcsExecutionStateLayout) -> Vec<u8> {
         let mut bytes = Vec::new();
         if layout.frame_size <= 127 {
-            bytes.extend_from_slice(&[0x48, 0x83, 0xec, layout.frame_size]);
+            bytes.extend_from_slice(&[0x48, 0x83, 0xec, layout.frame_size as u8]);
         } else {
             bytes.extend_from_slice(&[0x48, 0x81, 0xec]);
             bytes.extend_from_slice(&(layout.frame_size as u32).to_le_bytes());
@@ -3075,7 +2972,7 @@ mod tests {
             append_zero_qword_store(&mut bytes, offset);
         }
         if layout.frame_size <= 127 {
-            bytes.extend_from_slice(&[0x48, 0x83, 0xc4, layout.frame_size]);
+            bytes.extend_from_slice(&[0x48, 0x83, 0xc4, layout.frame_size as u8]);
         } else {
             bytes.extend_from_slice(&[0x48, 0x81, 0xc4]);
             bytes.extend_from_slice(&(layout.frame_size as u32).to_le_bytes());

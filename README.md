@@ -84,8 +84,9 @@ The proof chain currently demonstrates:
 - Native descriptor record state materialization for component/resource/system/query/schedule section offsets and byte lengths.
 - Native startup operation dispatch for source-order resource, spawn, and run-schedule operation kinds.
 - Native query-planning state for the bootstrap `Demo.Position + Demo.Velocity` row used by compiled `Demo.Move`.
+- Native compiled schedule state for dispatching `Demo.Main` into compiled `Demo.Move`.
 
-M19 native ECS execution-state work is underway. The next proof is executing compiled schedule state.
+M20 native ECS descriptor-table work is underway. The next proof is decoding native component/resource descriptor records.
 
 ## What This Is Not Yet
 
