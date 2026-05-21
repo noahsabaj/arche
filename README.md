@@ -93,8 +93,9 @@ The proof chain currently demonstrates:
 - A reusable native ECS table model that names the current descriptor, startup, compiled schedule, and query-plan rows without changing generated native bytes.
 - Native descriptor name-reference decoding into table state, with generated startup validating exact descriptor name bytes from embedded `ARCHEECS`.
 - Generic source-order startup operation table iteration for native resource, spawn, and run-schedule handlers.
+- Native query-plan construction from reusable table rows for the current `Demo.Move.movers` proof.
 
-M20 native ECS descriptor-table work is complete. M21 native ECS table generalization is active; the next proof is building native query plans from table rows generically.
+M20 native ECS descriptor-table work is complete. M21 native ECS table generalization is active; the next proof is compiled schedules without fixture-specific table constants.
 
 ## What This Is Not Yet
 

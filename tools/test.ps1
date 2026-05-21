@@ -1216,6 +1216,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_native_query_plan_from_descriptor_records")
 
     Invoke-CheckedCommand `
+        -Name "builds_native_query_plan_from_table_rows_generically" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_native_query_plan_from_table_rows_generically")
+
+    Invoke-CheckedCommand `
         -Name "executes_move_system_from_decoded_native_ecs_tables" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_move_system_from_decoded_native_ecs_tables")
