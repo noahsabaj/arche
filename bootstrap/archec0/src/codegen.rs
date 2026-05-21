@@ -371,6 +371,64 @@ struct NativeEcsTableModel {
     query_plans: NativeQueryPlanTableModel,
 }
 
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeTableIterationKind {
+    ComponentDescriptors,
+    ResourceDescriptors,
+    SystemDescriptors,
+    QueryDescriptors,
+    ScheduleDescriptors,
+    StartupOperations,
+    CompiledSchedules,
+    QueryPlans,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeTableIterationRowKind {
+    ComponentDescriptor,
+    ResourceDescriptor,
+    SystemDescriptor,
+    QueryDescriptor,
+    ScheduleDescriptor,
+    StartupResourcePayload,
+    StartupSpawn,
+    StartupRunSchedule,
+    CompiledSchedule,
+    QueryPlan,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeTableIterationRow {
+    row_kind: NativeTableIterationRowKind,
+    row_index: usize,
+    primary_slot: NativeEcsSlot,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeTableIterationCursor<const N: usize> {
+    table: NativeTableIterationKind,
+    expected_row_count: usize,
+    count_slot: Option<NativeEcsSlot>,
+    rows: [NativeTableIterationRow; N],
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeEcsTableIterationCursorModel {
+    component_descriptors: NativeTableIterationCursor<2>,
+    resource_descriptors: NativeTableIterationCursor<1>,
+    system_descriptors: NativeTableIterationCursor<1>,
+    query_descriptors: NativeTableIterationCursor<1>,
+    schedule_descriptors: NativeTableIterationCursor<1>,
+    startup_operations: NativeTableIterationCursor<3>,
+    compiled_schedules: NativeTableIterationCursor<1>,
+    query_plans: NativeTableIterationCursor<1>,
+}
+
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
         frame_size: 856,
@@ -945,6 +1003,134 @@ const NATIVE_ECS_TABLE_MODEL: NativeEcsTableModel = NativeEcsTableModel {
         rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_backed_query_plan],
     },
 };
+
+#[allow(dead_code)]
+const NATIVE_ECS_TABLE_ITERATION_CURSORS: NativeEcsTableIterationCursorModel =
+    NativeEcsTableIterationCursorModel {
+        component_descriptors: NativeTableIterationCursor {
+            table: NativeTableIterationKind::ComponentDescriptors,
+            expected_row_count: 2,
+            count_slot: Some(
+                NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                    .descriptor_counts
+                    .components,
+            ),
+            rows: [
+                NativeTableIterationRow {
+                    row_kind: NativeTableIterationRowKind::ComponentDescriptor,
+                    row_index: 0,
+                    primary_slot: NATIVE_ECS_TABLE_MODEL.descriptors.component_rows[0]
+                        .slots
+                        .id,
+                },
+                NativeTableIterationRow {
+                    row_kind: NativeTableIterationRowKind::ComponentDescriptor,
+                    row_index: 1,
+                    primary_slot: NATIVE_ECS_TABLE_MODEL.descriptors.component_rows[1]
+                        .slots
+                        .id,
+                },
+            ],
+        },
+        resource_descriptors: NativeTableIterationCursor {
+            table: NativeTableIterationKind::ResourceDescriptors,
+            expected_row_count: 1,
+            count_slot: Some(
+                NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                    .descriptor_counts
+                    .resources,
+            ),
+            rows: [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::ResourceDescriptor,
+                row_index: 0,
+                primary_slot: NATIVE_ECS_TABLE_MODEL.descriptors.resource_rows[0].slots.id,
+            }],
+        },
+        system_descriptors: NativeTableIterationCursor {
+            table: NativeTableIterationKind::SystemDescriptors,
+            expected_row_count: 1,
+            count_slot: Some(NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_counts.systems),
+            rows: [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::SystemDescriptor,
+                row_index: 0,
+                primary_slot: NATIVE_ECS_TABLE_MODEL.descriptors.system_rows[0].slots.id,
+            }],
+        },
+        query_descriptors: NativeTableIterationCursor {
+            table: NativeTableIterationKind::QueryDescriptors,
+            expected_row_count: 1,
+            count_slot: Some(NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_counts.queries),
+            rows: [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::QueryDescriptor,
+                row_index: 0,
+                primary_slot: NATIVE_ECS_TABLE_MODEL.descriptors.query_rows[0].slots.id,
+            }],
+        },
+        schedule_descriptors: NativeTableIterationCursor {
+            table: NativeTableIterationKind::ScheduleDescriptors,
+            expected_row_count: 1,
+            count_slot: Some(
+                NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                    .descriptor_counts
+                    .schedules,
+            ),
+            rows: [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::ScheduleDescriptor,
+                row_index: 0,
+                primary_slot: NATIVE_ECS_TABLE_MODEL.descriptors.schedule_rows[0].slots.id,
+            }],
+        },
+        startup_operations: NativeTableIterationCursor {
+            table: NativeTableIterationKind::StartupOperations,
+            expected_row_count: 3,
+            count_slot: Some(
+                NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                    .startup_dispatch
+                    .operation_count,
+            ),
+            rows: [
+                NativeTableIterationRow {
+                    row_kind: NativeTableIterationRowKind::StartupResourcePayload,
+                    row_index: 0,
+                    primary_slot: NATIVE_ECS_TABLE_MODEL
+                        .startup_operations
+                        .resource_payload_rows[0]
+                        .kind,
+                },
+                NativeTableIterationRow {
+                    row_kind: NativeTableIterationRowKind::StartupSpawn,
+                    row_index: 1,
+                    primary_slot: NATIVE_ECS_TABLE_MODEL.startup_operations.spawn_rows[0].kind,
+                },
+                NativeTableIterationRow {
+                    row_kind: NativeTableIterationRowKind::StartupRunSchedule,
+                    row_index: 2,
+                    primary_slot: NATIVE_ECS_TABLE_MODEL.startup_operations.run_schedule_rows[0]
+                        .kind,
+                },
+            ],
+        },
+        compiled_schedules: NativeTableIterationCursor {
+            table: NativeTableIterationKind::CompiledSchedules,
+            expected_row_count: 1,
+            count_slot: None,
+            rows: [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::CompiledSchedule,
+                row_index: 0,
+                primary_slot: NATIVE_ECS_TABLE_MODEL.compiled_schedules.rows[0].schedule_id,
+            }],
+        },
+        query_plans: NativeTableIterationCursor {
+            table: NativeTableIterationKind::QueryPlans,
+            expected_row_count: 1,
+            count_slot: None,
+            rows: [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::QueryPlan,
+                row_index: 0,
+                primary_slot: NATIVE_ECS_TABLE_MODEL.query_plans.rows[0].query_id,
+            }],
+        },
+    };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodegenError {
@@ -4761,6 +4947,140 @@ mod tests {
                 query_plan.velocity.y_field_offset.offset,
             ],
             [664, 672, 680, 688, 696, 704, 712, 720, 728, 736, 744, 752]
+        );
+    }
+
+    #[test]
+    fn defines_native_table_iteration_cursor_model() {
+        let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
+        let table_model = NATIVE_ECS_TABLE_MODEL;
+        let cursors = NATIVE_ECS_TABLE_ITERATION_CURSORS;
+
+        assert_eq!(layout.frame_size, 856);
+        assert_eq!(cursors.component_descriptors.expected_row_count, 2);
+        assert_eq!(cursors.resource_descriptors.expected_row_count, 1);
+        assert_eq!(cursors.system_descriptors.expected_row_count, 1);
+        assert_eq!(cursors.query_descriptors.expected_row_count, 1);
+        assert_eq!(cursors.schedule_descriptors.expected_row_count, 1);
+        assert_eq!(cursors.startup_operations.expected_row_count, 3);
+        assert_eq!(cursors.compiled_schedules.expected_row_count, 1);
+        assert_eq!(cursors.query_plans.expected_row_count, 1);
+
+        assert_eq!(
+            [
+                cursors.component_descriptors.count_slot,
+                cursors.resource_descriptors.count_slot,
+                cursors.system_descriptors.count_slot,
+                cursors.query_descriptors.count_slot,
+                cursors.schedule_descriptors.count_slot,
+            ],
+            [
+                Some(layout.descriptor_counts.components),
+                Some(layout.descriptor_counts.resources),
+                Some(layout.descriptor_counts.systems),
+                Some(layout.descriptor_counts.queries),
+                Some(layout.descriptor_counts.schedules),
+            ]
+        );
+        assert_eq!(
+            cursors.startup_operations.count_slot,
+            Some(layout.startup_dispatch.operation_count)
+        );
+        assert_eq!(cursors.compiled_schedules.count_slot, None);
+        assert_eq!(cursors.query_plans.count_slot, None);
+
+        assert_eq!(
+            cursors.component_descriptors,
+            NativeTableIterationCursor {
+                table: NativeTableIterationKind::ComponentDescriptors,
+                expected_row_count: 2,
+                count_slot: Some(layout.descriptor_counts.components),
+                rows: [
+                    NativeTableIterationRow {
+                        row_kind: NativeTableIterationRowKind::ComponentDescriptor,
+                        row_index: 0,
+                        primary_slot: table_model.descriptors.component_rows[0].slots.id,
+                    },
+                    NativeTableIterationRow {
+                        row_kind: NativeTableIterationRowKind::ComponentDescriptor,
+                        row_index: 1,
+                        primary_slot: table_model.descriptors.component_rows[1].slots.id,
+                    },
+                ],
+            }
+        );
+        assert_eq!(
+            cursors.resource_descriptors.rows,
+            [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::ResourceDescriptor,
+                row_index: 0,
+                primary_slot: table_model.descriptors.resource_rows[0].slots.id,
+            }]
+        );
+        assert_eq!(
+            cursors.system_descriptors.rows,
+            [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::SystemDescriptor,
+                row_index: 0,
+                primary_slot: table_model.descriptors.system_rows[0].slots.id,
+            }]
+        );
+        assert_eq!(
+            cursors.query_descriptors.rows,
+            [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::QueryDescriptor,
+                row_index: 0,
+                primary_slot: table_model.descriptors.query_rows[0].slots.id,
+            }]
+        );
+        assert_eq!(
+            cursors.schedule_descriptors.rows,
+            [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::ScheduleDescriptor,
+                row_index: 0,
+                primary_slot: table_model.descriptors.schedule_rows[0].slots.id,
+            }]
+        );
+        assert_eq!(
+            cursors.startup_operations,
+            NativeTableIterationCursor {
+                table: NativeTableIterationKind::StartupOperations,
+                expected_row_count: 3,
+                count_slot: Some(layout.startup_dispatch.operation_count),
+                rows: [
+                    NativeTableIterationRow {
+                        row_kind: NativeTableIterationRowKind::StartupResourcePayload,
+                        row_index: 0,
+                        primary_slot: table_model.startup_operations.resource_payload_rows[0].kind,
+                    },
+                    NativeTableIterationRow {
+                        row_kind: NativeTableIterationRowKind::StartupSpawn,
+                        row_index: 1,
+                        primary_slot: table_model.startup_operations.spawn_rows[0].kind,
+                    },
+                    NativeTableIterationRow {
+                        row_kind: NativeTableIterationRowKind::StartupRunSchedule,
+                        row_index: 2,
+                        primary_slot: table_model.startup_operations.run_schedule_rows[0].kind,
+                    },
+                ],
+            }
+        );
+        assert_eq!(
+            cursors.compiled_schedules.rows,
+            [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::CompiledSchedule,
+                row_index: 0,
+                primary_slot: table_model.compiled_schedules.rows[0].schedule_id,
+            }]
+        );
+        assert_eq!(
+            cursors.query_plans.rows,
+            [NativeTableIterationRow {
+                row_kind: NativeTableIterationRowKind::QueryPlan,
+                row_index: 0,
+                primary_slot: table_model.query_plans.rows[0].query_id,
+            }]
         );
     }
 

@@ -1171,6 +1171,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_reusable_native_ecs_table_model")
 
     Invoke-CheckedCommand `
+        -Name "defines_native_table_iteration_cursor_model" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_table_iteration_cursor_model")
+
+    Invoke-CheckedCommand `
         -Name "decodes_native_descriptor_names_into_table_state" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "decodes_native_descriptor_names_into_table_state")
