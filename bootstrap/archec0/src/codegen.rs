@@ -336,6 +336,14 @@ struct NativeQueryPlanBuildRow {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeQueryPlanTableIterationRow {
+    cursor_table: NativeTableIterationKind,
+    cursor_row_index: usize,
+    primary_slot: NativeEcsSlot,
+    build_row: NativeQueryPlanBuildRow,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeCompiledScheduleBuildRow {
     startup_schedule_id_slot: u16,
     descriptor_schedule_id_slot: u16,
@@ -2141,6 +2149,13 @@ const ECS_QUERY_PLAN_BUILD_ROWS: [NativeQueryPlanBuildRow; 1] = [NativeQueryPlan
         },
     ],
 }];
+const ECS_QUERY_PLAN_TABLE_ITERATION_ROWS: [NativeQueryPlanTableIterationRow; 1] =
+    [NativeQueryPlanTableIterationRow {
+        cursor_table: NativeTableIterationKind::QueryPlans,
+        cursor_row_index: 0,
+        primary_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS.query_plans.rows[0].primary_slot,
+        build_row: ECS_QUERY_PLAN_BUILD_ROWS[0],
+    }];
 const ECS_COMPILED_SCHEDULE_BUILD_ROWS: [NativeCompiledScheduleBuildRow; 1] =
     [NativeCompiledScheduleBuildRow {
         startup_schedule_id_slot: ECS_STARTUP_TABLE_RUN_SCHEDULE_ID_SLOT,
@@ -3506,10 +3521,10 @@ fn load_metadata_qword_via_offset_slot(bytes: &mut Vec<u8>, offset_slot: u16, ta
 
 fn emit_native_query_plan_builder(
     bytes: &mut Vec<u8>,
-    row: NativeQueryPlanBuildRow,
+    row: NativeQueryPlanTableIterationRow,
     scan_failure_offsets: &mut Vec<usize>,
 ) {
-    emit_native_query_plan_build_row(bytes, row, scan_failure_offsets);
+    emit_native_query_plan_build_row(bytes, row.build_row, scan_failure_offsets);
 }
 
 fn emit_native_query_plan_build_row(
@@ -3673,7 +3688,7 @@ fn emit_compiled_schedule_build_row(
 
     emit_native_query_plan_builder(
         bytes,
-        ECS_QUERY_PLAN_BUILD_ROWS[row.query_plan_row_index],
+        ECS_QUERY_PLAN_TABLE_ITERATION_ROWS[row.query_plan_row_index],
         scan_failure_offsets,
     );
     emit_compiled_demo_move_query_loop(
@@ -7262,6 +7277,85 @@ mod tests {
     }
 
     #[test]
+    fn builds_native_query_plan_from_iterated_table_rows() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let cursors = NATIVE_ECS_TABLE_ITERATION_CURSORS;
+        let rows = ECS_QUERY_PLAN_TABLE_ITERATION_ROWS;
+        let schedule_row = ECS_COMPILED_SCHEDULE_BUILD_ROWS[0];
+        assert_eq!(
+            rows,
+            [NativeQueryPlanTableIterationRow {
+                cursor_table: NativeTableIterationKind::QueryPlans,
+                cursor_row_index: 0,
+                primary_slot: cursors.query_plans.rows[0].primary_slot,
+                build_row: ECS_QUERY_PLAN_BUILD_ROWS[0],
+            }]
+        );
+        assert_eq!(
+            rows[schedule_row.query_plan_row_index].primary_slot.offset,
+            rows[schedule_row.query_plan_row_index]
+                .build_row
+                .plan_query_id_slot
+        );
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+        let iterated_row = rows[schedule_row.query_plan_row_index];
+        let build_row = iterated_row.build_row;
+
+        let query_plan_identity =
+            load_store_stack_slot_sequence(build_row.query_id_slot, build_row.plan_query_id_slot);
+        let term_count_validation = compare_stack_slots_equal_sequence(
+            build_row.plan_term_count_slot,
+            build_row.system_query_term_count_slot,
+        );
+        let move_field_math = query_plan_component_field_multiply_sequence(
+            ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+            0,
+            ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+        );
+
+        let identity_index = find_subsequence_from(&text, &query_plan_identity, 0)
+            .expect("compiled schedule should dispatch into iterated query-plan row");
+        let validation_index = find_subsequence_from(&text, &term_count_validation, identity_index)
+            .expect("iterated query-plan row should validate descriptor-backed query state");
+        let move_math_index = find_subsequence_from(&text, &move_field_math, validation_index)
+            .expect("compiled Move should consume the iterated query-plan result");
+        assert!(
+            identity_index < validation_index && validation_index < move_math_index,
+            "iterated query-plan row should build and validate state before compiled Move"
+        );
+
+        for term in build_row.terms {
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &lea_stack_address_store_sequence(
+                        term.startup_payload_slot,
+                        term.planned_payload_address_slot,
+                    ),
+                ),
+                "iterated query-plan row should materialize {:?} payload address",
+                term.role
+            );
+        }
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "iterated query-plan row should preserve compiled Move success"
+        );
+    }
+
+    #[test]
     fn builds_native_query_plan_from_descriptor_records() {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
@@ -7601,7 +7695,9 @@ mod tests {
             }
         );
         assert_eq!(
-            ECS_QUERY_PLAN_BUILD_ROWS[row.query_plan_row_index].plan_query_id_slot,
+            ECS_QUERY_PLAN_TABLE_ITERATION_ROWS[row.query_plan_row_index]
+                .build_row
+                .plan_query_id_slot,
             model.query_plans.rows[0].query_id.offset
         );
 
@@ -7679,7 +7775,8 @@ mod tests {
             "generated text should validate the expected scheduled Demo.Move system id"
         );
 
-        let query_plan_row = ECS_QUERY_PLAN_BUILD_ROWS[row.query_plan_row_index];
+        let query_plan_row =
+            ECS_QUERY_PLAN_TABLE_ITERATION_ROWS[row.query_plan_row_index].build_row;
         assert!(
             contains_subsequence(
                 &text,
@@ -7825,7 +7922,7 @@ mod tests {
                 descriptor_slot
             );
         }
-        let query_plan_build_row = ECS_QUERY_PLAN_BUILD_ROWS[0];
+        let query_plan_build_row = ECS_QUERY_PLAN_TABLE_ITERATION_ROWS[0].build_row;
         assert!(
             contains_subsequence(
                 &text,
