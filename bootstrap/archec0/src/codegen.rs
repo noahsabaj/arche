@@ -95,6 +95,45 @@ struct NativeComponentResourceDescriptorTableSlots {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeMoveSystemDescriptorSlots {
+    id: NativeEcsSlot,
+    param_count: NativeEcsSlot,
+    resource_param_kind: NativeEcsSlot,
+    resource_param_resource_id: NativeEcsSlot,
+    query_param_kind: NativeEcsSlot,
+    query_param_term_count: NativeEcsSlot,
+    query_term0_access: NativeEcsSlot,
+    query_term0_component_id: NativeEcsSlot,
+    query_term1_access: NativeEcsSlot,
+    query_term1_component_id: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeMoversQueryDescriptorSlots {
+    id: NativeEcsSlot,
+    term_count: NativeEcsSlot,
+    term0_access: NativeEcsSlot,
+    term0_component_id: NativeEcsSlot,
+    term1_access: NativeEcsSlot,
+    term1_component_id: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeMainScheduleDescriptorSlots {
+    id: NativeEcsSlot,
+    item_count: NativeEcsSlot,
+    run_item_kind: NativeEcsSlot,
+    run_system_id: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeSystemQueryScheduleDescriptorTableSlots {
+    move_system: NativeMoveSystemDescriptorSlots,
+    movers_query: NativeMoversQueryDescriptorSlots,
+    main_schedule: NativeMainScheduleDescriptorSlots,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeCompiledMoveSlots {
     target_position_payload: NativeEcsSlot,
     scanned_row_count: NativeEcsSlot,
@@ -104,7 +143,7 @@ struct NativeCompiledMoveSlots {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeEcsExecutionStateLayout {
     frame_size: u16,
-    zeroed_qword_offsets: [u16; 49],
+    zeroed_qword_offsets: [u16; 69],
     descriptor_counts: NativeDescriptorCountSlots,
     descriptor_records: NativeDescriptorRecordStateSlots,
     startup_state: NativeStartupStateSlots,
@@ -112,16 +151,18 @@ struct NativeEcsExecutionStateLayout {
     query_plan: NativeQueryPlanSlots,
     compiled_schedule: NativeCompiledScheduleSlots,
     component_resource_descriptors: NativeComponentResourceDescriptorTableSlots,
+    system_query_schedule_descriptors: NativeSystemQueryScheduleDescriptorTableSlots,
     compiled_move: NativeCompiledMoveSlots,
 }
 
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
-        frame_size: 392,
+        frame_size: 552,
         zeroed_qword_offsets: [
             0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152,
             160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 264, 272, 280, 288,
-            296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384,
+            296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384, 392, 400, 408, 416, 424,
+            432, 440, 448, 456, 464, 472, 480, 488, 496, 504, 512, 520, 528, 536, 544,
         ],
         descriptor_counts: NativeDescriptorCountSlots {
             components: NativeEcsSlot {
@@ -333,6 +374,94 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
                 },
                 delta_field_offset: NativeEcsSlot {
                     offset: 384,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+        },
+        system_query_schedule_descriptors: NativeSystemQueryScheduleDescriptorTableSlots {
+            move_system: NativeMoveSystemDescriptorSlots {
+                id: NativeEcsSlot {
+                    offset: 392,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                param_count: NativeEcsSlot {
+                    offset: 400,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                resource_param_kind: NativeEcsSlot {
+                    offset: 408,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                resource_param_resource_id: NativeEcsSlot {
+                    offset: 416,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                query_param_kind: NativeEcsSlot {
+                    offset: 424,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                query_param_term_count: NativeEcsSlot {
+                    offset: 432,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                query_term0_access: NativeEcsSlot {
+                    offset: 440,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                query_term0_component_id: NativeEcsSlot {
+                    offset: 448,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                query_term1_access: NativeEcsSlot {
+                    offset: 456,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                query_term1_component_id: NativeEcsSlot {
+                    offset: 464,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            movers_query: NativeMoversQueryDescriptorSlots {
+                id: NativeEcsSlot {
+                    offset: 472,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                term_count: NativeEcsSlot {
+                    offset: 480,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                term0_access: NativeEcsSlot {
+                    offset: 488,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                term0_component_id: NativeEcsSlot {
+                    offset: 496,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                term1_access: NativeEcsSlot {
+                    offset: 504,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                term1_component_id: NativeEcsSlot {
+                    offset: 512,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            main_schedule: NativeMainScheduleDescriptorSlots {
+                id: NativeEcsSlot {
+                    offset: 520,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                item_count: NativeEcsSlot {
+                    offset: 528,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                run_item_kind: NativeEcsSlot {
+                    offset: 536,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                run_system_id: NativeEcsSlot {
+                    offset: 544,
                     byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
                 },
             },
@@ -608,6 +737,106 @@ const ECS_TIME_DESCRIPTOR_DELTA_FIELD_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_ST
     .time
     .delta_field_offset
     .offset;
+const ECS_MOVE_SYSTEM_DESCRIPTOR_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .move_system
+    .id
+    .offset;
+const ECS_MOVE_SYSTEM_DESCRIPTOR_PARAM_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .move_system
+    .param_count
+    .offset;
+const ECS_MOVE_SYSTEM_RESOURCE_PARAM_KIND_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .move_system
+    .resource_param_kind
+    .offset;
+const ECS_MOVE_SYSTEM_RESOURCE_PARAM_RESOURCE_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .move_system
+    .resource_param_resource_id
+    .offset;
+const ECS_MOVE_SYSTEM_QUERY_PARAM_KIND_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .move_system
+    .query_param_kind
+    .offset;
+const ECS_MOVE_SYSTEM_QUERY_PARAM_TERM_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .move_system
+    .query_param_term_count
+    .offset;
+const ECS_MOVE_SYSTEM_QUERY_TERM0_ACCESS_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .move_system
+    .query_term0_access
+    .offset;
+const ECS_MOVE_SYSTEM_QUERY_TERM0_COMPONENT_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .move_system
+    .query_term0_component_id
+    .offset;
+const ECS_MOVE_SYSTEM_QUERY_TERM1_ACCESS_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .move_system
+    .query_term1_access
+    .offset;
+const ECS_MOVE_SYSTEM_QUERY_TERM1_COMPONENT_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .move_system
+    .query_term1_component_id
+    .offset;
+const ECS_MOVERS_QUERY_DESCRIPTOR_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .movers_query
+    .id
+    .offset;
+const ECS_MOVERS_QUERY_DESCRIPTOR_TERM_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .movers_query
+    .term_count
+    .offset;
+const ECS_MOVERS_QUERY_TERM0_ACCESS_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .movers_query
+    .term0_access
+    .offset;
+const ECS_MOVERS_QUERY_TERM0_COMPONENT_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .movers_query
+    .term0_component_id
+    .offset;
+const ECS_MOVERS_QUERY_TERM1_ACCESS_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .movers_query
+    .term1_access
+    .offset;
+const ECS_MOVERS_QUERY_TERM1_COMPONENT_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .movers_query
+    .term1_component_id
+    .offset;
+const ECS_MAIN_SCHEDULE_DESCRIPTOR_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .main_schedule
+    .id
+    .offset;
+const ECS_MAIN_SCHEDULE_DESCRIPTOR_ITEM_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .main_schedule
+    .item_count
+    .offset;
+const ECS_MAIN_SCHEDULE_RUN_ITEM_KIND_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .main_schedule
+    .run_item_kind
+    .offset;
+const ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .system_query_schedule_descriptors
+    .main_schedule
+    .run_system_id
+    .offset;
 const ECS_COMPONENT_RESOURCE_DESCRIPTOR_QWORD_LOADS: [(i32, u16); 3] = [
     (112, ECS_POSITION_DESCRIPTOR_ID_SLOT),
     (181, ECS_VELOCITY_DESCRIPTOR_ID_SLOT),
@@ -648,11 +877,73 @@ const ECS_COMPONENT_RESOURCE_DESCRIPTOR_EXPECTED: [(u16, u64); 17] = [
     (ECS_TIME_DESCRIPTOR_FIELD_COUNT_SLOT, 1),
     (ECS_TIME_DESCRIPTOR_DELTA_FIELD_OFFSET_SLOT, 0),
 ];
+const ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_QWORD_LOADS: [(i32, u16); 9] = [
+    (303, ECS_MOVE_SYSTEM_DESCRIPTOR_ID_SLOT),
+    (340, ECS_MOVE_SYSTEM_RESOURCE_PARAM_RESOURCE_ID_SLOT),
+    (383, ECS_MOVE_SYSTEM_QUERY_TERM0_COMPONENT_ID_SLOT),
+    (412, ECS_MOVE_SYSTEM_QUERY_TERM1_COMPONENT_ID_SLOT),
+    (437, ECS_MOVERS_QUERY_DESCRIPTOR_ID_SLOT),
+    (473, ECS_MOVERS_QUERY_TERM0_COMPONENT_ID_SLOT),
+    (502, ECS_MOVERS_QUERY_TERM1_COMPONENT_ID_SLOT),
+    (527, ECS_MAIN_SCHEDULE_DESCRIPTOR_ID_SLOT),
+    (556, ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT),
+];
+const ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_DWORD_LOADS: [(i32, u16); 11] = [
+    (324, ECS_MOVE_SYSTEM_DESCRIPTOR_PARAM_COUNT_SLOT),
+    (336, ECS_MOVE_SYSTEM_RESOURCE_PARAM_KIND_SLOT),
+    (371, ECS_MOVE_SYSTEM_QUERY_PARAM_KIND_SLOT),
+    (375, ECS_MOVE_SYSTEM_QUERY_PARAM_TERM_COUNT_SLOT),
+    (379, ECS_MOVE_SYSTEM_QUERY_TERM0_ACCESS_SLOT),
+    (408, ECS_MOVE_SYSTEM_QUERY_TERM1_ACCESS_SLOT),
+    (465, ECS_MOVERS_QUERY_DESCRIPTOR_TERM_COUNT_SLOT),
+    (469, ECS_MOVERS_QUERY_TERM0_ACCESS_SLOT),
+    (498, ECS_MOVERS_QUERY_TERM1_ACCESS_SLOT),
+    (548, ECS_MAIN_SCHEDULE_DESCRIPTOR_ITEM_COUNT_SLOT),
+    (552, ECS_MAIN_SCHEDULE_RUN_ITEM_KIND_SLOT),
+];
+const ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_EXPECTED: [(u16, u64); 20] = [
+    (ECS_MOVE_SYSTEM_DESCRIPTOR_ID_SLOT, DEMO_MOVE_SYSTEM_ID),
+    (ECS_MOVE_SYSTEM_DESCRIPTOR_PARAM_COUNT_SLOT, 2),
+    (ECS_MOVE_SYSTEM_RESOURCE_PARAM_KIND_SLOT, 1),
+    (
+        ECS_MOVE_SYSTEM_RESOURCE_PARAM_RESOURCE_ID_SLOT,
+        DEMO_TIME_RESOURCE_ID,
+    ),
+    (ECS_MOVE_SYSTEM_QUERY_PARAM_KIND_SLOT, 2),
+    (ECS_MOVE_SYSTEM_QUERY_PARAM_TERM_COUNT_SLOT, 2),
+    (ECS_MOVE_SYSTEM_QUERY_TERM0_ACCESS_SLOT, 2),
+    (
+        ECS_MOVE_SYSTEM_QUERY_TERM0_COMPONENT_ID_SLOT,
+        DEMO_POSITION_COMPONENT_ID,
+    ),
+    (ECS_MOVE_SYSTEM_QUERY_TERM1_ACCESS_SLOT, 1),
+    (
+        ECS_MOVE_SYSTEM_QUERY_TERM1_COMPONENT_ID_SLOT,
+        DEMO_VELOCITY_COMPONENT_ID,
+    ),
+    (ECS_MOVERS_QUERY_DESCRIPTOR_ID_SLOT, DEMO_MOVERS_QUERY_ID),
+    (ECS_MOVERS_QUERY_DESCRIPTOR_TERM_COUNT_SLOT, 2),
+    (ECS_MOVERS_QUERY_TERM0_ACCESS_SLOT, 2),
+    (
+        ECS_MOVERS_QUERY_TERM0_COMPONENT_ID_SLOT,
+        DEMO_POSITION_COMPONENT_ID,
+    ),
+    (ECS_MOVERS_QUERY_TERM1_ACCESS_SLOT, 1),
+    (
+        ECS_MOVERS_QUERY_TERM1_COMPONENT_ID_SLOT,
+        DEMO_VELOCITY_COMPONENT_ID,
+    ),
+    (ECS_MAIN_SCHEDULE_DESCRIPTOR_ID_SLOT, DEMO_MAIN_SCHEDULE_ID),
+    (ECS_MAIN_SCHEDULE_DESCRIPTOR_ITEM_COUNT_SLOT, 1),
+    (ECS_MAIN_SCHEDULE_RUN_ITEM_KIND_SLOT, 1),
+    (ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT, DEMO_MOVE_SYSTEM_ID),
+];
 
 const DEMO_POSITION_COMPONENT_ID: u64 = 0x002202c6aeb4f27b;
 const DEMO_VELOCITY_COMPONENT_ID: u64 = 0x2cf8a68bcb7f913b;
 const DEMO_TIME_RESOURCE_ID: u64 = 0x7924ce11db524521;
 const DEMO_MOVE_SYSTEM_ID: u64 = 0x723b6b52df270ed5;
+const DEMO_MOVERS_QUERY_ID: u64 = 0xf4004232b85cef9f;
 const DEMO_MAIN_SCHEDULE_ID: u64 = 0xed3d905325519b05;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1302,6 +1593,7 @@ fn ecs_metadata_decoder_body(
         store_rax_to_stack_slot(&mut bytes, stack_slot);
     }
     emit_component_resource_descriptor_table_decodes(&mut bytes);
+    emit_system_query_schedule_descriptor_table_decodes(&mut bytes);
 
     bytes.extend_from_slice(&[0x8b, 0x46, ECS_STARTUP_RECORD_COUNT_OFFSET]); // mov eax, dword ptr [rsi + offset]
     store_rax_to_stack_slot(&mut bytes, ECS_STARTUP_OPERATION_COUNT_SLOT);
@@ -1375,6 +1667,14 @@ fn ecs_metadata_decoder_body(
         );
     }
     for (stack_slot, expected) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_EXPECTED {
+        compare_stack_slot_to_u64(
+            &mut bytes,
+            stack_slot,
+            expected,
+            &mut jump_to_startup_state_failure_offsets,
+        );
+    }
+    for (stack_slot, expected) in ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_EXPECTED {
         compare_stack_slot_to_u64(
             &mut bytes,
             stack_slot,
@@ -1633,6 +1933,19 @@ fn emit_component_resource_descriptor_table_decodes(bytes: &mut Vec<u8>) {
         store_rax_to_stack_slot(bytes, stack_slot);
     }
     for (metadata_offset, stack_slot) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_DWORD_LOADS {
+        bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
+        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+        store_rax_to_stack_slot(bytes, stack_slot);
+    }
+}
+
+fn emit_system_query_schedule_descriptor_table_decodes(bytes: &mut Vec<u8>) {
+    for (metadata_offset, stack_slot) in ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_QWORD_LOADS {
+        bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
+        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+        store_rax_to_stack_slot(bytes, stack_slot);
+    }
+    for (metadata_offset, stack_slot) in ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_DWORD_LOADS {
         bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
         bytes.extend_from_slice(&metadata_offset.to_le_bytes());
         store_rax_to_stack_slot(bytes, stack_slot);
@@ -2062,13 +2375,15 @@ mod tests {
     fn defines_native_ecs_execution_state_layout() {
         let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
 
-        assert_eq!(layout.frame_size, 392);
+        assert_eq!(layout.frame_size, 552);
         assert_eq!(
             layout.zeroed_qword_offsets,
             [
                 0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144,
                 152, 160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 264, 272,
-                280, 288, 296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384,
+                280, 288, 296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384, 392, 400,
+                408, 416, 424, 432, 440, 448, 456, 464, 472, 480, 488, 496, 504, 512, 520, 528,
+                536, 544,
             ]
         );
         assert_eq!(
@@ -2323,6 +2638,97 @@ mod tests {
                 },
             }
         );
+        assert_eq!(
+            layout.system_query_schedule_descriptors,
+            NativeSystemQueryScheduleDescriptorTableSlots {
+                move_system: NativeMoveSystemDescriptorSlots {
+                    id: NativeEcsSlot {
+                        offset: 392,
+                        byte_len: 8,
+                    },
+                    param_count: NativeEcsSlot {
+                        offset: 400,
+                        byte_len: 8,
+                    },
+                    resource_param_kind: NativeEcsSlot {
+                        offset: 408,
+                        byte_len: 8,
+                    },
+                    resource_param_resource_id: NativeEcsSlot {
+                        offset: 416,
+                        byte_len: 8,
+                    },
+                    query_param_kind: NativeEcsSlot {
+                        offset: 424,
+                        byte_len: 8,
+                    },
+                    query_param_term_count: NativeEcsSlot {
+                        offset: 432,
+                        byte_len: 8,
+                    },
+                    query_term0_access: NativeEcsSlot {
+                        offset: 440,
+                        byte_len: 8,
+                    },
+                    query_term0_component_id: NativeEcsSlot {
+                        offset: 448,
+                        byte_len: 8,
+                    },
+                    query_term1_access: NativeEcsSlot {
+                        offset: 456,
+                        byte_len: 8,
+                    },
+                    query_term1_component_id: NativeEcsSlot {
+                        offset: 464,
+                        byte_len: 8,
+                    },
+                },
+                movers_query: NativeMoversQueryDescriptorSlots {
+                    id: NativeEcsSlot {
+                        offset: 472,
+                        byte_len: 8,
+                    },
+                    term_count: NativeEcsSlot {
+                        offset: 480,
+                        byte_len: 8,
+                    },
+                    term0_access: NativeEcsSlot {
+                        offset: 488,
+                        byte_len: 8,
+                    },
+                    term0_component_id: NativeEcsSlot {
+                        offset: 496,
+                        byte_len: 8,
+                    },
+                    term1_access: NativeEcsSlot {
+                        offset: 504,
+                        byte_len: 8,
+                    },
+                    term1_component_id: NativeEcsSlot {
+                        offset: 512,
+                        byte_len: 8,
+                    },
+                },
+                main_schedule: NativeMainScheduleDescriptorSlots {
+                    id: NativeEcsSlot {
+                        offset: 520,
+                        byte_len: 8,
+                    },
+                    item_count: NativeEcsSlot {
+                        offset: 528,
+                        byte_len: 8,
+                    },
+                    run_item_kind: NativeEcsSlot {
+                        offset: 536,
+                        byte_len: 8,
+                    },
+                    run_system_id: NativeEcsSlot {
+                        offset: 544,
+                        byte_len: 8,
+                    },
+                },
+            }
+        );
         assert_eq!(ECS_DESCRIPTOR_REGISTRY_SLOTS, [0, 8, 16, 24, 32]);
         assert_eq!(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS, [96, 112, 128, 144, 160]);
         assert_eq!(
@@ -2363,6 +2769,26 @@ mod tests {
         assert_eq!(ECS_TIME_DESCRIPTOR_ALIGN_SLOT, 368);
         assert_eq!(ECS_TIME_DESCRIPTOR_FIELD_COUNT_SLOT, 376);
         assert_eq!(ECS_TIME_DESCRIPTOR_DELTA_FIELD_OFFSET_SLOT, 384);
+        assert_eq!(ECS_MOVE_SYSTEM_DESCRIPTOR_ID_SLOT, 392);
+        assert_eq!(ECS_MOVE_SYSTEM_DESCRIPTOR_PARAM_COUNT_SLOT, 400);
+        assert_eq!(ECS_MOVE_SYSTEM_RESOURCE_PARAM_KIND_SLOT, 408);
+        assert_eq!(ECS_MOVE_SYSTEM_RESOURCE_PARAM_RESOURCE_ID_SLOT, 416);
+        assert_eq!(ECS_MOVE_SYSTEM_QUERY_PARAM_KIND_SLOT, 424);
+        assert_eq!(ECS_MOVE_SYSTEM_QUERY_PARAM_TERM_COUNT_SLOT, 432);
+        assert_eq!(ECS_MOVE_SYSTEM_QUERY_TERM0_ACCESS_SLOT, 440);
+        assert_eq!(ECS_MOVE_SYSTEM_QUERY_TERM0_COMPONENT_ID_SLOT, 448);
+        assert_eq!(ECS_MOVE_SYSTEM_QUERY_TERM1_ACCESS_SLOT, 456);
+        assert_eq!(ECS_MOVE_SYSTEM_QUERY_TERM1_COMPONENT_ID_SLOT, 464);
+        assert_eq!(ECS_MOVERS_QUERY_DESCRIPTOR_ID_SLOT, 472);
+        assert_eq!(ECS_MOVERS_QUERY_DESCRIPTOR_TERM_COUNT_SLOT, 480);
+        assert_eq!(ECS_MOVERS_QUERY_TERM0_ACCESS_SLOT, 488);
+        assert_eq!(ECS_MOVERS_QUERY_TERM0_COMPONENT_ID_SLOT, 496);
+        assert_eq!(ECS_MOVERS_QUERY_TERM1_ACCESS_SLOT, 504);
+        assert_eq!(ECS_MOVERS_QUERY_TERM1_COMPONENT_ID_SLOT, 512);
+        assert_eq!(ECS_MAIN_SCHEDULE_DESCRIPTOR_ID_SLOT, 520);
+        assert_eq!(ECS_MAIN_SCHEDULE_DESCRIPTOR_ITEM_COUNT_SLOT, 528);
+        assert_eq!(ECS_MAIN_SCHEDULE_RUN_ITEM_KIND_SLOT, 536);
+        assert_eq!(ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT, 544);
 
         let slots = [
             layout.descriptor_counts.components,
@@ -2429,6 +2855,77 @@ mod tests {
                 .component_resource_descriptors
                 .time
                 .delta_field_offset,
+            layout.system_query_schedule_descriptors.move_system.id,
+            layout
+                .system_query_schedule_descriptors
+                .move_system
+                .param_count,
+            layout
+                .system_query_schedule_descriptors
+                .move_system
+                .resource_param_kind,
+            layout
+                .system_query_schedule_descriptors
+                .move_system
+                .resource_param_resource_id,
+            layout
+                .system_query_schedule_descriptors
+                .move_system
+                .query_param_kind,
+            layout
+                .system_query_schedule_descriptors
+                .move_system
+                .query_param_term_count,
+            layout
+                .system_query_schedule_descriptors
+                .move_system
+                .query_term0_access,
+            layout
+                .system_query_schedule_descriptors
+                .move_system
+                .query_term0_component_id,
+            layout
+                .system_query_schedule_descriptors
+                .move_system
+                .query_term1_access,
+            layout
+                .system_query_schedule_descriptors
+                .move_system
+                .query_term1_component_id,
+            layout.system_query_schedule_descriptors.movers_query.id,
+            layout
+                .system_query_schedule_descriptors
+                .movers_query
+                .term_count,
+            layout
+                .system_query_schedule_descriptors
+                .movers_query
+                .term0_access,
+            layout
+                .system_query_schedule_descriptors
+                .movers_query
+                .term0_component_id,
+            layout
+                .system_query_schedule_descriptors
+                .movers_query
+                .term1_access,
+            layout
+                .system_query_schedule_descriptors
+                .movers_query
+                .term1_component_id,
+            layout.system_query_schedule_descriptors.main_schedule.id,
+            layout
+                .system_query_schedule_descriptors
+                .main_schedule
+                .item_count,
+            layout
+                .system_query_schedule_descriptors
+                .main_schedule
+                .run_item_kind,
+            layout
+                .system_query_schedule_descriptors
+                .main_schedule
+                .run_system_id,
         ];
         for slot in slots {
             assert!(
@@ -2655,6 +3152,157 @@ mod tests {
                 &metadata_qword_load_store_sequence(696, ECS_COMPILED_SCHEDULE_ID_SLOT),
             ),
             "generated text should preserve compiled schedule state"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "generated text should preserve the compiled Move success code"
+        );
+    }
+
+    #[test]
+    fn decodes_native_system_query_schedule_descriptor_records() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert_eq!(
+            ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_QWORD_LOADS,
+            [
+                (303, ECS_MOVE_SYSTEM_DESCRIPTOR_ID_SLOT),
+                (340, ECS_MOVE_SYSTEM_RESOURCE_PARAM_RESOURCE_ID_SLOT),
+                (383, ECS_MOVE_SYSTEM_QUERY_TERM0_COMPONENT_ID_SLOT),
+                (412, ECS_MOVE_SYSTEM_QUERY_TERM1_COMPONENT_ID_SLOT),
+                (437, ECS_MOVERS_QUERY_DESCRIPTOR_ID_SLOT),
+                (473, ECS_MOVERS_QUERY_TERM0_COMPONENT_ID_SLOT),
+                (502, ECS_MOVERS_QUERY_TERM1_COMPONENT_ID_SLOT),
+                (527, ECS_MAIN_SCHEDULE_DESCRIPTOR_ID_SLOT),
+                (556, ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT),
+            ]
+        );
+        assert_eq!(
+            ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_DWORD_LOADS,
+            [
+                (324, ECS_MOVE_SYSTEM_DESCRIPTOR_PARAM_COUNT_SLOT),
+                (336, ECS_MOVE_SYSTEM_RESOURCE_PARAM_KIND_SLOT),
+                (371, ECS_MOVE_SYSTEM_QUERY_PARAM_KIND_SLOT),
+                (375, ECS_MOVE_SYSTEM_QUERY_PARAM_TERM_COUNT_SLOT),
+                (379, ECS_MOVE_SYSTEM_QUERY_TERM0_ACCESS_SLOT),
+                (408, ECS_MOVE_SYSTEM_QUERY_TERM1_ACCESS_SLOT),
+                (465, ECS_MOVERS_QUERY_DESCRIPTOR_TERM_COUNT_SLOT),
+                (469, ECS_MOVERS_QUERY_TERM0_ACCESS_SLOT),
+                (498, ECS_MOVERS_QUERY_TERM1_ACCESS_SLOT),
+                (548, ECS_MAIN_SCHEDULE_DESCRIPTOR_ITEM_COUNT_SLOT),
+                (552, ECS_MAIN_SCHEDULE_RUN_ITEM_KIND_SLOT),
+            ]
+        );
+        assert_eq!(
+            ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_EXPECTED,
+            [
+                (ECS_MOVE_SYSTEM_DESCRIPTOR_ID_SLOT, DEMO_MOVE_SYSTEM_ID),
+                (ECS_MOVE_SYSTEM_DESCRIPTOR_PARAM_COUNT_SLOT, 2),
+                (ECS_MOVE_SYSTEM_RESOURCE_PARAM_KIND_SLOT, 1),
+                (
+                    ECS_MOVE_SYSTEM_RESOURCE_PARAM_RESOURCE_ID_SLOT,
+                    DEMO_TIME_RESOURCE_ID,
+                ),
+                (ECS_MOVE_SYSTEM_QUERY_PARAM_KIND_SLOT, 2),
+                (ECS_MOVE_SYSTEM_QUERY_PARAM_TERM_COUNT_SLOT, 2),
+                (ECS_MOVE_SYSTEM_QUERY_TERM0_ACCESS_SLOT, 2),
+                (
+                    ECS_MOVE_SYSTEM_QUERY_TERM0_COMPONENT_ID_SLOT,
+                    DEMO_POSITION_COMPONENT_ID,
+                ),
+                (ECS_MOVE_SYSTEM_QUERY_TERM1_ACCESS_SLOT, 1),
+                (
+                    ECS_MOVE_SYSTEM_QUERY_TERM1_COMPONENT_ID_SLOT,
+                    DEMO_VELOCITY_COMPONENT_ID,
+                ),
+                (ECS_MOVERS_QUERY_DESCRIPTOR_ID_SLOT, DEMO_MOVERS_QUERY_ID),
+                (ECS_MOVERS_QUERY_DESCRIPTOR_TERM_COUNT_SLOT, 2),
+                (ECS_MOVERS_QUERY_TERM0_ACCESS_SLOT, 2),
+                (
+                    ECS_MOVERS_QUERY_TERM0_COMPONENT_ID_SLOT,
+                    DEMO_POSITION_COMPONENT_ID,
+                ),
+                (ECS_MOVERS_QUERY_TERM1_ACCESS_SLOT, 1),
+                (
+                    ECS_MOVERS_QUERY_TERM1_COMPONENT_ID_SLOT,
+                    DEMO_VELOCITY_COMPONENT_ID,
+                ),
+                (ECS_MAIN_SCHEDULE_DESCRIPTOR_ID_SLOT, DEMO_MAIN_SCHEDULE_ID),
+                (ECS_MAIN_SCHEDULE_DESCRIPTOR_ITEM_COUNT_SLOT, 1),
+                (ECS_MAIN_SCHEDULE_RUN_ITEM_KIND_SLOT, 1),
+                (ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT, DEMO_MOVE_SYSTEM_ID),
+            ]
+        );
+
+        for (metadata_offset, stack_slot) in ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_QWORD_LOADS {
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &metadata_qword_load_store_sequence(metadata_offset, stack_slot),
+                ),
+                "generated text should load system/query/schedule qword at metadata offset {} into stack slot {}",
+                metadata_offset,
+                stack_slot
+            );
+        }
+        for (metadata_offset, stack_slot) in ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_DWORD_LOADS {
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &metadata_dword_disp32_load_qword_store_sequence(metadata_offset, stack_slot),
+                ),
+                "generated text should load system/query/schedule dword at metadata offset {} into stack slot {}",
+                metadata_offset,
+                stack_slot
+            );
+        }
+        for (stack_slot, expected) in ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_EXPECTED {
+            assert!(
+                contains_subsequence(&text, &compare_stack_slot_sequence(stack_slot, expected),),
+                "generated text should validate system/query/schedule stack slot {} against {}",
+                stack_slot,
+                expected
+            );
+        }
+        assert!(
+            contains_subsequence(
+                &text,
+                &metadata_qword_load_store_sequence(696, ECS_COMPILED_SCHEDULE_ID_SLOT),
+            ),
+            "generated text should preserve compiled schedule state from startup run"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    ECS_SPAWN_ROW_COUNT_SLOT,
+                    ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
+                ),
+            ),
+            "generated text should preserve native query-plan construction"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &query_plan_component_field_multiply_sequence(
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                    0,
+                    ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+                ),
+            ),
+            "generated text should preserve compiled Demo.Move field math"
         );
         assert!(
             contains_subsequence(
