@@ -429,6 +429,26 @@ struct NativeEcsTableIterationCursorModel {
     query_plans: NativeTableIterationCursor<1>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeDescriptorDecodeFamily {
+    ComponentResource,
+    SystemQuerySchedule,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeDescriptorTableIterationRow {
+    cursor_table: NativeTableIterationKind,
+    cursor_row_index: usize,
+    expected_table_count: u64,
+    count_slot: NativeEcsSlot,
+    primary_slot: NativeEcsSlot,
+    decode_family: NativeDescriptorDecodeFamily,
+    qword_load_start: usize,
+    qword_load_len: usize,
+    dword_load_start: usize,
+    dword_load_len: usize,
+}
+
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
         frame_size: 856,
@@ -1835,6 +1855,104 @@ const ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_EXPECTED: [(u16, u64); 20] = [
     (ECS_MAIN_SCHEDULE_RUN_ITEM_KIND_SLOT, 1),
     (ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT, DEMO_MOVE_SYSTEM_ID),
 ];
+const ECS_DESCRIPTOR_TABLE_ITERATION_ROWS: [NativeDescriptorTableIterationRow; 6] = [
+    NativeDescriptorTableIterationRow {
+        cursor_table: NativeTableIterationKind::ComponentDescriptors,
+        cursor_row_index: 0,
+        expected_table_count: 2,
+        count_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .component_descriptors
+            .count_slot
+            .unwrap(),
+        primary_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .component_descriptors
+            .rows[0]
+            .primary_slot,
+        decode_family: NativeDescriptorDecodeFamily::ComponentResource,
+        qword_load_start: 0,
+        qword_load_len: 1,
+        dword_load_start: 0,
+        dword_load_len: 5,
+    },
+    NativeDescriptorTableIterationRow {
+        cursor_table: NativeTableIterationKind::ComponentDescriptors,
+        cursor_row_index: 1,
+        expected_table_count: 2,
+        count_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .component_descriptors
+            .count_slot
+            .unwrap(),
+        primary_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .component_descriptors
+            .rows[1]
+            .primary_slot,
+        decode_family: NativeDescriptorDecodeFamily::ComponentResource,
+        qword_load_start: 1,
+        qword_load_len: 1,
+        dword_load_start: 5,
+        dword_load_len: 5,
+    },
+    NativeDescriptorTableIterationRow {
+        cursor_table: NativeTableIterationKind::ResourceDescriptors,
+        cursor_row_index: 0,
+        expected_table_count: 1,
+        count_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .resource_descriptors
+            .count_slot
+            .unwrap(),
+        primary_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS.resource_descriptors.rows[0].primary_slot,
+        decode_family: NativeDescriptorDecodeFamily::ComponentResource,
+        qword_load_start: 2,
+        qword_load_len: 1,
+        dword_load_start: 10,
+        dword_load_len: 4,
+    },
+    NativeDescriptorTableIterationRow {
+        cursor_table: NativeTableIterationKind::SystemDescriptors,
+        cursor_row_index: 0,
+        expected_table_count: 1,
+        count_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .system_descriptors
+            .count_slot
+            .unwrap(),
+        primary_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS.system_descriptors.rows[0].primary_slot,
+        decode_family: NativeDescriptorDecodeFamily::SystemQuerySchedule,
+        qword_load_start: 0,
+        qword_load_len: 4,
+        dword_load_start: 0,
+        dword_load_len: 6,
+    },
+    NativeDescriptorTableIterationRow {
+        cursor_table: NativeTableIterationKind::QueryDescriptors,
+        cursor_row_index: 0,
+        expected_table_count: 1,
+        count_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .query_descriptors
+            .count_slot
+            .unwrap(),
+        primary_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS.query_descriptors.rows[0].primary_slot,
+        decode_family: NativeDescriptorDecodeFamily::SystemQuerySchedule,
+        qword_load_start: 4,
+        qword_load_len: 3,
+        dword_load_start: 6,
+        dword_load_len: 3,
+    },
+    NativeDescriptorTableIterationRow {
+        cursor_table: NativeTableIterationKind::ScheduleDescriptors,
+        cursor_row_index: 0,
+        expected_table_count: 1,
+        count_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS
+            .schedule_descriptors
+            .count_slot
+            .unwrap(),
+        primary_slot: NATIVE_ECS_TABLE_ITERATION_CURSORS.schedule_descriptors.rows[0].primary_slot,
+        decode_family: NativeDescriptorDecodeFamily::SystemQuerySchedule,
+        qword_load_start: 7,
+        qword_load_len: 2,
+        dword_load_start: 9,
+        dword_load_len: 2,
+    },
+];
 const ECS_STARTUP_OPERATION_TABLE_QWORD_LOADS: [(i32, u16); 4] = [
     (581, ECS_STARTUP_TABLE_RESOURCE_ID_SLOT),
     (618, ECS_STARTUP_TABLE_POSITION_COMPONENT_ID_SLOT),
@@ -2729,8 +2847,10 @@ fn ecs_metadata_decoder_body(
         bytes.extend_from_slice(&[0x8b, 0x46, *byte_len_offset]); // mov eax, dword ptr [rsi + offset]
         store_rax_to_stack_slot(&mut bytes, stack_slot);
     }
-    emit_component_resource_descriptor_table_decodes(&mut bytes);
-    emit_system_query_schedule_descriptor_table_decodes(&mut bytes);
+    emit_native_descriptor_table_row_iteration(
+        &mut bytes,
+        &mut jump_to_startup_state_failure_offsets,
+    );
     emit_descriptor_name_table_decodes(&mut bytes, &mut jump_to_startup_state_failure_offsets);
     emit_startup_operation_table_decodes(&mut bytes);
 
@@ -3140,30 +3260,55 @@ fn emit_startup_operation_state_validations(
     );
 }
 
-fn emit_component_resource_descriptor_table_decodes(bytes: &mut Vec<u8>) {
-    for (metadata_offset, stack_slot) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_QWORD_LOADS {
-        bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
-        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
-        store_rax_to_stack_slot(bytes, stack_slot);
-    }
-    for (metadata_offset, stack_slot) in ECS_COMPONENT_RESOURCE_DESCRIPTOR_DWORD_LOADS {
-        bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
-        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
-        store_rax_to_stack_slot(bytes, stack_slot);
+fn emit_native_descriptor_table_row_iteration(bytes: &mut Vec<u8>, jump_offsets: &mut Vec<usize>) {
+    for row in ECS_DESCRIPTOR_TABLE_ITERATION_ROWS {
+        compare_stack_slot_to_u64(
+            bytes,
+            row.count_slot.offset,
+            row.expected_table_count,
+            jump_offsets,
+        );
+
+        let (qword_loads, dword_loads): (&[(i32, u16)], &[(i32, u16)]) = match row.decode_family {
+            NativeDescriptorDecodeFamily::ComponentResource => (
+                &ECS_COMPONENT_RESOURCE_DESCRIPTOR_QWORD_LOADS,
+                &ECS_COMPONENT_RESOURCE_DESCRIPTOR_DWORD_LOADS,
+            ),
+            NativeDescriptorDecodeFamily::SystemQuerySchedule => (
+                &ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_QWORD_LOADS,
+                &ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_DWORD_LOADS,
+            ),
+        };
+
+        for (metadata_offset, stack_slot) in qword_loads
+            .iter()
+            .copied()
+            .skip(row.qword_load_start)
+            .take(row.qword_load_len)
+        {
+            emit_descriptor_qword_load(bytes, metadata_offset, stack_slot);
+        }
+        for (metadata_offset, stack_slot) in dword_loads
+            .iter()
+            .copied()
+            .skip(row.dword_load_start)
+            .take(row.dword_load_len)
+        {
+            emit_descriptor_dword_load(bytes, metadata_offset, stack_slot);
+        }
     }
 }
 
-fn emit_system_query_schedule_descriptor_table_decodes(bytes: &mut Vec<u8>) {
-    for (metadata_offset, stack_slot) in ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_QWORD_LOADS {
-        bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
-        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
-        store_rax_to_stack_slot(bytes, stack_slot);
-    }
-    for (metadata_offset, stack_slot) in ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_DWORD_LOADS {
-        bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
-        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
-        store_rax_to_stack_slot(bytes, stack_slot);
-    }
+fn emit_descriptor_qword_load(bytes: &mut Vec<u8>, metadata_offset: i32, stack_slot: u16) {
+    bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
+    bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+    store_rax_to_stack_slot(bytes, stack_slot);
+}
+
+fn emit_descriptor_dword_load(bytes: &mut Vec<u8>, metadata_offset: i32, stack_slot: u16) {
+    bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
+    bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+    store_rax_to_stack_slot(bytes, stack_slot);
 }
 
 fn emit_descriptor_name_table_decodes(bytes: &mut Vec<u8>, jump_offsets: &mut Vec<usize>) {
@@ -5081,6 +5226,189 @@ mod tests {
                 row_index: 0,
                 primary_slot: table_model.query_plans.rows[0].query_id,
             }]
+        );
+    }
+
+    #[test]
+    fn iterates_native_descriptor_table_rows_by_count() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let cursors = NATIVE_ECS_TABLE_ITERATION_CURSORS;
+        let rows = ECS_DESCRIPTOR_TABLE_ITERATION_ROWS;
+        assert_eq!(
+            rows,
+            [
+                NativeDescriptorTableIterationRow {
+                    cursor_table: NativeTableIterationKind::ComponentDescriptors,
+                    cursor_row_index: 0,
+                    expected_table_count: 2,
+                    count_slot: cursors.component_descriptors.count_slot.unwrap(),
+                    primary_slot: cursors.component_descriptors.rows[0].primary_slot,
+                    decode_family: NativeDescriptorDecodeFamily::ComponentResource,
+                    qword_load_start: 0,
+                    qword_load_len: 1,
+                    dword_load_start: 0,
+                    dword_load_len: 5,
+                },
+                NativeDescriptorTableIterationRow {
+                    cursor_table: NativeTableIterationKind::ComponentDescriptors,
+                    cursor_row_index: 1,
+                    expected_table_count: 2,
+                    count_slot: cursors.component_descriptors.count_slot.unwrap(),
+                    primary_slot: cursors.component_descriptors.rows[1].primary_slot,
+                    decode_family: NativeDescriptorDecodeFamily::ComponentResource,
+                    qword_load_start: 1,
+                    qword_load_len: 1,
+                    dword_load_start: 5,
+                    dword_load_len: 5,
+                },
+                NativeDescriptorTableIterationRow {
+                    cursor_table: NativeTableIterationKind::ResourceDescriptors,
+                    cursor_row_index: 0,
+                    expected_table_count: 1,
+                    count_slot: cursors.resource_descriptors.count_slot.unwrap(),
+                    primary_slot: cursors.resource_descriptors.rows[0].primary_slot,
+                    decode_family: NativeDescriptorDecodeFamily::ComponentResource,
+                    qword_load_start: 2,
+                    qword_load_len: 1,
+                    dword_load_start: 10,
+                    dword_load_len: 4,
+                },
+                NativeDescriptorTableIterationRow {
+                    cursor_table: NativeTableIterationKind::SystemDescriptors,
+                    cursor_row_index: 0,
+                    expected_table_count: 1,
+                    count_slot: cursors.system_descriptors.count_slot.unwrap(),
+                    primary_slot: cursors.system_descriptors.rows[0].primary_slot,
+                    decode_family: NativeDescriptorDecodeFamily::SystemQuerySchedule,
+                    qword_load_start: 0,
+                    qword_load_len: 4,
+                    dword_load_start: 0,
+                    dword_load_len: 6,
+                },
+                NativeDescriptorTableIterationRow {
+                    cursor_table: NativeTableIterationKind::QueryDescriptors,
+                    cursor_row_index: 0,
+                    expected_table_count: 1,
+                    count_slot: cursors.query_descriptors.count_slot.unwrap(),
+                    primary_slot: cursors.query_descriptors.rows[0].primary_slot,
+                    decode_family: NativeDescriptorDecodeFamily::SystemQuerySchedule,
+                    qword_load_start: 4,
+                    qword_load_len: 3,
+                    dword_load_start: 6,
+                    dword_load_len: 3,
+                },
+                NativeDescriptorTableIterationRow {
+                    cursor_table: NativeTableIterationKind::ScheduleDescriptors,
+                    cursor_row_index: 0,
+                    expected_table_count: 1,
+                    count_slot: cursors.schedule_descriptors.count_slot.unwrap(),
+                    primary_slot: cursors.schedule_descriptors.rows[0].primary_slot,
+                    decode_family: NativeDescriptorDecodeFamily::SystemQuerySchedule,
+                    qword_load_start: 7,
+                    qword_load_len: 2,
+                    dword_load_start: 9,
+                    dword_load_len: 2,
+                },
+            ]
+        );
+        assert_eq!(rows[0].count_slot.offset, 0);
+        assert_eq!(rows[1].count_slot.offset, 0);
+        assert_eq!(rows[2].count_slot.offset, 8);
+        assert_eq!(rows[3].count_slot.offset, 16);
+        assert_eq!(rows[4].count_slot.offset, 24);
+        assert_eq!(rows[5].count_slot.offset, 32);
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        let mut search_start = 0usize;
+        for row in rows {
+            let count_sequence =
+                compare_stack_slot_sequence(row.count_slot.offset, row.expected_table_count);
+            let (qword_loads, dword_loads): (&[(i32, u16)], &[(i32, u16)]) = match row.decode_family
+            {
+                NativeDescriptorDecodeFamily::ComponentResource => (
+                    &ECS_COMPONENT_RESOURCE_DESCRIPTOR_QWORD_LOADS,
+                    &ECS_COMPONENT_RESOURCE_DESCRIPTOR_DWORD_LOADS,
+                ),
+                NativeDescriptorDecodeFamily::SystemQuerySchedule => (
+                    &ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_QWORD_LOADS,
+                    &ECS_SYSTEM_QUERY_SCHEDULE_DESCRIPTOR_DWORD_LOADS,
+                ),
+            };
+            let (first_metadata_offset, first_stack_slot) = qword_loads[row.qword_load_start];
+            let first_load_sequence =
+                metadata_qword_load_store_sequence(first_metadata_offset, first_stack_slot);
+            let count_index = find_subsequence_from(&text, &count_sequence, search_start)
+                .expect("descriptor row should compare its table count before loading");
+            let first_load_index = find_subsequence_from(&text, &first_load_sequence, count_index)
+                .expect("descriptor row should load fields after count validation");
+            assert!(
+                count_index < first_load_index,
+                "descriptor row {:?} should count-check before its first qword load",
+                row
+            );
+            search_start = first_load_index + first_load_sequence.len();
+
+            for (metadata_offset, stack_slot) in qword_loads
+                .iter()
+                .copied()
+                .skip(row.qword_load_start)
+                .take(row.qword_load_len)
+            {
+                assert!(
+                    contains_subsequence(
+                        &text,
+                        &metadata_qword_load_store_sequence(metadata_offset, stack_slot),
+                    ),
+                    "descriptor row {:?} should load qword metadata offset {} into stack slot {}",
+                    row,
+                    metadata_offset,
+                    stack_slot
+                );
+            }
+            for (metadata_offset, stack_slot) in dword_loads
+                .iter()
+                .copied()
+                .skip(row.dword_load_start)
+                .take(row.dword_load_len)
+            {
+                assert!(
+                    contains_subsequence(
+                        &text,
+                        &metadata_dword_disp32_load_qword_store_sequence(
+                            metadata_offset,
+                            stack_slot,
+                        ),
+                    ),
+                    "descriptor row {:?} should load dword metadata offset {} into stack slot {}",
+                    row,
+                    metadata_offset,
+                    stack_slot
+                );
+            }
+        }
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "descriptor row iteration should preserve compiled Move success"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_STARTUP_STATE_FAILURE_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "descriptor row count mismatch should use the descriptor/startup-state failure exit"
         );
     }
 
@@ -7453,6 +7781,13 @@ mod tests {
         haystack
             .windows(needle.len())
             .any(|window| window == needle)
+    }
+
+    fn find_subsequence_from(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+        haystack[start..]
+            .windows(needle.len())
+            .position(|relative_index| relative_index == needle)
+            .map(|relative_index| start + relative_index)
     }
 
     fn contains_ordered_subsequences(haystack: &[u8], needles: &[Vec<u8>]) -> bool {

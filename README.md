@@ -96,8 +96,9 @@ The proof chain currently demonstrates:
 - Native query-plan construction from reusable table rows for the current `Demo.Move.movers` proof.
 - Native compiled schedule execution through reusable table rows for the current `Demo.Main -> Demo.Move` proof.
 - A native table iteration cursor model over current descriptor, startup operation, compiled schedule, and query-plan rows without changing generated native bytes.
+- Count-driven native descriptor table row iteration for component, resource, system, query, and schedule descriptor records.
 
-M22 native ECS table row iteration is active; the next proof is count-driven descriptor table row iteration.
+M22 native ECS table row iteration is active; the next proof is count-driven startup operation table row iteration.
 
 ## What This Is Not Yet
 

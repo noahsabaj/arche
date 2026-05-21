@@ -1176,6 +1176,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_table_iteration_cursor_model")
 
     Invoke-CheckedCommand `
+        -Name "iterates_native_descriptor_table_rows_by_count" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "iterates_native_descriptor_table_rows_by_count")
+
+    Invoke-CheckedCommand `
         -Name "decodes_native_descriptor_names_into_table_state" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "decodes_native_descriptor_names_into_table_state")
