@@ -466,12 +466,12 @@ function Add-ZeroQwordStore {
 }
 
 function New-RuntimeStateQwordOffsets {
-    0..94 | ForEach-Object { $_ * 8 }
+    0..106 | ForEach-Object { $_ * 8 }
 }
 
 function New-RuntimeCreatePrefix {
     $bytes = [System.Collections.Generic.List[byte]]::new()
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 760
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 856
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
@@ -485,7 +485,7 @@ function New-RuntimeDestroySuffix {
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
     }
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 760
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 856
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05))
     [byte[]]$bytes.ToArray()
 }
@@ -863,6 +863,63 @@ function Test-CorruptEcsScheduleDescriptorRecord {
     Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
 }
 
+function Test-CorruptEcsPositionDescriptorName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_position_descriptor_name"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $nameByteOffset = $metadataStart + 124
+    Assert-Equal -Name "ECS Demo.Position first name byte before corruption" -Actual $bytes[$nameByteOffset] -Expected 0x44
+    $bytes[$nameByteOffset] = 0x58
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+}
+
+function Test-CorruptEcsMoversQueryDescriptorNameLength {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_movers_query_descriptor_name_len"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $nameLenOffset = $metadataStart + 445
+    Assert-Equal -Name "ECS Demo.Move.movers name length before corruption" -Actual $bytes[$nameLenOffset] -Expected 0x10
+    $bytes[$nameLenOffset] = 0x11
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+}
+
+function Test-CorruptEcsMainScheduleDescriptorName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Path
+    )
+
+    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_main_schedule_descriptor_name"
+    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
+
+    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
+    $metadataStart = $bytes.Length - 717
+    $nameByteOffset = $metadataStart + 539
+    Assert-Equal -Name "ECS Demo.Main first name byte before corruption" -Actual $bytes[$nameByteOffset] -Expected 0x44
+    $bytes[$nameByteOffset] = 0x58
+    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
+
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+}
+
 function Test-CorruptEcsStartupResourceId {
     param(
         [Parameter(Mandatory = $true)]
@@ -1074,6 +1131,11 @@ try {
         -Name "defines_reusable_native_ecs_table_model" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_reusable_native_ecs_table_model")
+
+    Invoke-CheckedCommand `
+        -Name "decodes_native_descriptor_names_into_table_state" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "decodes_native_descriptor_names_into_table_state")
 
     Invoke-CheckedCommand `
         -Name "materializes_native_descriptor_record_state" `
@@ -1833,6 +1895,9 @@ try {
     Test-CorruptEcsSystemDescriptorRecord -Path ".\build\move_system"
     Test-CorruptEcsQueryDescriptorRecord -Path ".\build\move_system"
     Test-CorruptEcsScheduleDescriptorRecord -Path ".\build\move_system"
+    Test-CorruptEcsPositionDescriptorName -Path ".\build\move_system"
+    Test-CorruptEcsMoversQueryDescriptorNameLength -Path ".\build\move_system"
+    Test-CorruptEcsMainScheduleDescriptorName -Path ".\build\move_system"
     Test-CorruptEcsStartupResourceId -Path ".\build\move_system"
     Test-CorruptEcsStartupSpawnComponentCount -Path ".\build\move_system"
     Test-CorruptEcsStartupOperationKind -Path ".\build\move_system"

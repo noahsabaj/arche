@@ -91,8 +91,9 @@ The proof chain currently demonstrates:
 - Native query-plan construction from decoded descriptor records.
 - Generated-native `move_system` execution through decoded descriptor, startup, schedule, and query-plan tables.
 - A reusable native ECS table model that names the current descriptor, startup, compiled schedule, and query-plan rows without changing generated native bytes.
+- Native descriptor name-reference decoding into table state, with generated startup validating exact descriptor name bytes from embedded `ARCHEECS`.
 
-M20 native ECS descriptor-table work is complete. M21 native ECS table generalization is active; the next proof is decoding descriptor names into native table state.
+M20 native ECS descriptor-table work is complete. M21 native ECS table generalization is active; the next proof is generic startup operation table iteration.
 
 ## What This Is Not Yet
 

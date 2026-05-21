@@ -134,6 +134,22 @@ struct NativeSystemQueryScheduleDescriptorTableSlots {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeNameReferenceSlots {
+    byte_offset: NativeEcsSlot,
+    byte_len: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeDescriptorNameTableSlots {
+    position: NativeNameReferenceSlots,
+    velocity: NativeNameReferenceSlots,
+    time: NativeNameReferenceSlots,
+    move_system: NativeNameReferenceSlots,
+    movers_query: NativeNameReferenceSlots,
+    main_schedule: NativeNameReferenceSlots,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeResourceStartupOperationSlots {
     kind: NativeEcsSlot,
     resource_id: NativeEcsSlot,
@@ -193,7 +209,7 @@ struct NativeCompiledMoveSlots {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeEcsExecutionStateLayout {
     frame_size: u16,
-    zeroed_qword_offsets: [u16; 95],
+    zeroed_qword_offsets: [u16; 107],
     descriptor_counts: NativeDescriptorCountSlots,
     descriptor_records: NativeDescriptorRecordStateSlots,
     startup_state: NativeStartupStateSlots,
@@ -204,17 +220,53 @@ struct NativeEcsExecutionStateLayout {
     system_query_schedule_descriptors: NativeSystemQueryScheduleDescriptorTableSlots,
     startup_operations: NativeStartupOperationTableSlots,
     descriptor_backed_query_plan: NativeDescriptorBackedQueryPlanSlots,
+    descriptor_names: NativeDescriptorNameTableSlots,
     compiled_move: NativeCompiledMoveSlots,
 }
 
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeXyDescriptorTableRow {
+    slots: NativeXyDescriptorSlots,
+    name: NativeNameReferenceSlots,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeTimeDescriptorTableRow {
+    slots: NativeTimeDescriptorSlots,
+    name: NativeNameReferenceSlots,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeMoveSystemDescriptorTableRow {
+    slots: NativeMoveSystemDescriptorSlots,
+    name: NativeNameReferenceSlots,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeMoversQueryDescriptorTableRow {
+    slots: NativeMoversQueryDescriptorSlots,
+    name: NativeNameReferenceSlots,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeMainScheduleDescriptorTableRow {
+    slots: NativeMainScheduleDescriptorSlots,
+    name: NativeNameReferenceSlots,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeDescriptorTableModel {
-    component_rows: [NativeXyDescriptorSlots; 2],
-    resource_rows: [NativeTimeDescriptorSlots; 1],
-    system_rows: [NativeMoveSystemDescriptorSlots; 1],
-    query_rows: [NativeMoversQueryDescriptorSlots; 1],
-    schedule_rows: [NativeMainScheduleDescriptorSlots; 1],
+    component_rows: [NativeXyDescriptorTableRow; 2],
+    resource_rows: [NativeTimeDescriptorTableRow; 1],
+    system_rows: [NativeMoveSystemDescriptorTableRow; 1],
+    query_rows: [NativeMoversQueryDescriptorTableRow; 1],
+    schedule_rows: [NativeMainScheduleDescriptorTableRow; 1],
 }
 
 #[allow(dead_code)]
@@ -248,14 +300,15 @@ struct NativeEcsTableModel {
 
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
-        frame_size: 760,
+        frame_size: 856,
         zeroed_qword_offsets: [
             0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152,
             160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 264, 272, 280, 288,
             296, 304, 312, 320, 328, 336, 344, 352, 360, 368, 376, 384, 392, 400, 408, 416, 424,
             432, 440, 448, 456, 464, 472, 480, 488, 496, 504, 512, 520, 528, 536, 544, 552, 560,
             568, 576, 584, 592, 600, 608, 616, 624, 632, 640, 648, 656, 664, 672, 680, 688, 696,
-            704, 712, 720, 728, 736, 744, 752,
+            704, 712, 720, 728, 736, 744, 752, 760, 768, 776, 784, 792, 800, 808, 816, 824, 832,
+            840, 848,
         ],
         descriptor_counts: NativeDescriptorCountSlots {
             components: NativeEcsSlot {
@@ -677,6 +730,68 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
                 },
             },
         },
+        descriptor_names: NativeDescriptorNameTableSlots {
+            position: NativeNameReferenceSlots {
+                byte_offset: NativeEcsSlot {
+                    offset: 760,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 768,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            velocity: NativeNameReferenceSlots {
+                byte_offset: NativeEcsSlot {
+                    offset: 776,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 784,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            time: NativeNameReferenceSlots {
+                byte_offset: NativeEcsSlot {
+                    offset: 792,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 800,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            move_system: NativeNameReferenceSlots {
+                byte_offset: NativeEcsSlot {
+                    offset: 808,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 816,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            movers_query: NativeNameReferenceSlots {
+                byte_offset: NativeEcsSlot {
+                    offset: 824,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 832,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+            main_schedule: NativeNameReferenceSlots {
+                byte_offset: NativeEcsSlot {
+                    offset: 840,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+                byte_len: NativeEcsSlot {
+                    offset: 848,
+                    byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                },
+            },
+        },
         compiled_move: NativeCompiledMoveSlots {
             target_position_payload: NativeEcsSlot {
                 offset: 72,
@@ -697,25 +812,49 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
 const NATIVE_ECS_TABLE_MODEL: NativeEcsTableModel = NativeEcsTableModel {
     descriptors: NativeDescriptorTableModel {
         component_rows: [
-            NATIVE_ECS_EXECUTION_STATE_LAYOUT
-                .component_resource_descriptors
-                .position,
-            NATIVE_ECS_EXECUTION_STATE_LAYOUT
-                .component_resource_descriptors
-                .velocity,
+            NativeXyDescriptorTableRow {
+                slots: NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                    .component_resource_descriptors
+                    .position,
+                name: NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_names.position,
+            },
+            NativeXyDescriptorTableRow {
+                slots: NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                    .component_resource_descriptors
+                    .velocity,
+                name: NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_names.velocity,
+            },
         ],
-        resource_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
-            .component_resource_descriptors
-            .time],
-        system_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
-            .system_query_schedule_descriptors
-            .move_system],
-        query_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
-            .system_query_schedule_descriptors
-            .movers_query],
-        schedule_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
-            .system_query_schedule_descriptors
-            .main_schedule],
+        resource_rows: [NativeTimeDescriptorTableRow {
+            slots: NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .component_resource_descriptors
+                .time,
+            name: NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_names.time,
+        }],
+        system_rows: [NativeMoveSystemDescriptorTableRow {
+            slots: NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .system_query_schedule_descriptors
+                .move_system,
+            name: NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .descriptor_names
+                .move_system,
+        }],
+        query_rows: [NativeMoversQueryDescriptorTableRow {
+            slots: NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .system_query_schedule_descriptors
+                .movers_query,
+            name: NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .descriptor_names
+                .movers_query,
+        }],
+        schedule_rows: [NativeMainScheduleDescriptorTableRow {
+            slots: NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .system_query_schedule_descriptors
+                .main_schedule,
+            name: NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .descriptor_names
+                .main_schedule,
+        }],
     },
     startup_operations: NativeStartupOperationTableModel {
         resource_payload_rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT
@@ -1222,6 +1361,120 @@ const ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_Y_FIELD_OFFSET_SLOT: u16 =
         .velocity
         .y_field_offset
         .offset;
+const ECS_POSITION_DESCRIPTOR_NAME_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .position
+    .byte_offset
+    .offset;
+const ECS_POSITION_DESCRIPTOR_NAME_LEN_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .position
+    .byte_len
+    .offset;
+const ECS_VELOCITY_DESCRIPTOR_NAME_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .velocity
+    .byte_offset
+    .offset;
+const ECS_VELOCITY_DESCRIPTOR_NAME_LEN_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .velocity
+    .byte_len
+    .offset;
+const ECS_TIME_DESCRIPTOR_NAME_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .time
+    .byte_offset
+    .offset;
+const ECS_TIME_DESCRIPTOR_NAME_LEN_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .time
+    .byte_len
+    .offset;
+const ECS_MOVE_SYSTEM_DESCRIPTOR_NAME_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .move_system
+    .byte_offset
+    .offset;
+const ECS_MOVE_SYSTEM_DESCRIPTOR_NAME_LEN_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .move_system
+    .byte_len
+    .offset;
+const ECS_MOVERS_QUERY_DESCRIPTOR_NAME_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .movers_query
+    .byte_offset
+    .offset;
+const ECS_MOVERS_QUERY_DESCRIPTOR_NAME_LEN_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .movers_query
+    .byte_len
+    .offset;
+const ECS_MAIN_SCHEDULE_DESCRIPTOR_NAME_OFFSET_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .main_schedule
+    .byte_offset
+    .offset;
+const ECS_MAIN_SCHEDULE_DESCRIPTOR_NAME_LEN_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .descriptor_names
+    .main_schedule
+    .byte_len
+    .offset;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeDescriptorNameReference {
+    name: &'static str,
+    byte_len_offset: i32,
+    byte_offset: u64,
+    byte_offset_slot: u16,
+    byte_len_slot: u16,
+}
+
+const ECS_DESCRIPTOR_NAME_REFERENCES: [NativeDescriptorNameReference; 6] = [
+    NativeDescriptorNameReference {
+        name: "Demo.Position",
+        byte_len_offset: 120,
+        byte_offset: 124,
+        byte_offset_slot: ECS_POSITION_DESCRIPTOR_NAME_OFFSET_SLOT,
+        byte_len_slot: ECS_POSITION_DESCRIPTOR_NAME_LEN_SLOT,
+    },
+    NativeDescriptorNameReference {
+        name: "Demo.Velocity",
+        byte_len_offset: 189,
+        byte_offset: 193,
+        byte_offset_slot: ECS_VELOCITY_DESCRIPTOR_NAME_OFFSET_SLOT,
+        byte_len_slot: ECS_VELOCITY_DESCRIPTOR_NAME_LEN_SLOT,
+    },
+    NativeDescriptorNameReference {
+        name: "Demo.Time",
+        byte_len_offset: 258,
+        byte_offset: 262,
+        byte_offset_slot: ECS_TIME_DESCRIPTOR_NAME_OFFSET_SLOT,
+        byte_len_slot: ECS_TIME_DESCRIPTOR_NAME_LEN_SLOT,
+    },
+    NativeDescriptorNameReference {
+        name: "Demo.Move",
+        byte_len_offset: 311,
+        byte_offset: 315,
+        byte_offset_slot: ECS_MOVE_SYSTEM_DESCRIPTOR_NAME_OFFSET_SLOT,
+        byte_len_slot: ECS_MOVE_SYSTEM_DESCRIPTOR_NAME_LEN_SLOT,
+    },
+    NativeDescriptorNameReference {
+        name: "Demo.Move.movers",
+        byte_len_offset: 445,
+        byte_offset: 449,
+        byte_offset_slot: ECS_MOVERS_QUERY_DESCRIPTOR_NAME_OFFSET_SLOT,
+        byte_len_slot: ECS_MOVERS_QUERY_DESCRIPTOR_NAME_LEN_SLOT,
+    },
+    NativeDescriptorNameReference {
+        name: "Demo.Main",
+        byte_len_offset: 535,
+        byte_offset: 539,
+        byte_offset_slot: ECS_MAIN_SCHEDULE_DESCRIPTOR_NAME_OFFSET_SLOT,
+        byte_len_slot: ECS_MAIN_SCHEDULE_DESCRIPTOR_NAME_LEN_SLOT,
+    },
+];
 const ECS_COMPONENT_RESOURCE_DESCRIPTOR_QWORD_LOADS: [(i32, u16); 3] = [
     (112, ECS_POSITION_DESCRIPTOR_ID_SLOT),
     (181, ECS_VELOCITY_DESCRIPTOR_ID_SLOT),
@@ -2247,6 +2500,7 @@ fn ecs_metadata_decoder_body(
     }
     emit_component_resource_descriptor_table_decodes(&mut bytes);
     emit_system_query_schedule_descriptor_table_decodes(&mut bytes);
+    emit_descriptor_name_table_decodes(&mut bytes, &mut jump_to_startup_state_failure_offsets);
     emit_startup_operation_table_decodes(&mut bytes);
 
     bytes.extend_from_slice(&[0x8b, 0x46, ECS_STARTUP_RECORD_COUNT_OFFSET]); // mov eax, dword ptr [rsi + offset]
@@ -2643,6 +2897,124 @@ fn emit_system_query_schedule_descriptor_table_decodes(bytes: &mut Vec<u8>) {
         bytes.extend_from_slice(&metadata_offset.to_le_bytes());
         store_rax_to_stack_slot(bytes, stack_slot);
     }
+}
+
+fn emit_descriptor_name_table_decodes(bytes: &mut Vec<u8>, jump_offsets: &mut Vec<usize>) {
+    for reference in ECS_DESCRIPTOR_NAME_REFERENCES {
+        bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, descriptor name byte offset
+        bytes.extend_from_slice(&reference.byte_offset.to_le_bytes());
+        store_rax_to_stack_slot(bytes, reference.byte_offset_slot);
+
+        bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
+        bytes.extend_from_slice(&reference.byte_len_offset.to_le_bytes());
+        store_rax_to_stack_slot(bytes, reference.byte_len_slot);
+
+        compare_stack_slot_to_u64(
+            bytes,
+            reference.byte_offset_slot,
+            reference.byte_offset,
+            jump_offsets,
+        );
+        compare_stack_slot_to_u64(
+            bytes,
+            reference.byte_len_slot,
+            reference.name.len() as u64,
+            jump_offsets,
+        );
+        compare_metadata_ascii_bytes(
+            bytes,
+            reference.byte_offset as i32,
+            reference.name.as_bytes(),
+            jump_offsets,
+        );
+    }
+}
+
+fn compare_metadata_ascii_bytes(
+    bytes: &mut Vec<u8>,
+    metadata_offset: i32,
+    expected: &[u8],
+    jump_offsets: &mut Vec<usize>,
+) {
+    let mut offset = 0usize;
+    while expected.len() - offset >= 8 {
+        let mut chunk = [0u8; 8];
+        chunk.copy_from_slice(&expected[offset..offset + 8]);
+        compare_metadata_qword_to_u64(
+            bytes,
+            metadata_offset + offset as i32,
+            u64::from_le_bytes(chunk),
+            jump_offsets,
+        );
+        offset += 8;
+    }
+    if expected.len() - offset >= 4 {
+        let mut chunk = [0u8; 4];
+        chunk.copy_from_slice(&expected[offset..offset + 4]);
+        compare_metadata_dword_to_u32(
+            bytes,
+            metadata_offset + offset as i32,
+            u32::from_le_bytes(chunk),
+            jump_offsets,
+        );
+        offset += 4;
+    }
+    while offset < expected.len() {
+        compare_metadata_byte_to_u8(
+            bytes,
+            metadata_offset + offset as i32,
+            expected[offset],
+            jump_offsets,
+        );
+        offset += 1;
+    }
+}
+
+fn compare_metadata_qword_to_u64(
+    bytes: &mut Vec<u8>,
+    metadata_offset: i32,
+    expected: u64,
+    jump_offsets: &mut Vec<usize>,
+) {
+    bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, imm64
+    bytes.extend_from_slice(&expected.to_le_bytes());
+    bytes.extend_from_slice(&[0x48, 0x39, 0x86]); // cmp qword ptr [rsi + offset], rax
+    bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+
+    let jump_offset = bytes.len();
+    bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
+    jump_offsets.push(jump_offset);
+}
+
+fn compare_metadata_dword_to_u32(
+    bytes: &mut Vec<u8>,
+    metadata_offset: i32,
+    expected: u32,
+    jump_offsets: &mut Vec<usize>,
+) {
+    bytes.push(0xb8); // mov eax, imm32
+    bytes.extend_from_slice(&expected.to_le_bytes());
+    bytes.extend_from_slice(&[0x39, 0x86]); // cmp dword ptr [rsi + offset], eax
+    bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+
+    let jump_offset = bytes.len();
+    bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
+    jump_offsets.push(jump_offset);
+}
+
+fn compare_metadata_byte_to_u8(
+    bytes: &mut Vec<u8>,
+    metadata_offset: i32,
+    expected: u8,
+    jump_offsets: &mut Vec<usize>,
+) {
+    bytes.extend_from_slice(&[0x80, 0xbe]); // cmp byte ptr [rsi + offset], imm8
+    bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+    bytes.push(expected);
+
+    let jump_offset = bytes.len();
+    bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
+    jump_offsets.push(jump_offset);
 }
 
 fn emit_startup_operation_table_decodes(bytes: &mut Vec<u8>) {
@@ -3133,8 +3505,8 @@ mod tests {
     fn defines_native_ecs_execution_state_layout() {
         let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
 
-        assert_eq!(layout.frame_size, 760);
-        let expected_zeroed_qword_offsets: Vec<u16> = (0..=752).step_by(8).collect();
+        assert_eq!(layout.frame_size, 856);
+        let expected_zeroed_qword_offsets: Vec<u16> = (0..=848).step_by(8).collect();
         assert_eq!(
             layout.zeroed_qword_offsets.as_slice(),
             expected_zeroed_qword_offsets.as_slice()
@@ -3606,6 +3978,71 @@ mod tests {
                 },
             }
         );
+        assert_eq!(
+            layout.descriptor_names,
+            NativeDescriptorNameTableSlots {
+                position: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 760,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 768,
+                        byte_len: 8,
+                    },
+                },
+                velocity: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 776,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 784,
+                        byte_len: 8,
+                    },
+                },
+                time: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 792,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 800,
+                        byte_len: 8,
+                    },
+                },
+                move_system: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 808,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 816,
+                        byte_len: 8,
+                    },
+                },
+                movers_query: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 824,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 832,
+                        byte_len: 8,
+                    },
+                },
+                main_schedule: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 840,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 848,
+                        byte_len: 8,
+                    },
+                },
+            }
+        );
         assert_eq!(ECS_DESCRIPTOR_REGISTRY_SLOTS, [0, 8, 16, 24, 32]);
         assert_eq!(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS, [96, 112, 128, 144, 160]);
         assert_eq!(
@@ -3692,6 +4129,18 @@ mod tests {
         assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_SIZE_SLOT, 736);
         assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_X_FIELD_OFFSET_SLOT, 744);
         assert_eq!(ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_Y_FIELD_OFFSET_SLOT, 752);
+        assert_eq!(ECS_POSITION_DESCRIPTOR_NAME_OFFSET_SLOT, 760);
+        assert_eq!(ECS_POSITION_DESCRIPTOR_NAME_LEN_SLOT, 768);
+        assert_eq!(ECS_VELOCITY_DESCRIPTOR_NAME_OFFSET_SLOT, 776);
+        assert_eq!(ECS_VELOCITY_DESCRIPTOR_NAME_LEN_SLOT, 784);
+        assert_eq!(ECS_TIME_DESCRIPTOR_NAME_OFFSET_SLOT, 792);
+        assert_eq!(ECS_TIME_DESCRIPTOR_NAME_LEN_SLOT, 800);
+        assert_eq!(ECS_MOVE_SYSTEM_DESCRIPTOR_NAME_OFFSET_SLOT, 808);
+        assert_eq!(ECS_MOVE_SYSTEM_DESCRIPTOR_NAME_LEN_SLOT, 816);
+        assert_eq!(ECS_MOVERS_QUERY_DESCRIPTOR_NAME_OFFSET_SLOT, 824);
+        assert_eq!(ECS_MOVERS_QUERY_DESCRIPTOR_NAME_LEN_SLOT, 832);
+        assert_eq!(ECS_MAIN_SCHEDULE_DESCRIPTOR_NAME_OFFSET_SLOT, 840);
+        assert_eq!(ECS_MAIN_SCHEDULE_DESCRIPTOR_NAME_LEN_SLOT, 848);
 
         let slots = [
             layout.descriptor_counts.components,
@@ -3855,6 +4304,18 @@ mod tests {
             layout.descriptor_backed_query_plan.velocity.size,
             layout.descriptor_backed_query_plan.velocity.x_field_offset,
             layout.descriptor_backed_query_plan.velocity.y_field_offset,
+            layout.descriptor_names.position.byte_offset,
+            layout.descriptor_names.position.byte_len,
+            layout.descriptor_names.velocity.byte_offset,
+            layout.descriptor_names.velocity.byte_len,
+            layout.descriptor_names.time.byte_offset,
+            layout.descriptor_names.time.byte_len,
+            layout.descriptor_names.move_system.byte_offset,
+            layout.descriptor_names.move_system.byte_len,
+            layout.descriptor_names.movers_query.byte_offset,
+            layout.descriptor_names.movers_query.byte_len,
+            layout.descriptor_names.main_schedule.byte_offset,
+            layout.descriptor_names.main_schedule.byte_len,
         ];
         for slot in slots {
             assert!(
@@ -3897,7 +4358,7 @@ mod tests {
         let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
         let model = NATIVE_ECS_TABLE_MODEL;
 
-        assert_eq!(layout.frame_size, 760);
+        assert_eq!(layout.frame_size, 856);
         assert_eq!(model.descriptors.component_rows.len(), 2);
         assert_eq!(model.descriptors.resource_rows.len(), 1);
         assert_eq!(model.descriptors.system_rows.len(), 1);
@@ -3912,25 +4373,43 @@ mod tests {
         assert_eq!(
             model.descriptors.component_rows,
             [
-                layout.component_resource_descriptors.position,
-                layout.component_resource_descriptors.velocity,
+                NativeXyDescriptorTableRow {
+                    slots: layout.component_resource_descriptors.position,
+                    name: layout.descriptor_names.position,
+                },
+                NativeXyDescriptorTableRow {
+                    slots: layout.component_resource_descriptors.velocity,
+                    name: layout.descriptor_names.velocity,
+                },
             ]
         );
         assert_eq!(
             model.descriptors.resource_rows,
-            [layout.component_resource_descriptors.time]
+            [NativeTimeDescriptorTableRow {
+                slots: layout.component_resource_descriptors.time,
+                name: layout.descriptor_names.time,
+            }]
         );
         assert_eq!(
             model.descriptors.system_rows,
-            [layout.system_query_schedule_descriptors.move_system]
+            [NativeMoveSystemDescriptorTableRow {
+                slots: layout.system_query_schedule_descriptors.move_system,
+                name: layout.descriptor_names.move_system,
+            }]
         );
         assert_eq!(
             model.descriptors.query_rows,
-            [layout.system_query_schedule_descriptors.movers_query]
+            [NativeMoversQueryDescriptorTableRow {
+                slots: layout.system_query_schedule_descriptors.movers_query,
+                name: layout.descriptor_names.movers_query,
+            }]
         );
         assert_eq!(
             model.descriptors.schedule_rows,
-            [layout.system_query_schedule_descriptors.main_schedule]
+            [NativeMainScheduleDescriptorTableRow {
+                slots: layout.system_query_schedule_descriptors.main_schedule,
+                name: layout.descriptor_names.main_schedule,
+            }]
         );
         assert_eq!(
             model.startup_operations.resource_payload_rows,
@@ -3953,76 +4432,115 @@ mod tests {
         let position = model.descriptors.component_rows[0];
         assert_eq!(
             [
-                position.id.offset,
-                position.size.offset,
-                position.align.offset,
-                position.field_count.offset,
-                position.x_field_offset.offset,
-                position.y_field_offset.offset,
+                position.slots.id.offset,
+                position.slots.size.offset,
+                position.slots.align.offset,
+                position.slots.field_count.offset,
+                position.slots.x_field_offset.offset,
+                position.slots.y_field_offset.offset,
             ],
             [256, 264, 272, 280, 288, 296]
+        );
+        assert_eq!(
+            [
+                position.name.byte_offset.offset,
+                position.name.byte_len.offset
+            ],
+            [760, 768]
         );
         let velocity = model.descriptors.component_rows[1];
         assert_eq!(
             [
-                velocity.id.offset,
-                velocity.size.offset,
-                velocity.align.offset,
-                velocity.field_count.offset,
-                velocity.x_field_offset.offset,
-                velocity.y_field_offset.offset,
+                velocity.slots.id.offset,
+                velocity.slots.size.offset,
+                velocity.slots.align.offset,
+                velocity.slots.field_count.offset,
+                velocity.slots.x_field_offset.offset,
+                velocity.slots.y_field_offset.offset,
             ],
             [304, 312, 320, 328, 336, 344]
+        );
+        assert_eq!(
+            [
+                velocity.name.byte_offset.offset,
+                velocity.name.byte_len.offset
+            ],
+            [776, 784]
         );
         let time = model.descriptors.resource_rows[0];
         assert_eq!(
             [
-                time.id.offset,
-                time.size.offset,
-                time.align.offset,
-                time.field_count.offset,
-                time.delta_field_offset.offset,
+                time.slots.id.offset,
+                time.slots.size.offset,
+                time.slots.align.offset,
+                time.slots.field_count.offset,
+                time.slots.delta_field_offset.offset,
             ],
             [352, 360, 368, 376, 384]
+        );
+        assert_eq!(
+            [time.name.byte_offset.offset, time.name.byte_len.offset],
+            [792, 800]
         );
 
         let move_system = model.descriptors.system_rows[0];
         assert_eq!(
             [
-                move_system.id.offset,
-                move_system.param_count.offset,
-                move_system.resource_param_kind.offset,
-                move_system.resource_param_resource_id.offset,
-                move_system.query_param_kind.offset,
-                move_system.query_param_term_count.offset,
-                move_system.query_term0_access.offset,
-                move_system.query_term0_component_id.offset,
-                move_system.query_term1_access.offset,
-                move_system.query_term1_component_id.offset,
+                move_system.slots.id.offset,
+                move_system.slots.param_count.offset,
+                move_system.slots.resource_param_kind.offset,
+                move_system.slots.resource_param_resource_id.offset,
+                move_system.slots.query_param_kind.offset,
+                move_system.slots.query_param_term_count.offset,
+                move_system.slots.query_term0_access.offset,
+                move_system.slots.query_term0_component_id.offset,
+                move_system.slots.query_term1_access.offset,
+                move_system.slots.query_term1_component_id.offset,
             ],
             [392, 400, 408, 416, 424, 432, 440, 448, 456, 464]
+        );
+        assert_eq!(
+            [
+                move_system.name.byte_offset.offset,
+                move_system.name.byte_len.offset
+            ],
+            [808, 816]
         );
         let movers_query = model.descriptors.query_rows[0];
         assert_eq!(
             [
-                movers_query.id.offset,
-                movers_query.term_count.offset,
-                movers_query.term0_access.offset,
-                movers_query.term0_component_id.offset,
-                movers_query.term1_access.offset,
-                movers_query.term1_component_id.offset,
+                movers_query.slots.id.offset,
+                movers_query.slots.term_count.offset,
+                movers_query.slots.term0_access.offset,
+                movers_query.slots.term0_component_id.offset,
+                movers_query.slots.term1_access.offset,
+                movers_query.slots.term1_component_id.offset,
             ],
             [472, 480, 488, 496, 504, 512]
+        );
+        assert_eq!(
+            [
+                movers_query.name.byte_offset.offset,
+                movers_query.name.byte_len.offset
+            ],
+            [824, 832]
         );
         let main_schedule = model.descriptors.schedule_rows[0];
         assert_eq!(
             [
-                main_schedule.id.offset,
-                main_schedule.item_count.offset,
-                main_schedule.run_item_kind.offset,
-                main_schedule.run_system_id.offset,
+                main_schedule.slots.id.offset,
+                main_schedule.slots.item_count.offset,
+                main_schedule.slots.run_item_kind.offset,
+                main_schedule.slots.run_system_id.offset,
             ],
             [520, 528, 536, 544]
+        );
+        assert_eq!(
+            [
+                main_schedule.name.byte_offset.offset,
+                main_schedule.name.byte_len.offset
+            ],
+            [840, 848]
         );
 
         let resource = model.startup_operations.resource_payload_rows[0];
@@ -4081,6 +4599,227 @@ mod tests {
                 query_plan.velocity.y_field_offset.offset,
             ],
             [664, 672, 680, 688, 696, 704, 712, 720, 728, 736, 744, 752]
+        );
+    }
+
+    #[test]
+    fn decodes_native_descriptor_names_into_table_state() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 856);
+        assert_eq!(
+            NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_names,
+            NativeDescriptorNameTableSlots {
+                position: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 760,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 768,
+                        byte_len: 8,
+                    },
+                },
+                velocity: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 776,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 784,
+                        byte_len: 8,
+                    },
+                },
+                time: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 792,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 800,
+                        byte_len: 8,
+                    },
+                },
+                move_system: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 808,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 816,
+                        byte_len: 8,
+                    },
+                },
+                movers_query: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 824,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 832,
+                        byte_len: 8,
+                    },
+                },
+                main_schedule: NativeNameReferenceSlots {
+                    byte_offset: NativeEcsSlot {
+                        offset: 840,
+                        byte_len: 8,
+                    },
+                    byte_len: NativeEcsSlot {
+                        offset: 848,
+                        byte_len: 8,
+                    },
+                },
+            }
+        );
+        assert_eq!(
+            ECS_DESCRIPTOR_NAME_REFERENCES,
+            [
+                NativeDescriptorNameReference {
+                    name: "Demo.Position",
+                    byte_len_offset: 120,
+                    byte_offset: 124,
+                    byte_offset_slot: ECS_POSITION_DESCRIPTOR_NAME_OFFSET_SLOT,
+                    byte_len_slot: ECS_POSITION_DESCRIPTOR_NAME_LEN_SLOT,
+                },
+                NativeDescriptorNameReference {
+                    name: "Demo.Velocity",
+                    byte_len_offset: 189,
+                    byte_offset: 193,
+                    byte_offset_slot: ECS_VELOCITY_DESCRIPTOR_NAME_OFFSET_SLOT,
+                    byte_len_slot: ECS_VELOCITY_DESCRIPTOR_NAME_LEN_SLOT,
+                },
+                NativeDescriptorNameReference {
+                    name: "Demo.Time",
+                    byte_len_offset: 258,
+                    byte_offset: 262,
+                    byte_offset_slot: ECS_TIME_DESCRIPTOR_NAME_OFFSET_SLOT,
+                    byte_len_slot: ECS_TIME_DESCRIPTOR_NAME_LEN_SLOT,
+                },
+                NativeDescriptorNameReference {
+                    name: "Demo.Move",
+                    byte_len_offset: 311,
+                    byte_offset: 315,
+                    byte_offset_slot: ECS_MOVE_SYSTEM_DESCRIPTOR_NAME_OFFSET_SLOT,
+                    byte_len_slot: ECS_MOVE_SYSTEM_DESCRIPTOR_NAME_LEN_SLOT,
+                },
+                NativeDescriptorNameReference {
+                    name: "Demo.Move.movers",
+                    byte_len_offset: 445,
+                    byte_offset: 449,
+                    byte_offset_slot: ECS_MOVERS_QUERY_DESCRIPTOR_NAME_OFFSET_SLOT,
+                    byte_len_slot: ECS_MOVERS_QUERY_DESCRIPTOR_NAME_LEN_SLOT,
+                },
+                NativeDescriptorNameReference {
+                    name: "Demo.Main",
+                    byte_len_offset: 535,
+                    byte_offset: 539,
+                    byte_offset_slot: ECS_MAIN_SCHEDULE_DESCRIPTOR_NAME_OFFSET_SLOT,
+                    byte_len_slot: ECS_MAIN_SCHEDULE_DESCRIPTOR_NAME_LEN_SLOT,
+                },
+            ]
+        );
+        assert_eq!(
+            NATIVE_ECS_TABLE_MODEL.descriptors.component_rows[0].name,
+            NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_names.position
+        );
+        assert_eq!(
+            NATIVE_ECS_TABLE_MODEL.descriptors.component_rows[1].name,
+            NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_names.velocity
+        );
+        assert_eq!(
+            NATIVE_ECS_TABLE_MODEL.descriptors.resource_rows[0].name,
+            NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_names.time
+        );
+        assert_eq!(
+            NATIVE_ECS_TABLE_MODEL.descriptors.system_rows[0].name,
+            NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .descriptor_names
+                .move_system
+        );
+        assert_eq!(
+            NATIVE_ECS_TABLE_MODEL.descriptors.query_rows[0].name,
+            NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .descriptor_names
+                .movers_query
+        );
+        assert_eq!(
+            NATIVE_ECS_TABLE_MODEL.descriptors.schedule_rows[0].name,
+            NATIVE_ECS_EXECUTION_STATE_LAYOUT
+                .descriptor_names
+                .main_schedule
+        );
+
+        for reference in ECS_DESCRIPTOR_NAME_REFERENCES {
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &mov_rax_immediate_store_sequence(
+                        reference.byte_offset,
+                        reference.byte_offset_slot,
+                    ),
+                ),
+                "generated text should store descriptor name byte offset {} into stack slot {}",
+                reference.byte_offset,
+                reference.byte_offset_slot
+            );
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &metadata_dword_disp32_load_qword_store_sequence(
+                        reference.byte_len_offset,
+                        reference.byte_len_slot,
+                    ),
+                ),
+                "generated text should load descriptor name length at metadata offset {} into stack slot {}",
+                reference.byte_len_offset,
+                reference.byte_len_slot
+            );
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &compare_stack_slot_sequence(reference.byte_offset_slot, reference.byte_offset),
+                ),
+                "generated text should validate descriptor name offset for {}",
+                reference.name
+            );
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &compare_stack_slot_sequence(
+                        reference.byte_len_slot,
+                        reference.name.len() as u64,
+                    ),
+                ),
+                "generated text should validate descriptor name length for {}",
+                reference.name
+            );
+            for sequence in metadata_ascii_compare_sequences(
+                reference.byte_offset as i32,
+                reference.name.as_bytes(),
+            ) {
+                assert!(
+                    contains_subsequence(&text, &sequence),
+                    "generated text should validate descriptor name bytes for {}",
+                    reference.name
+                );
+            }
+        }
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "generated text should preserve compiled Move success"
         );
     }
 
@@ -4901,7 +5640,7 @@ mod tests {
             ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
         let startup_payloads = startup_payloads(&metadata).expect("startup payloads parse");
 
-        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 760);
+        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 856);
         assert_eq!(startup_payloads.resource_operation_kind_offset, 577);
         assert_eq!(startup_payloads.resource_id_offset, 581);
         assert_eq!(startup_payloads.resource_id, DEMO_TIME_RESOURCE_ID);
@@ -5251,7 +5990,7 @@ mod tests {
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 760);
+        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 856);
         assert_eq!(
             ECS_DESCRIPTOR_QUERY_PLAN_COPIES,
             [
@@ -5564,7 +6303,7 @@ mod tests {
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 760);
+        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 856);
         for (startup_table_slot, descriptor_slot) in ECS_RESOURCE_STARTUP_DESCRIPTOR_RELATIONS {
             assert!(
                 contains_subsequence(
@@ -5707,6 +6446,39 @@ mod tests {
         bytes.extend_from_slice(&metadata_offset.to_le_bytes());
         append_rax_qword_store(&mut bytes, stack_slot);
         bytes
+    }
+
+    fn metadata_ascii_compare_sequences(metadata_offset: i32, expected: &[u8]) -> Vec<Vec<u8>> {
+        let mut sequences = Vec::new();
+        let mut offset = 0usize;
+        while expected.len() - offset >= 8 {
+            let mut chunk = [0u8; 8];
+            chunk.copy_from_slice(&expected[offset..offset + 8]);
+            let mut bytes = vec![0x48, 0xb8]; // mov rax, imm64
+            bytes.extend_from_slice(&u64::from_le_bytes(chunk).to_le_bytes());
+            bytes.extend_from_slice(&[0x48, 0x39, 0x86]); // cmp qword ptr [rsi + offset], rax
+            bytes.extend_from_slice(&(metadata_offset + offset as i32).to_le_bytes());
+            sequences.push(bytes);
+            offset += 8;
+        }
+        if expected.len() - offset >= 4 {
+            let mut chunk = [0u8; 4];
+            chunk.copy_from_slice(&expected[offset..offset + 4]);
+            let mut bytes = vec![0xb8]; // mov eax, imm32
+            bytes.extend_from_slice(&u32::from_le_bytes(chunk).to_le_bytes());
+            bytes.extend_from_slice(&[0x39, 0x86]); // cmp dword ptr [rsi + offset], eax
+            bytes.extend_from_slice(&(metadata_offset + offset as i32).to_le_bytes());
+            sequences.push(bytes);
+            offset += 4;
+        }
+        while offset < expected.len() {
+            let mut bytes = vec![0x80, 0xbe]; // cmp byte ptr [rsi + offset], imm8
+            bytes.extend_from_slice(&(metadata_offset + offset as i32).to_le_bytes());
+            bytes.push(expected[offset]);
+            sequences.push(bytes);
+            offset += 1;
+        }
+        sequences
     }
 
     fn mov_eax_one_store_sequence(stack_slot: u16) -> Vec<u8> {
