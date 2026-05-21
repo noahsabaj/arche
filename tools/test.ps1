@@ -466,12 +466,12 @@ function Add-ZeroQwordStore {
 }
 
 function New-RuntimeStateQwordOffsets {
-    0..106 | ForEach-Object { $_ * 8 }
+    0..116 | ForEach-Object { $_ * 8 }
 }
 
 function New-RuntimeCreatePrefix {
     $bytes = [System.Collections.Generic.List[byte]]::new()
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 856
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 936
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
@@ -485,7 +485,7 @@ function New-RuntimeDestroySuffix {
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
     }
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 856
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 936
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05))
     [byte[]]$bytes.ToArray()
 }
@@ -1241,6 +1241,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_native_query_plan_from_iterated_table_rows")
 
     Invoke-CheckedCommand `
+        -Name "executes_multi_row_native_ecs_table_proof" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_multi_row_native_ecs_table_proof")
+
+    Invoke-CheckedCommand `
         -Name "executes_move_system_from_decoded_native_ecs_tables" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_move_system_from_decoded_native_ecs_tables")
@@ -1979,6 +1984,15 @@ try {
     Test-CorruptEcsResourcePayload -Path ".\build\move_system"
     Test-CorruptEcsSpawnPayload -Path ".\build\move_system"
     Test-CorruptEcsRunSchedule -Path ".\build\move_system"
+
+    Remove-Item -LiteralPath ".\build\move_system_two_rows" -Force -ErrorAction SilentlyContinue
+
+    Invoke-CheckedCommand `
+        -Name "archec0 examples/move_system_two_rows.arc -o build/move_system_two_rows" `
+        -Executable "cargo" `
+        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system_two_rows.arc", "-o", ".\build\move_system_two_rows")
+
+    Test-LinuxExitCode -Path ".\build\move_system_two_rows" -ExpectedExitCode 47
 
     Remove-Item -LiteralPath ".\build\bad" -Force -ErrorAction SilentlyContinue
 
