@@ -6745,11 +6745,11 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
-                    ECS_SPAWN_ROW_COUNT_SLOT,
+                    ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
                     ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
                 ),
             ),
-            "generated text should preserve native query-plan construction"
+            "generated text should preserve storage-backed native query-plan construction"
         );
         assert!(
             contains_subsequence(
@@ -6898,11 +6898,11 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
-                    ECS_SPAWN_ROW_COUNT_SLOT,
+                    ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
                     ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
                 ),
             ),
-            "generated text should preserve native query-plan construction"
+            "generated text should preserve storage-backed native query-plan construction"
         );
         assert!(
             contains_subsequence(
@@ -9184,11 +9184,11 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
-                    ECS_SPAWN_ROW_COUNT_SLOT,
+                    ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
                     ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
                 ),
             ),
-            "compiled schedule execution should build query-plan state before Demo.Move"
+            "compiled schedule execution should build storage-backed query-plan state before Demo.Move"
         );
         assert!(
             contains_subsequence(

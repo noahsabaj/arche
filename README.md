@@ -100,8 +100,9 @@ The proof chain currently demonstrates:
 - Count-driven native startup operation table row iteration for resource, spawn, and run-schedule handlers.
 - Native query-plan construction through iterated query-plan table rows.
 - A bounded two-row generated-native ECS table proof for `Demo.Position + Demo.Velocity` startup rows and compiled `Demo.Move` execution.
+- Explicit stack-resident native archetype-table storage for the current `Demo.Position + Demo.Velocity` fixtures, with startup spawn rows materialized into storage columns and compiled `Demo.Move` executing through storage-backed query-plan addresses.
 
-M22 native ECS table row iteration is complete. M23 native ECS world storage bridge is active: startup spawn rows materialize into explicit stack-resident archetype-table storage for `Demo.Position + Demo.Velocity`, native query planning derives row count and payload addresses from that storage, and compiled `Demo.Move` executes through storage columns. The remaining M23 work is closure through the full proof runner.
+M23 native ECS world storage bridge is complete. Startup spawn rows materialize into explicit stack-resident archetype-table storage for `Demo.Position + Demo.Velocity`, native query planning derives row count and payload addresses from that storage, and compiled `Demo.Move` executes through storage columns for the one-row and bounded two-row fixtures. The next milestone should be selected intentionally before opening new Ready work.
 
 ## What This Is Not Yet
 

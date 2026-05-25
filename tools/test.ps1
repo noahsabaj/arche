@@ -466,12 +466,12 @@ function Add-ZeroQwordStore {
 }
 
 function New-RuntimeStateQwordOffsets {
-    0..116 | ForEach-Object { $_ * 8 }
+    0..123 | ForEach-Object { $_ * 8 }
 }
 
 function New-RuntimeCreatePrefix {
     $bytes = [System.Collections.Generic.List[byte]]::new()
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 936
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize 992
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
@@ -485,7 +485,7 @@ function New-RuntimeDestroySuffix {
     foreach ($offset in (New-RuntimeStateQwordOffsets)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
     }
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 936
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize 992
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05))
     [byte[]]$bytes.ToArray()
 }
@@ -1171,6 +1171,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_reusable_native_ecs_table_model")
 
     Invoke-CheckedCommand `
+        -Name "defines_native_archetype_table_storage_model" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_archetype_table_storage_model")
+
+    Invoke-CheckedCommand `
         -Name "defines_native_table_iteration_cursor_model" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_table_iteration_cursor_model")
@@ -1221,6 +1226,11 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_startup_operation_table")
 
     Invoke-CheckedCommand `
+        -Name "materializes_native_spawn_rows_into_archetype_storage" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_spawn_rows_into_archetype_storage")
+
+    Invoke-CheckedCommand `
         -Name "materializes_native_query_planning_state" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_query_planning_state")
@@ -1241,9 +1251,19 @@ try {
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_native_query_plan_from_iterated_table_rows")
 
     Invoke-CheckedCommand `
+        -Name "builds_native_query_plan_from_archetype_storage" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_native_query_plan_from_archetype_storage")
+
+    Invoke-CheckedCommand `
         -Name "executes_multi_row_native_ecs_table_proof" `
         -Executable "cargo" `
         -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_multi_row_native_ecs_table_proof")
+
+    Invoke-CheckedCommand `
+        -Name "executes_compiled_move_from_native_storage_columns" `
+        -Executable "cargo" `
+        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_compiled_move_from_native_storage_columns")
 
     Invoke-CheckedCommand `
         -Name "executes_move_system_from_decoded_native_ecs_tables" `
