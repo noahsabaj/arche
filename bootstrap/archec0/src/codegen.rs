@@ -338,7 +338,7 @@ struct NativeQueryPlanTermBuildRow {
     component_x_field_offset_slot: u16,
     component_y_field_offset_slot: u16,
     startup_component_id_slot: u16,
-    startup_payload_slot: u16,
+    storage_payload_slot: u16,
     plan_access_slot: u16,
     plan_component_id_slot: u16,
     plan_size_slot: u16,
@@ -356,7 +356,7 @@ struct NativeQueryPlanBuildRow {
     query_id_slot: u16,
     query_term_count_slot: u16,
     system_query_term_count_slot: u16,
-    startup_row_count_slot: u16,
+    storage_row_count_slot: u16,
     plan_query_id_slot: u16,
     plan_term_count_slot: u16,
     matched_row_count_slot: u16,
@@ -2387,7 +2387,7 @@ const ECS_QUERY_PLAN_BUILD_ROWS: [NativeQueryPlanBuildRow; 1] = [NativeQueryPlan
     query_id_slot: ECS_MOVERS_QUERY_DESCRIPTOR_ID_SLOT,
     query_term_count_slot: ECS_MOVERS_QUERY_DESCRIPTOR_TERM_COUNT_SLOT,
     system_query_term_count_slot: ECS_MOVE_SYSTEM_QUERY_PARAM_TERM_COUNT_SLOT,
-    startup_row_count_slot: ECS_SPAWN_ROW_COUNT_SLOT,
+    storage_row_count_slot: ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
     plan_query_id_slot: ECS_DESCRIPTOR_QUERY_PLAN_QUERY_ID_SLOT,
     plan_term_count_slot: ECS_DESCRIPTOR_QUERY_PLAN_TERM_COUNT_SLOT,
     matched_row_count_slot: ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
@@ -2403,7 +2403,7 @@ const ECS_QUERY_PLAN_BUILD_ROWS: [NativeQueryPlanBuildRow; 1] = [NativeQueryPlan
             component_x_field_offset_slot: ECS_POSITION_DESCRIPTOR_X_FIELD_OFFSET_SLOT,
             component_y_field_offset_slot: ECS_POSITION_DESCRIPTOR_Y_FIELD_OFFSET_SLOT,
             startup_component_id_slot: ECS_STARTUP_TABLE_POSITION_COMPONENT_ID_SLOT,
-            startup_payload_slot: ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+            storage_payload_slot: ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
             plan_access_slot: ECS_DESCRIPTOR_QUERY_PLAN_POSITION_ACCESS_SLOT,
             plan_component_id_slot: ECS_DESCRIPTOR_QUERY_PLAN_POSITION_COMPONENT_ID_SLOT,
             plan_size_slot: ECS_DESCRIPTOR_QUERY_PLAN_POSITION_SIZE_SLOT,
@@ -2426,7 +2426,7 @@ const ECS_QUERY_PLAN_BUILD_ROWS: [NativeQueryPlanBuildRow; 1] = [NativeQueryPlan
             component_x_field_offset_slot: ECS_VELOCITY_DESCRIPTOR_X_FIELD_OFFSET_SLOT,
             component_y_field_offset_slot: ECS_VELOCITY_DESCRIPTOR_Y_FIELD_OFFSET_SLOT,
             startup_component_id_slot: ECS_STARTUP_TABLE_VELOCITY_COMPONENT_ID_SLOT,
-            startup_payload_slot: ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+            storage_payload_slot: ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT,
             plan_access_slot: ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_ACCESS_SLOT,
             plan_component_id_slot: ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_COMPONENT_ID_SLOT,
             plan_size_slot: ECS_DESCRIPTOR_QUERY_PLAN_VELOCITY_SIZE_SLOT,
@@ -4174,7 +4174,7 @@ fn emit_native_query_plan_build_row(
         emit_native_query_plan_term_row(bytes, term, scan_failure_offsets);
     }
 
-    load_stack_slot_to_rax(bytes, row.startup_row_count_slot);
+    load_stack_slot_to_rax(bytes, row.storage_row_count_slot);
     store_rax_to_stack_slot(bytes, row.matched_row_count_slot);
     compare_stack_slot_to_u64(
         bytes,
@@ -4184,7 +4184,7 @@ fn emit_native_query_plan_build_row(
     );
 
     for term in row.terms {
-        emit_lea_stack_address_to_rax(bytes, term.startup_payload_slot);
+        emit_lea_stack_address_to_rax(bytes, term.storage_payload_slot);
         store_rax_to_stack_slot(bytes, term.planned_payload_address_slot);
     }
 }
@@ -8114,7 +8114,10 @@ mod tests {
             row.system_query_term_count_slot,
             move_system.query_param_term_count.offset
         );
-        assert_eq!(row.startup_row_count_slot, ECS_SPAWN_ROW_COUNT_SLOT);
+        assert_eq!(
+            row.storage_row_count_slot,
+            ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT
+        );
         assert_eq!(row.plan_query_id_slot, query_plan.query_id.offset);
         assert_eq!(row.plan_term_count_slot, query_plan.term_count.offset);
         assert_eq!(
@@ -8134,7 +8137,7 @@ mod tests {
                 component_x_field_offset_slot: position_descriptor.x_field_offset.offset,
                 component_y_field_offset_slot: position_descriptor.y_field_offset.offset,
                 startup_component_id_slot: spawn.position_component_id.offset,
-                startup_payload_slot: ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                storage_payload_slot: ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
                 plan_access_slot: query_plan.position.access.offset,
                 plan_component_id_slot: query_plan.position.component_id.offset,
                 plan_size_slot: query_plan.position.size.offset,
@@ -8160,7 +8163,7 @@ mod tests {
                 component_x_field_offset_slot: velocity_descriptor.x_field_offset.offset,
                 component_y_field_offset_slot: velocity_descriptor.y_field_offset.offset,
                 startup_component_id_slot: spawn.velocity_component_id.offset,
-                startup_payload_slot: ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+                storage_payload_slot: ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT,
                 plan_access_slot: query_plan.velocity.access.offset,
                 plan_component_id_slot: query_plan.velocity.component_id.offset,
                 plan_size_slot: query_plan.velocity.size.offset,
@@ -8243,7 +8246,7 @@ mod tests {
                 contains_subsequence(
                     &text,
                     &lea_stack_address_store_sequence(
-                        term.startup_payload_slot,
+                        term.storage_payload_slot,
                         term.planned_payload_address_slot,
                     ),
                 ),
@@ -8292,6 +8295,100 @@ mod tests {
                 ],
             ),
             "generated text should preserve query-plan failure"
+        );
+    }
+
+    #[test]
+    fn builds_native_query_plan_from_archetype_storage() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+
+        let row = ECS_QUERY_PLAN_BUILD_ROWS[0];
+        assert_eq!(
+            row.storage_row_count_slot,
+            ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT
+        );
+        assert_eq!(
+            row.terms[0].storage_payload_slot,
+            ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT
+        );
+        assert_eq!(
+            row.terms[1].storage_payload_slot,
+            ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT
+        );
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
+                    ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
+                ),
+            ),
+            "query planning should derive matched rows from native archetype storage"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &lea_stack_address_store_sequence(
+                    ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                ),
+            ),
+            "query planning should derive the Position payload address from storage"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &lea_stack_address_store_sequence(
+                    ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT,
+                    ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                ),
+            ),
+            "query planning should derive the Velocity payload address from storage"
+        );
+        let storage_position_plan = lea_stack_address_store_sequence(
+            ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+            ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+        );
+        let direct_startup_position_plan = lea_stack_address_store_sequence(
+            ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+            ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+        );
+        let storage_plan_index = find_subsequence_from(&text, &storage_position_plan, 0)
+            .expect("storage Position address should be planned");
+        if let Some(startup_plan_index) =
+            find_subsequence_from(&text, &direct_startup_position_plan, storage_plan_index)
+        {
+            assert!(
+                storage_plan_index < startup_plan_index,
+                "query planning should materialize storage-backed addresses before any legacy direct-startup address use"
+            );
+        }
+        assert!(
+            contains_subsequence(
+                &text,
+                &load_store_stack_slot_sequence(
+                    ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
+                    ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT,
+                ),
+            ),
+            "compiled scan should consume the storage-derived query-plan row count"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "storage-backed query planning should preserve valid move_system exit 47"
         );
     }
 
@@ -8357,7 +8454,7 @@ mod tests {
                 contains_subsequence(
                     &text,
                     &lea_stack_address_store_sequence(
-                        term.startup_payload_slot,
+                        term.storage_payload_slot,
                         term.planned_payload_address_slot,
                     ),
                 ),
@@ -8751,7 +8848,7 @@ mod tests {
                 contains_subsequence(
                     &text,
                     &lea_stack_address_store_sequence(
-                        term.startup_payload_slot,
+                        term.storage_payload_slot,
                         term.planned_payload_address_slot,
                     ),
                 ),
@@ -8763,7 +8860,7 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
-                    row.startup_row_count_slot,
+                    row.storage_row_count_slot,
                     row.matched_row_count_slot,
                 ),
             ),
