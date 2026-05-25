@@ -2832,7 +2832,7 @@ fn native_move_query_loop_rows(
         .iter()
         .enumerate()
         .map(|(row_index, spawn)| {
-            let slots = startup_payload_storage_slots(row_index)?;
+            let slots = archetype_storage_row_slots(row_index)?;
             Ok(NativeMoveQueryLoopRowObservable {
                 position_payload_slot: slots.position_payload.offset,
                 velocity_payload_slot: slots.velocity_payload.offset,
@@ -7007,8 +7007,8 @@ mod tests {
                 target_position_payload: [0x00, 0x00, 0x80, 0x40, 0x00, 0x00, 0xc0, 0x40,],
                 field_product_payload: [0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40,],
                 rows: vec![NativeMoveQueryLoopRowObservable {
-                    position_payload_slot: ECS_POSITION_PAYLOAD_STORAGE_SLOT,
-                    velocity_payload_slot: ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+                    position_payload_slot: ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+                    velocity_payload_slot: ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT,
                     target_position_payload: [0x00, 0x00, 0x80, 0x40, 0x00, 0x00, 0xc0, 0x40,],
                     field_product_payload: [0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40,],
                 }],
@@ -8001,7 +8001,7 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
-                    ECS_SPAWN_ROW_COUNT_SLOT,
+                    ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
                     ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
                 ),
             ),
@@ -8018,7 +8018,7 @@ mod tests {
             contains_subsequence(
                 &text,
                 &lea_stack_address_store_sequence(
-                    ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                    ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
                     ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
                 ),
             ),
@@ -8028,7 +8028,7 @@ mod tests {
             contains_subsequence(
                 &text,
                 &lea_stack_address_store_sequence(
-                    ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+                    ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT,
                     ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
                 ),
             ),
@@ -8393,6 +8393,195 @@ mod tests {
     }
 
     #[test]
+    fn executes_compiled_move_from_native_storage_columns() {
+        let one_row_source = include_str!("../../../examples/move_system.arc");
+        let one_row_tokens = lexer::lex(one_row_source).expect("move_system.arc lexes");
+        let one_row_program =
+            parser::parse_program(&one_row_tokens).expect("move_system.arc parses");
+        let one_row_assembly =
+            runtime_assembly::assemble_runtime_program_from_source(&one_row_program)
+                .expect("move_system.arc assembles");
+        let one_row_metadata =
+            ecs_metadata::encode_ecs_metadata(&one_row_assembly).expect("metadata encodes");
+        let one_row_startup =
+            startup_payloads(&one_row_metadata).expect("one-row startup payloads parse");
+        let one_row_observable =
+            native_move_query_loop_observable(&one_row_program, &one_row_startup)
+                .expect("one-row native query-loop observable is defined");
+
+        assert_eq!(one_row_observable.rows.len(), 1);
+        assert_eq!(
+            one_row_observable.rows[0].position_payload_slot,
+            ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT
+        );
+        assert_eq!(
+            one_row_observable.rows[0].velocity_payload_slot,
+            ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT
+        );
+
+        let one_row_text = ecs_metadata_decoder_text_payload(&one_row_program, &one_row_metadata)
+            .expect("move_system ECS decoder text emits");
+        let one_row_position_address = find_subsequence_from(
+            &one_row_text,
+            &lea_stack_address_store_sequence(
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+                ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+            ),
+            0,
+        )
+        .expect("one-row compiled Move should plan Position from storage");
+        let one_row_velocity_address = find_subsequence_from(
+            &one_row_text,
+            &lea_stack_address_store_sequence(
+                ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT,
+                ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+            ),
+            one_row_position_address,
+        )
+        .expect("one-row compiled Move should plan Velocity from storage");
+        let one_row_math = find_subsequence_from(
+            &one_row_text,
+            &query_plan_component_field_multiply_sequence(
+                ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                0,
+                ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+            ),
+            one_row_velocity_address,
+        )
+        .expect("one-row compiled Move should read Velocity through storage-backed plan");
+        let one_row_store = find_subsequence_from(
+            &one_row_text,
+            &compare_stack_slot_sequence(
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+                u64::from_le_bytes(one_row_observable.rows[0].target_position_payload),
+            ),
+            one_row_math,
+        )
+        .expect("one-row compiled Move should validate storage-backed Position update");
+        assert!(
+            find_subsequence_from(
+                &one_row_text,
+                &lea_stack_address_store_sequence(
+                    ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                    ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+                ),
+                one_row_position_address,
+            )
+            .is_none(),
+            "compiled Move should not fall back to direct startup Position payload addresses"
+        );
+
+        let two_row_source = include_str!("../../../examples/move_system_two_rows.arc");
+        let two_row_tokens = lexer::lex(two_row_source).expect("move_system_two_rows.arc lexes");
+        let two_row_program =
+            parser::parse_program(&two_row_tokens).expect("move_system_two_rows.arc parses");
+        let two_row_assembly =
+            runtime_assembly::assemble_runtime_program_from_source(&two_row_program)
+                .expect("move_system_two_rows.arc assembles");
+        let two_row_metadata =
+            ecs_metadata::encode_ecs_metadata(&two_row_assembly).expect("two-row metadata encodes");
+        let two_row_startup =
+            startup_payloads(&two_row_metadata).expect("two-row startup payloads parse");
+        let two_row_observable =
+            native_move_query_loop_observable(&two_row_program, &two_row_startup)
+                .expect("two-row native query-loop observable is defined");
+
+        assert_eq!(two_row_observable.rows.len(), 2);
+        assert_eq!(
+            two_row_observable.rows[0].position_payload_slot,
+            ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT
+        );
+        assert_eq!(
+            two_row_observable.rows[1].position_payload_slot,
+            ECS_ARCHETYPE_STORAGE_POSITION_ROW1_PAYLOAD_SLOT
+        );
+        assert_eq!(
+            two_row_observable.rows[1].velocity_payload_slot,
+            ECS_ARCHETYPE_STORAGE_VELOCITY_ROW1_PAYLOAD_SLOT
+        );
+
+        let two_row_text = ecs_metadata_decoder_text_payload(&two_row_program, &two_row_metadata)
+            .expect("two-row ECS decoder text emits");
+        let two_row_scan = find_subsequence_from(
+            &two_row_text,
+            &compare_stack_slot_sequence(ECS_QUERY_LOOP_SCANNED_ROW_COUNT_SLOT, 2),
+            0,
+        )
+        .expect("two-row compiled Move should scan two storage rows");
+        let row0_position_address = find_subsequence_from(
+            &two_row_text,
+            &lea_stack_address_store_sequence(
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+                ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+            ),
+            two_row_scan,
+        )
+        .expect("row 0 Position address should be storage-backed");
+        let row0_store = find_subsequence_from(
+            &two_row_text,
+            &compare_stack_slot_sequence(
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+                u64::from_le_bytes(two_row_observable.rows[0].target_position_payload),
+            ),
+            row0_position_address,
+        )
+        .expect("row 0 storage-backed Position update should validate");
+        let row1_position_address = find_subsequence_from(
+            &two_row_text,
+            &lea_stack_address_store_sequence(
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW1_PAYLOAD_SLOT,
+                ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
+            ),
+            row0_store,
+        )
+        .expect("row 1 Position address should be storage-backed");
+        let row1_velocity_address = find_subsequence_from(
+            &two_row_text,
+            &lea_stack_address_store_sequence(
+                ECS_ARCHETYPE_STORAGE_VELOCITY_ROW1_PAYLOAD_SLOT,
+                ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+            ),
+            row1_position_address,
+        )
+        .expect("row 1 Velocity address should be storage-backed");
+        let row1_math = find_subsequence_from(
+            &two_row_text,
+            &query_plan_component_field_multiply_sequence(
+                ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
+                0,
+                ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT,
+            ),
+            row1_velocity_address,
+        )
+        .expect("row 1 compiled Move should read Velocity through storage-backed plan");
+        let row1_store = find_subsequence_from(
+            &two_row_text,
+            &compare_stack_slot_sequence(
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW1_PAYLOAD_SLOT,
+                u64::from_le_bytes(two_row_observable.rows[1].target_position_payload),
+            ),
+            row1_math,
+        )
+        .expect("row 1 storage-backed Position update should validate");
+        let success_index = find_subsequence_from(
+            &two_row_text,
+            &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            row1_store,
+        )
+        .expect("two-row storage-backed compiled Move should exit 47");
+        assert!(
+            one_row_store < one_row_text.len()
+                && row0_position_address < row0_store
+                && row0_store < row1_position_address
+                && row1_position_address < row1_velocity_address
+                && row1_velocity_address < row1_math
+                && row1_math < row1_store
+                && row1_store < success_index,
+            "compiled Demo.Move should update storage rows in order before success"
+        );
+    }
+
+    #[test]
     fn builds_native_query_plan_from_iterated_table_rows() {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
@@ -8643,7 +8832,7 @@ mod tests {
         assert!(contains_subsequence(
             &text,
             &load_store_stack_slot_sequence(
-                ECS_SPAWN_ROW_COUNT_SLOT,
+                ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
                 ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
             ),
         ));
@@ -8672,7 +8861,7 @@ mod tests {
         let row0_position_address_index = find_subsequence_from(
             &text,
             &lea_stack_address_store_sequence(
-                ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
                 ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
             ),
             scanned_count_index,
@@ -8691,7 +8880,7 @@ mod tests {
         let row0_position_store_index = find_subsequence_from(
             &text,
             &compare_stack_slot_sequence(
-                ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
                 u64::from_le_bytes(observable.rows[0].target_position_payload),
             ),
             row0_field_math_index,
@@ -8700,7 +8889,7 @@ mod tests {
         let row1_position_address_index = find_subsequence_from(
             &text,
             &lea_stack_address_store_sequence(
-                ECS_SECOND_POSITION_PAYLOAD_STORAGE_SLOT,
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW1_PAYLOAD_SLOT,
                 ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
             ),
             row0_position_store_index,
@@ -8719,7 +8908,7 @@ mod tests {
         let row1_position_store_index = find_subsequence_from(
             &text,
             &compare_stack_slot_sequence(
-                ECS_SECOND_POSITION_PAYLOAD_STORAGE_SLOT,
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW1_PAYLOAD_SLOT,
                 u64::from_le_bytes(observable.rows[1].target_position_payload),
             ),
             row1_field_math_index,
