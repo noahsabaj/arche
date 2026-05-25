@@ -1461,6 +1461,8 @@ const ECS_ARCHETYPE_STORAGE_VELOCITY_ROW1_PAYLOAD_SLOT: u16 = NATIVE_ECS_EXECUTI
     .velocity_column
     .payload_rows[1]
     .offset;
+const ECS_ARCHETYPE_STORAGE_CAPACITY: u64 = 2;
+const ECS_ARCHETYPE_STORAGE_ROW_STRIDE: u64 = 16;
 const ECS_QUERY_LOOP_TARGET_POSITION_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .compiled_move
     .target_position_payload
@@ -2900,6 +2902,29 @@ fn startup_payload_storage_slots(
         .ok_or_else(metadata_startup_payload_error)
 }
 
+fn archetype_storage_row_slots(
+    row_index: usize,
+) -> Result<NativeArchetypeTableStorageRowSlots, CodegenError> {
+    let storage = NATIVE_ECS_TABLE_MODEL.archetype_storage;
+    let position_payload = storage
+        .position_column
+        .payload_rows
+        .get(row_index)
+        .copied()
+        .ok_or_else(metadata_startup_payload_error)?;
+    let velocity_payload = storage
+        .velocity_column
+        .payload_rows
+        .get(row_index)
+        .copied()
+        .ok_or_else(metadata_startup_payload_error)?;
+
+    Ok(NativeArchetypeTableStorageRowSlots {
+        position_payload,
+        velocity_payload,
+    })
+}
+
 fn startup_operation_iteration_rows(
     startup_payloads: &EcsStartupPayloads,
 ) -> &'static [NativeStartupOperationTableIterationRow] {
@@ -3614,6 +3639,8 @@ fn emit_spawn_startup_operation_handler(
         startup_spawn_slots(spawn_row_index).expect("startup iteration row matches spawn table");
     let payload_slots = startup_payload_storage_slots(spawn_row_index)
         .expect("startup iteration row matches spawn payload storage");
+    let storage_slots = archetype_storage_row_slots(spawn_row_index)
+        .expect("startup iteration row matches archetype storage slots");
 
     for (startup_table_slot, descriptor_slot) in startup_spawn_descriptor_relations(spawn_slots) {
         compare_stack_slots_equal(bytes, startup_table_slot, descriptor_slot, jump_offsets);
@@ -3621,17 +3648,30 @@ fn emit_spawn_startup_operation_handler(
     bytes.push(0xb8); // mov eax, materialized spawn row count
     bytes.extend_from_slice(&(row_count_after_spawn as u32).to_le_bytes());
     store_rax_to_stack_slot(bytes, ECS_SPAWN_ROW_COUNT_SLOT);
+    bytes.push(0xb8); // mov eax, native archetype storage row count
+    bytes.extend_from_slice(&(row_count_after_spawn as u32).to_le_bytes());
+    store_rax_to_stack_slot(bytes, ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT);
+    bytes.push(0xb8); // mov eax, archetype storage capacity
+    bytes.extend_from_slice(&(ECS_ARCHETYPE_STORAGE_CAPACITY as u32).to_le_bytes());
+    store_rax_to_stack_slot(bytes, ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT);
+    bytes.push(0xb8); // mov eax, archetype table row stride
+    bytes.extend_from_slice(&(ECS_ARCHETYPE_STORAGE_ROW_STRIDE as u32).to_le_bytes());
+    store_rax_to_stack_slot(bytes, ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT);
 
     load_metadata_qword_via_offset_slot(
         bytes,
         spawn_slots.position_payload_offset.offset,
         payload_slots.position_payload.offset,
     );
+    load_stack_slot_to_rax(bytes, payload_slots.position_payload.offset);
+    store_rax_to_stack_slot(bytes, storage_slots.position_payload.offset);
     load_metadata_qword_via_offset_slot(
         bytes,
         spawn_slots.velocity_payload_offset.offset,
         payload_slots.velocity_payload.offset,
     );
+    load_stack_slot_to_rax(bytes, payload_slots.velocity_payload.offset);
+    store_rax_to_stack_slot(bytes, storage_slots.velocity_payload.offset);
 }
 
 fn startup_spawn_descriptor_relations(
@@ -3745,9 +3785,29 @@ fn emit_startup_operation_state_validations(
         startup_payloads.spawn_operations.len() as u64,
         startup_state_failure_offsets,
     );
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
+        startup_payloads.spawn_operations.len() as u64,
+        startup_state_failure_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT,
+        ECS_ARCHETYPE_STORAGE_CAPACITY,
+        startup_state_failure_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT,
+        ECS_ARCHETYPE_STORAGE_ROW_STRIDE,
+        startup_state_failure_offsets,
+    );
     for (row_index, spawn) in startup_payloads.spawn_operations.iter().enumerate() {
         let payload_slots = startup_payload_storage_slots(row_index)
             .expect("startup payload parser bounds match native payload slots");
+        let storage_slots = archetype_storage_row_slots(row_index)
+            .expect("startup payload parser bounds match native storage slots");
         compare_stack_slot_to_u64(
             bytes,
             payload_slots.position_payload.offset,
@@ -3757,6 +3817,18 @@ fn emit_startup_operation_state_validations(
         compare_stack_slot_to_u64(
             bytes,
             payload_slots.velocity_payload.offset,
+            u64::from_le_bytes(spawn.velocity_payload),
+            startup_state_failure_offsets,
+        );
+        compare_stack_slot_to_u64(
+            bytes,
+            storage_slots.position_payload.offset,
+            u64::from_le_bytes(spawn.position_payload),
+            startup_state_failure_offsets,
+        );
+        compare_stack_slot_to_u64(
+            bytes,
+            storage_slots.velocity_payload.offset,
             u64::from_le_bytes(spawn.velocity_payload),
             startup_state_failure_offsets,
         );
@@ -7457,6 +7529,126 @@ mod tests {
                 ],
             ),
             "generated text should preserve startup dispatch failure"
+        );
+    }
+
+    #[test]
+    fn materializes_native_spawn_rows_into_archetype_storage() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+        let startup_payloads = startup_payloads(&metadata).expect("startup payloads parse");
+
+        assert_eq!(startup_payloads.spawn_operations.len(), 1);
+        let storage = NATIVE_ECS_TABLE_MODEL.archetype_storage;
+        let row0_storage = archetype_storage_row_slots(0).expect("row 0 storage slots are defined");
+        assert_eq!(
+            storage.row_count.offset,
+            ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT
+        );
+        assert_eq!(storage.capacity.offset, ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT);
+        assert_eq!(
+            storage.row_stride.offset,
+            ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT
+        );
+        assert_eq!(
+            row0_storage,
+            NativeArchetypeTableStorageRowSlots {
+                position_payload: NativeEcsSlot {
+                    offset: ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+                    byte_len: 8,
+                },
+                velocity_payload: NativeEcsSlot {
+                    offset: ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT,
+                    byte_len: 8,
+                },
+            }
+        );
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &mov_eax_one_store_sequence(ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT),
+            ),
+            "generated startup should set native storage row count from decoded spawn count"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &mov_eax_immediate_store_sequence(
+                    ECS_ARCHETYPE_STORAGE_CAPACITY as u32,
+                    ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT,
+                ),
+            ),
+            "generated startup should set bounded native storage capacity"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &mov_eax_immediate_store_sequence(
+                    ECS_ARCHETYPE_STORAGE_ROW_STRIDE as u32,
+                    ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT,
+                ),
+            ),
+            "generated startup should set native storage row stride"
+        );
+        assert!(
+            contains_ordered_subsequences(
+                &text,
+                &[
+                    metadata_qword_via_offset_slot_to_qword_store_sequence(
+                        ECS_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT,
+                        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                    ),
+                    load_store_stack_slot_sequence(
+                        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                        ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+                    ),
+                    metadata_qword_via_offset_slot_to_qword_store_sequence(
+                        ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT,
+                        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+                    ),
+                    load_store_stack_slot_sequence(
+                        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
+                        ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT,
+                    ),
+                ],
+            ),
+            "generated startup should copy decoded spawn payloads into storage columns"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(
+                    ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
+                    startup_payloads.spawn_operations.len() as u64,
+                ),
+            ),
+            "startup validation should prove storage row count"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(
+                    ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+                    u64::from_le_bytes(startup_payloads.spawn_operations[0].position_payload),
+                ),
+            ),
+            "startup validation should prove Position storage payload"
+        );
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "storage materialization should preserve valid move_system exit 47"
         );
     }
 

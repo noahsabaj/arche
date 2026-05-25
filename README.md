@@ -101,7 +101,7 @@ The proof chain currently demonstrates:
 - Native query-plan construction through iterated query-plan table rows.
 - A bounded two-row generated-native ECS table proof for `Demo.Position + Demo.Velocity` startup rows and compiled `Demo.Move` execution.
 
-M22 native ECS table row iteration is complete. M23 native ECS world storage bridge is active: the explicit stack-resident archetype-table storage model for `Demo.Position + Demo.Velocity` is defined, and startup spawn materialization into that storage is next.
+M22 native ECS table row iteration is complete. M23 native ECS world storage bridge is active: startup spawn rows now materialize into explicit stack-resident archetype-table storage for `Demo.Position + Demo.Velocity`, and query planning from that storage is next.
 
 ## What This Is Not Yet
 
