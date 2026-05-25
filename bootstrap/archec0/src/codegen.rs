@@ -212,9 +212,30 @@ struct NativeCompiledMoveSlots {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeComponentColumnPayloadSlots {
+    payload_rows: [NativeEcsSlot; 2],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeArchetypeTableStorageSlots {
+    row_count: NativeEcsSlot,
+    capacity: NativeEcsSlot,
+    row_stride: NativeEcsSlot,
+    position_column: NativeComponentColumnPayloadSlots,
+    velocity_column: NativeComponentColumnPayloadSlots,
+}
+
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeArchetypeTableStorageRowSlots {
+    position_payload: NativeEcsSlot,
+    velocity_payload: NativeEcsSlot,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeEcsExecutionStateLayout {
     frame_size: u16,
-    zeroed_qword_offsets: [u16; 117],
+    zeroed_qword_offsets: [u16; 124],
     descriptor_counts: NativeDescriptorCountSlots,
     descriptor_records: NativeDescriptorRecordStateSlots,
     startup_state: NativeStartupStateSlots,
@@ -227,6 +248,7 @@ struct NativeEcsExecutionStateLayout {
     descriptor_backed_query_plan: NativeDescriptorBackedQueryPlanSlots,
     descriptor_names: NativeDescriptorNameTableSlots,
     compiled_move: NativeCompiledMoveSlots,
+    archetype_storage: NativeArchetypeTableStorageSlots,
 }
 
 #[allow(dead_code)]
@@ -383,6 +405,7 @@ struct NativeEcsTableModel {
     startup_operations: NativeStartupOperationTableModel,
     compiled_schedules: NativeCompiledScheduleTableModel,
     query_plans: NativeQueryPlanTableModel,
+    archetype_storage: NativeArchetypeTableStorageSlots,
 }
 
 #[allow(dead_code)]
@@ -475,7 +498,7 @@ struct NativeStartupOperationTableIterationRow {
 
 const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
     NativeEcsExecutionStateLayout {
-        frame_size: 936,
+        frame_size: 992,
         zeroed_qword_offsets: [
             0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88, 96, 104, 112, 120, 128, 136, 144, 152,
             160, 168, 176, 184, 192, 200, 208, 216, 224, 232, 240, 248, 256, 264, 272, 280, 288,
@@ -483,7 +506,8 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
             432, 440, 448, 456, 464, 472, 480, 488, 496, 504, 512, 520, 528, 536, 544, 552, 560,
             568, 576, 584, 592, 600, 608, 616, 624, 632, 640, 648, 656, 664, 672, 680, 688, 696,
             704, 712, 720, 728, 736, 744, 752, 760, 768, 776, 784, 792, 800, 808, 816, 824, 832,
-            840, 848, 856, 864, 872, 880, 888, 896, 904, 912, 920, 928,
+            840, 848, 856, 864, 872, 880, 888, 896, 904, 912, 920, 928, 936, 944, 952, 960, 968,
+            976, 984,
         ],
         descriptor_counts: NativeDescriptorCountSlots {
             components: NativeEcsSlot {
@@ -1031,6 +1055,44 @@ const NATIVE_ECS_EXECUTION_STATE_LAYOUT: NativeEcsExecutionStateLayout =
                 byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
             },
         },
+        archetype_storage: NativeArchetypeTableStorageSlots {
+            row_count: NativeEcsSlot {
+                offset: 936,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            capacity: NativeEcsSlot {
+                offset: 944,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            row_stride: NativeEcsSlot {
+                offset: 952,
+                byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+            },
+            position_column: NativeComponentColumnPayloadSlots {
+                payload_rows: [
+                    NativeEcsSlot {
+                        offset: 960,
+                        byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                    },
+                    NativeEcsSlot {
+                        offset: 968,
+                        byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                    },
+                ],
+            },
+            velocity_column: NativeComponentColumnPayloadSlots {
+                payload_rows: [
+                    NativeEcsSlot {
+                        offset: 976,
+                        byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                    },
+                    NativeEcsSlot {
+                        offset: 984,
+                        byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+                    },
+                ],
+            },
+        },
     };
 
 #[allow(dead_code)]
@@ -1098,6 +1160,7 @@ const NATIVE_ECS_TABLE_MODEL: NativeEcsTableModel = NativeEcsTableModel {
     query_plans: NativeQueryPlanTableModel {
         rows: [NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_backed_query_plan],
     },
+    archetype_storage: NATIVE_ECS_EXECUTION_STATE_LAYOUT.archetype_storage,
 };
 
 #[allow(dead_code)]
@@ -1365,6 +1428,38 @@ const ECS_SECOND_VELOCITY_PAYLOAD_STORAGE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE
     .startup_state
     .spawn_payload_rows[1]
     .velocity_payload
+    .offset;
+const ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .archetype_storage
+    .row_count
+    .offset;
+const ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .archetype_storage
+    .capacity
+    .offset;
+const ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .archetype_storage
+    .row_stride
+    .offset;
+const ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .archetype_storage
+    .position_column
+    .payload_rows[0]
+    .offset;
+const ECS_ARCHETYPE_STORAGE_POSITION_ROW1_PAYLOAD_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .archetype_storage
+    .position_column
+    .payload_rows[1]
+    .offset;
+const ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .archetype_storage
+    .velocity_column
+    .payload_rows[0]
+    .offset;
+const ECS_ARCHETYPE_STORAGE_VELOCITY_ROW1_PAYLOAD_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
+    .archetype_storage
+    .velocity_column
+    .payload_rows[1]
     .offset;
 const ECS_QUERY_LOOP_TARGET_POSITION_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .compiled_move
@@ -4537,8 +4632,8 @@ mod tests {
     fn defines_native_ecs_execution_state_layout() {
         let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
 
-        assert_eq!(layout.frame_size, 936);
-        let expected_zeroed_qword_offsets: Vec<u16> = (0..=928).step_by(8).collect();
+        assert_eq!(layout.frame_size, 992);
+        let expected_zeroed_qword_offsets: Vec<u16> = (0..=984).step_by(8).collect();
         assert_eq!(
             layout.zeroed_qword_offsets.as_slice(),
             expected_zeroed_qword_offsets.as_slice()
@@ -5125,6 +5220,47 @@ mod tests {
                 },
             }
         );
+        assert_eq!(
+            layout.archetype_storage,
+            NativeArchetypeTableStorageSlots {
+                row_count: NativeEcsSlot {
+                    offset: 936,
+                    byte_len: 8,
+                },
+                capacity: NativeEcsSlot {
+                    offset: 944,
+                    byte_len: 8,
+                },
+                row_stride: NativeEcsSlot {
+                    offset: 952,
+                    byte_len: 8,
+                },
+                position_column: NativeComponentColumnPayloadSlots {
+                    payload_rows: [
+                        NativeEcsSlot {
+                            offset: 960,
+                            byte_len: 8,
+                        },
+                        NativeEcsSlot {
+                            offset: 968,
+                            byte_len: 8,
+                        },
+                    ],
+                },
+                velocity_column: NativeComponentColumnPayloadSlots {
+                    payload_rows: [
+                        NativeEcsSlot {
+                            offset: 976,
+                            byte_len: 8,
+                        },
+                        NativeEcsSlot {
+                            offset: 984,
+                            byte_len: 8,
+                        },
+                    ],
+                },
+            }
+        );
         assert_eq!(ECS_DESCRIPTOR_REGISTRY_SLOTS, [0, 8, 16, 24, 32]);
         assert_eq!(ECS_DESCRIPTOR_RECORD_OFFSET_SLOTS, [96, 112, 128, 144, 160]);
         assert_eq!(
@@ -5223,6 +5359,13 @@ mod tests {
         assert_eq!(ECS_MOVERS_QUERY_DESCRIPTOR_NAME_LEN_SLOT, 832);
         assert_eq!(ECS_MAIN_SCHEDULE_DESCRIPTOR_NAME_OFFSET_SLOT, 840);
         assert_eq!(ECS_MAIN_SCHEDULE_DESCRIPTOR_NAME_LEN_SLOT, 848);
+        assert_eq!(ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT, 936);
+        assert_eq!(ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT, 944);
+        assert_eq!(ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT, 952);
+        assert_eq!(ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT, 960);
+        assert_eq!(ECS_ARCHETYPE_STORAGE_POSITION_ROW1_PAYLOAD_SLOT, 968);
+        assert_eq!(ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT, 976);
+        assert_eq!(ECS_ARCHETYPE_STORAGE_VELOCITY_ROW1_PAYLOAD_SLOT, 984);
 
         let slots = [
             layout.descriptor_counts.components,
@@ -5408,6 +5551,13 @@ mod tests {
             layout.descriptor_names.movers_query.byte_len,
             layout.descriptor_names.main_schedule.byte_offset,
             layout.descriptor_names.main_schedule.byte_len,
+            layout.archetype_storage.row_count,
+            layout.archetype_storage.capacity,
+            layout.archetype_storage.row_stride,
+            layout.archetype_storage.position_column.payload_rows[0],
+            layout.archetype_storage.position_column.payload_rows[1],
+            layout.archetype_storage.velocity_column.payload_rows[0],
+            layout.archetype_storage.velocity_column.payload_rows[1],
         ];
         for slot in slots {
             assert!(
@@ -5450,7 +5600,7 @@ mod tests {
         let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
         let model = NATIVE_ECS_TABLE_MODEL;
 
-        assert_eq!(layout.frame_size, 936);
+        assert_eq!(layout.frame_size, 992);
         assert_eq!(model.descriptors.component_rows.len(), 2);
         assert_eq!(model.descriptors.resource_rows.len(), 1);
         assert_eq!(model.descriptors.system_rows.len(), 1);
@@ -5461,6 +5611,7 @@ mod tests {
         assert_eq!(model.startup_operations.run_schedule_rows.len(), 1);
         assert_eq!(model.compiled_schedules.rows.len(), 1);
         assert_eq!(model.query_plans.rows.len(), 1);
+        assert_eq!(model.archetype_storage, layout.archetype_storage);
 
         assert_eq!(
             model.descriptors.component_rows,
@@ -5519,6 +5670,16 @@ mod tests {
         assert_eq!(
             model.query_plans.rows,
             [layout.descriptor_backed_query_plan]
+        );
+        assert_eq!(
+            model.archetype_storage,
+            NativeArchetypeTableStorageSlots {
+                row_count: layout.archetype_storage.row_count,
+                capacity: layout.archetype_storage.capacity,
+                row_stride: layout.archetype_storage.row_stride,
+                position_column: layout.archetype_storage.position_column,
+                velocity_column: layout.archetype_storage.velocity_column,
+            }
         );
 
         let position = model.descriptors.component_rows[0];
@@ -5706,6 +5867,90 @@ mod tests {
             ],
             [664, 672, 680, 688, 696, 704, 712, 720, 728, 736, 744, 752]
         );
+        let storage = model.archetype_storage;
+        assert_eq!(
+            [
+                storage.row_count.offset,
+                storage.capacity.offset,
+                storage.row_stride.offset,
+                storage.position_column.payload_rows[0].offset,
+                storage.position_column.payload_rows[1].offset,
+                storage.velocity_column.payload_rows[0].offset,
+                storage.velocity_column.payload_rows[1].offset,
+            ],
+            [936, 944, 952, 960, 968, 976, 984]
+        );
+    }
+
+    #[test]
+    fn defines_native_archetype_table_storage_model() {
+        let layout = NATIVE_ECS_EXECUTION_STATE_LAYOUT;
+        let model = NATIVE_ECS_TABLE_MODEL;
+        let storage = model.archetype_storage;
+
+        assert_eq!(layout.frame_size, 992);
+        assert_eq!(storage, layout.archetype_storage);
+        assert_eq!(
+            storage,
+            NativeArchetypeTableStorageSlots {
+                row_count: NativeEcsSlot {
+                    offset: 936,
+                    byte_len: 8,
+                },
+                capacity: NativeEcsSlot {
+                    offset: 944,
+                    byte_len: 8,
+                },
+                row_stride: NativeEcsSlot {
+                    offset: 952,
+                    byte_len: 8,
+                },
+                position_column: NativeComponentColumnPayloadSlots {
+                    payload_rows: [
+                        NativeEcsSlot {
+                            offset: 960,
+                            byte_len: 8,
+                        },
+                        NativeEcsSlot {
+                            offset: 968,
+                            byte_len: 8,
+                        },
+                    ],
+                },
+                velocity_column: NativeComponentColumnPayloadSlots {
+                    payload_rows: [
+                        NativeEcsSlot {
+                            offset: 976,
+                            byte_len: 8,
+                        },
+                        NativeEcsSlot {
+                            offset: 984,
+                            byte_len: 8,
+                        },
+                    ],
+                },
+            }
+        );
+        assert_eq!(storage.capacity.byte_len, NATIVE_ECS_QWORD_BYTE_LEN);
+        assert_eq!(storage.row_stride.byte_len, NATIVE_ECS_QWORD_BYTE_LEN);
+        assert_eq!(storage.position_column.payload_rows.len(), 2);
+        assert_eq!(storage.velocity_column.payload_rows.len(), 2);
+        assert_eq!(
+            [
+                ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
+                ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT,
+                ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT,
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
+                ECS_ARCHETYPE_STORAGE_POSITION_ROW1_PAYLOAD_SLOT,
+                ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT,
+                ECS_ARCHETYPE_STORAGE_VELOCITY_ROW1_PAYLOAD_SLOT,
+            ],
+            [936, 944, 952, 960, 968, 976, 984]
+        );
+        assert!(
+            layout.zeroed_qword_offsets.contains(&984),
+            "the final storage payload row should be zeroed by the runtime wrapper"
+        );
     }
 
     #[test]
@@ -5714,7 +5959,7 @@ mod tests {
         let table_model = NATIVE_ECS_TABLE_MODEL;
         let cursors = NATIVE_ECS_TABLE_ITERATION_CURSORS;
 
-        assert_eq!(layout.frame_size, 936);
+        assert_eq!(layout.frame_size, 992);
         assert_eq!(cursors.component_descriptors.expected_row_count, 2);
         assert_eq!(cursors.resource_descriptors.expected_row_count, 1);
         assert_eq!(cursors.system_descriptors.expected_row_count, 1);
@@ -6043,7 +6288,7 @@ mod tests {
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 936);
+        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 992);
         assert_eq!(
             NATIVE_ECS_EXECUTION_STATE_LAYOUT.descriptor_names,
             NativeDescriptorNameTableSlots {
@@ -7314,7 +7559,7 @@ mod tests {
             ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
         let startup_payloads = startup_payloads(&metadata).expect("startup payloads parse");
 
-        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 936);
+        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 992);
         assert_eq!(startup_payloads.resource_operation_kind_offset, 577);
         assert_eq!(startup_payloads.resource_id_offset, 581);
         assert_eq!(startup_payloads.resource_id, DEMO_TIME_RESOURCE_ID);
@@ -8221,7 +8466,7 @@ mod tests {
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 936);
+        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 992);
         let row = ECS_QUERY_PLAN_BUILD_ROWS[0];
         for (source_slot, target_slot) in [
             (row.query_id_slot, row.plan_query_id_slot),
@@ -8707,7 +8952,7 @@ mod tests {
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 936);
+        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 992);
         for (startup_table_slot, descriptor_slot) in ECS_RESOURCE_STARTUP_DESCRIPTOR_RELATIONS {
             assert!(
                 contains_subsequence(

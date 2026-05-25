@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M23 native ECS world storage bridge is active; M23-001 is Ready.
+**Current focus:** M23 native ECS world storage bridge is active; M23-002 is Ready.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -118,13 +118,12 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M23-001 | Define native archetype table storage model | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_native_archetype_table_storage_model` passes, proving generated native code has an explicit storage model for the current `Demo.Position + Demo.Velocity` archetype table with row count, capacity, Position column payload slots, Velocity column payload slots, and row stride for the one-row and two-row fixtures. |
+| M23-002 | Materialize startup spawn rows into native storage | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml materializes_native_spawn_rows_into_archetype_storage` passes, proving generated native startup copies decoded spawn Position/Velocity payloads into the native archetype storage model, sets storage row count from the decoded spawn count, preserves existing startup operation validation, and keeps valid `move_system` exit `47`. |
 
 ### Backlog
 
 | Issue | Title | Done when |
 |---|---|---|
-| M23-002 | Materialize startup spawn rows into native storage | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml materializes_native_spawn_rows_into_archetype_storage` passes, proving generated native startup copies decoded spawn Position/Velocity payloads into the native archetype storage model, sets storage row count from the decoded spawn count, preserves existing startup operation validation, and keeps valid `move_system` exit `47`. |
 | M23-003 | Build query plans from native storage state | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml builds_native_query_plan_from_archetype_storage` passes, proving native query planning derives matched/scanned row count and planned Position/Velocity payload addresses from native archetype storage state instead of direct startup payload slots. |
 | M23-004 | Execute compiled Demo.Move through storage columns | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_compiled_move_from_native_storage_columns` passes, proving compiled `Demo.Move` reads Velocity and writes Position through query-plan addresses backed by native storage columns, validating both `move_system.arc` and `move_system_two_rows.arc` payload updates before success exit `47`. |
 | M23-005 | Close native storage bridge proof | `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passes with all M23 focused proofs included, both native move fixtures compiled and run through WSL with exit `47`, and WORK_LOG recording M23 complete with Ready/Backlog empty. |
@@ -139,6 +138,7 @@ Board rules:
 
 | Issue | Title | Evidence |
 |---|---|---|
+| M23-001 | Define native archetype table storage model | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml defines_native_archetype_table_storage_model` passed, proving generated native code has an explicit stack-resident storage model for the current `Demo.Position + Demo.Velocity` archetype table with appended row count, capacity, row stride, Position column payload rows, and Velocity column payload rows while preserving all pre-M23 slot offsets. |
 | M22-005 | Execute multi-row native ECS table proof | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_multi_row_native_ecs_table_proof` passed, proving `examples/move_system_two_rows.arc` decodes four startup records, materializes two spawn rows through the startup cursor/count model, sets matched/scanned row count to `2`, and emits ordered compiled `Demo.Move` updates for both Position rows before success exit `47`; `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml` passed with 81 tests; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the focused proof included and with `examples/move_system_two_rows.arc -o .\build\move_system_two_rows` running through WSL with exit `47`. M22 native ECS table row iteration is complete; the next milestone should be selected intentionally rather than invented in this change. |
 | M22-004 | Build native query plans from iterated table rows | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml builds_native_query_plan_from_iterated_table_rows` passed, proving generated native compiled schedule execution routes query planning through `ECS_QUERY_PLAN_TABLE_ITERATION_ROWS` sourced from `NATIVE_ECS_TABLE_ITERATION_CURSORS.query_plans`, builds descriptor-backed query-plan state before compiled `Demo.Move`, materializes planned Position/Velocity payload addresses, and preserves compiled `Demo.Move` success; `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml` passed with 80 tests; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted proof included while valid `move_system` still exits `47`. |
 | M22-003 | Iterate native startup operation table rows by count | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml iterates_native_startup_operation_table_rows_by_count` passed, proving generated native startup walks `ECS_STARTUP_OPERATION_TABLE_ITERATION_ROWS` from `NATIVE_ECS_TABLE_ITERATION_CURSORS.startup_operations`, count-checks the materialized startup operation table count before resource/spawn/run-schedule row dispatch, and preserves compiled `Demo.Move` success; `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml` passed with 79 tests; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with the targeted proof included while valid `move_system` still exits `47`. |
@@ -1827,19 +1827,19 @@ Subproblem confidence:
 | Subproblem | Confidence |
 |---|---:|
 | M23 starts from the current native/runtime split and targets explicit native archetype-table storage without changing `ARCHEECS`, public CLI shape, source syntax, events, relations, command buffers, object/linker work, or scheduler semantics | 96/100 |
-| M23-001 is small enough to prove first: define the storage model only, with row count, capacity, column payload slots, and row stride for the existing one-row and two-row fixtures | 95/100 |
+| M23-001 defined the storage model only, with row count, capacity, column payload slots, and row stride for the existing one-row and two-row fixtures | 98/100 |
 | M23-002 through M23-004 form a linear bridge from startup spawn materialization, to query planning from storage state, to compiled `Demo.Move` execution through storage-backed column addresses | 95/100 |
 | M23-005 closes the milestone through the full proof runner with both native move fixtures compiled and run through WSL with exit `47` | 96/100 |
-| Ready contains only M23-001 and Backlog contains only M23-002 through M23-005, preserving the one-proof-at-a-time board cadence | 98/100 |
+| Ready contains only M23-002 and Backlog contains only M23-003 through M23-005, preserving the one-proof-at-a-time board cadence | 98/100 |
 | README now records M22 completion and M23 activation instead of the stale M22 active line | 98/100 |
 
 Weighted confidence: 96/100.
 
 Verification pass:
 
-- `Ready` contains M23-001.
+- `Ready` contains M23-002.
 - `Doing` is empty.
-- `Backlog` contains M23-002 through M23-005.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, completed M18, completed M19, completed M20, completed M21, and M22-001 through M22-005.
+- `Backlog` contains M23-003 through M23-005.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, completed M18, completed M19, completed M20, completed M21, M22-001 through M22-005, and M23-001.
 - Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, M16-001 through M16-005, M17-001 through M17-005, M18-001 through M18-005, M19-001 through M19-005, M20-001 through M20-005, M21-001 through M21-005, M22-001 through M22-005, and M23-001 through M23-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, M18 native codegen for compiled query loops, M19 native ECS execution state, M20 native ECS descriptor-table decoding, M21 native ECS table generalization, and M22 native ECS table row iteration are complete. M23 native ECS world storage bridge is active, with M23-001 Ready.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, M18 native codegen for compiled query loops, M19 native ECS execution state, M20 native ECS descriptor-table decoding, M21 native ECS table generalization, M22 native ECS table row iteration, and M23-001 native storage model definition are complete. M23 native ECS world storage bridge is active, with M23-002 Ready.
