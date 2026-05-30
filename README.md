@@ -102,7 +102,7 @@ The proof chain currently demonstrates:
 - A bounded two-row generated-native ECS table proof for `Demo.Position + Demo.Velocity` startup rows and compiled `Demo.Move` execution.
 - Explicit stack-resident native archetype-table storage for the current `Demo.Position + Demo.Velocity` fixtures, with startup spawn rows materialized into storage columns and compiled `Demo.Move` executing through storage-backed query-plan addresses.
 
-M23 native ECS world storage bridge is complete. Startup spawn rows materialize into explicit stack-resident archetype-table storage for `Demo.Position + Demo.Velocity`, native query planning derives row count and payload addresses from that storage, and compiled `Demo.Move` executes through storage columns for the one-row and bounded two-row fixtures. The next milestone should be selected intentionally before opening new Ready work.
+M23 native ECS world storage bridge is complete. Startup spawn rows materialize into explicit stack-resident archetype-table storage for `Demo.Position + Demo.Velocity`, native query planning derives row count and payload addresses from that storage, and compiled `Demo.Move` executes through storage columns for the one-row and bounded two-row fixtures. M24 native ECS storage catalog and descriptor-driven column binding is active; its target is bounded descriptor-driven catalog binding for the current native storage, not a heap world, allocator, scheduler, command buffer, source syntax change, or `ARCHEECS` format change.
 
 ## What This Is Not Yet
 
