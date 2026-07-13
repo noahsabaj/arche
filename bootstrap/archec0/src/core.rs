@@ -12,6 +12,8 @@ pub struct BlockId(pub u32);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreProgram {
     pub world: CoreWorld,
+    pub components: Vec<CoreComponent>,
+    pub resources: Vec<CoreResource>,
     pub systems: Vec<CoreSystem>,
     pub schedules: Vec<CoreSchedule>,
     pub functions: Vec<CoreFunction>,
@@ -23,7 +25,28 @@ pub struct CoreWorld {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreComponent {
+    pub id: u64,
+    pub name: String,
+    pub fields: Vec<CoreField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreResource {
+    pub id: u64,
+    pub name: String,
+    pub fields: Vec<CoreField>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoreField {
+    pub name: String,
+    pub ty: CoreType,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreSystem {
+    pub id: u64,
     pub name: String,
     pub params: Vec<CoreSystemParam>,
     pub body: CoreSystemBody,
@@ -122,6 +145,7 @@ pub enum CoreSystemBinaryOp {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoreSchedule {
+    pub id: u64,
     pub name: String,
     pub items: Vec<CoreScheduleItem>,
 }
@@ -149,6 +173,7 @@ pub struct CoreBlock {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CoreType {
     I32,
+    F32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -223,6 +248,8 @@ mod tests {
             world: CoreWorld {
                 name: "Main".to_string(),
             },
+            components: vec![],
+            resources: vec![],
             systems: vec![],
             schedules: vec![],
             functions: vec![CoreFunction {
@@ -315,6 +342,7 @@ mod tests {
     #[test]
     fn core_represents_move_system_body_model() {
         let system = CoreSystem {
+            id: 0x723b6b52df270ed5,
             name: "Move".to_string(),
             params: vec![
                 CoreSystemParam {
