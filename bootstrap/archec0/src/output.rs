@@ -310,6 +310,25 @@ mod tests {
         assert_eq!(fs::read(source_path).unwrap(), b"source stays intact");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn rejects_case_normalized_source_alias_without_modifying_source() {
+        let directory = TestDirectory::new();
+        let source_path = directory.path().join("Source.arc");
+        let case_normalized_alias = directory.path().join("sOuRcE.ArC");
+        fs::write(&source_path, "source stays intact").unwrap();
+        let (_source_file, source) = open_source(&source_path);
+
+        let result = publish(&source, &case_normalized_alias, b"replacement");
+
+        assert!(
+            matches!(result, Err(PublishError::SourceOutputAlias)),
+            "unexpected publication result: {result:?}"
+        );
+        assert_eq!(fs::read(&source_path).unwrap(), b"source stays intact");
+        assert_no_temporary_files(directory.path());
+    }
+
     #[test]
     fn rejects_hard_link_source_alias() {
         let directory = TestDirectory::new();
