@@ -1542,11 +1542,13 @@ const ECS_SPAWN_ROW_COUNT_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_state
     .row_count
     .offset;
+#[cfg(test)]
 const ECS_POSITION_PAYLOAD_STORAGE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_state
     .spawn_payload_rows[0]
     .position_payload
     .offset;
+#[cfg(test)]
 const ECS_VELOCITY_PAYLOAD_STORAGE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_state
     .spawn_payload_rows[0]
@@ -1581,6 +1583,7 @@ const ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT: u16 = NATIVE_ECS_EXECUTI
     .position_column
     .payload_rows[0]
     .offset;
+#[cfg(test)]
 const ECS_ARCHETYPE_STORAGE_POSITION_ROW1_PAYLOAD_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .archetype_storage
     .position_column
@@ -1591,6 +1594,7 @@ const ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT: u16 = NATIVE_ECS_EXECUTI
     .velocity_column
     .payload_rows[0]
     .offset;
+#[cfg(test)]
 const ECS_ARCHETYPE_STORAGE_VELOCITY_ROW1_PAYLOAD_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .archetype_storage
     .velocity_column
@@ -2497,25 +2501,6 @@ const ECS_RESOURCE_STARTUP_DESCRIPTOR_RELATIONS: [(u16, u16); 2] = [
     (
         ECS_STARTUP_TABLE_RESOURCE_PAYLOAD_LEN_SLOT,
         ECS_TIME_DESCRIPTOR_SIZE_SLOT,
-    ),
-];
-#[cfg(test)]
-const ECS_SPAWN_STARTUP_DESCRIPTOR_RELATIONS: [(u16, u16); 4] = [
-    (
-        ECS_STARTUP_TABLE_POSITION_COMPONENT_ID_SLOT,
-        ECS_POSITION_DESCRIPTOR_ID_SLOT,
-    ),
-    (
-        ECS_STARTUP_TABLE_POSITION_PAYLOAD_LEN_SLOT,
-        ECS_POSITION_DESCRIPTOR_SIZE_SLOT,
-    ),
-    (
-        ECS_STARTUP_TABLE_VELOCITY_COMPONENT_ID_SLOT,
-        ECS_VELOCITY_DESCRIPTOR_ID_SLOT,
-    ),
-    (
-        ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_LEN_SLOT,
-        ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT,
     ),
 ];
 const ECS_QUERY_PLAN_BUILD_ROWS: [NativeQueryPlanBuildRow; 1] = [NativeQueryPlanBuildRow {
@@ -3670,6 +3655,23 @@ fn compare_stack_slots_equal(
     jump_offsets.push(jump_offset);
 }
 
+fn compare_qword_at_stack_address_to_u64(
+    bytes: &mut Vec<u8>,
+    address_slot: u16,
+    expected: u64,
+    jump_offsets: &mut Vec<usize>,
+) {
+    load_stack_slot_to_rax(bytes, address_slot);
+    bytes.extend_from_slice(&[0x48, 0x8b, 0x00]); // mov rax, qword ptr [rax]
+    bytes.extend_from_slice(&[0x48, 0xba]); // mov rdx, imm64
+    bytes.extend_from_slice(&expected.to_le_bytes());
+    bytes.extend_from_slice(&[0x48, 0x39, 0xd0]); // cmp rax, rdx
+
+    let jump_offset = bytes.len();
+    bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
+    jump_offsets.push(jump_offset);
+}
+
 fn emit_startup_operation_dispatch(
     bytes: &mut Vec<u8>,
     operation_kind_slot: u16,
@@ -3781,56 +3783,112 @@ fn emit_spawn_startup_operation_handler(
         startup_spawn_slots(spawn_row_index).expect("startup iteration row matches spawn table");
     let payload_slots = startup_payload_storage_slots(spawn_row_index)
         .expect("startup iteration row matches spawn payload storage");
-    let storage_slots = archetype_storage_row_slots(spawn_row_index)
-        .expect("startup iteration row matches archetype storage slots");
+    let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
 
-    for (startup_table_slot, descriptor_slot) in startup_spawn_descriptor_relations(spawn_slots) {
-        compare_stack_slots_equal(bytes, startup_table_slot, descriptor_slot, jump_offsets);
+    compare_stack_slots_equal(
+        bytes,
+        spawn_slots.component_count.offset,
+        catalog_table.slots.column_count.offset,
+        jump_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        catalog_table.slots.column_count.offset,
+        catalog_table.columns.len() as u64,
+        jump_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        ECS_SPAWN_ROW_COUNT_SLOT,
+        spawn_row_index as u64,
+        jump_offsets,
+    );
+    compare_qword_at_stack_address_to_u64(
+        bytes,
+        catalog_table.slots.row_count_address.offset,
+        spawn_row_index as u64,
+        jump_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        catalog_table.slots.capacity.offset,
+        ECS_ARCHETYPE_STORAGE_CAPACITY,
+        jump_offsets,
+    );
+    for (startup_table_slot, catalog_slot) in
+        startup_spawn_catalog_relations(spawn_slots, catalog_table)
+    {
+        compare_stack_slots_equal(bytes, startup_table_slot, catalog_slot, jump_offsets);
     }
-    bytes.push(0xb8); // mov eax, materialized spawn row count
-    bytes.extend_from_slice(&(row_count_after_spawn as u32).to_le_bytes());
-    store_rax_to_stack_slot(bytes, ECS_SPAWN_ROW_COUNT_SLOT);
-    bytes.push(0xb8); // mov eax, native archetype storage row count
-    bytes.extend_from_slice(&(row_count_after_spawn as u32).to_le_bytes());
-    store_rax_to_stack_slot(bytes, ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT);
 
     load_metadata_qword_via_offset_slot(
         bytes,
         spawn_slots.position_payload_offset.offset,
         payload_slots.position_payload.offset,
     );
-    load_stack_slot_to_rax(bytes, payload_slots.position_payload.offset);
-    store_rax_to_stack_slot(bytes, storage_slots.position_payload.offset);
     load_metadata_qword_via_offset_slot(
         bytes,
         spawn_slots.velocity_payload_offset.offset,
         payload_slots.velocity_payload.offset,
     );
-    load_stack_slot_to_rax(bytes, payload_slots.velocity_payload.offset);
-    store_rax_to_stack_slot(bytes, storage_slots.velocity_payload.offset);
+    emit_catalog_payload_store(
+        bytes,
+        catalog_table.columns[0],
+        spawn_row_index,
+        payload_slots.position_payload.offset,
+    );
+    emit_catalog_payload_store(
+        bytes,
+        catalog_table.columns[1],
+        spawn_row_index,
+        payload_slots.velocity_payload.offset,
+    );
+
+    load_stack_slot_to_rax(bytes, catalog_table.slots.row_count_address.offset);
+    bytes.push(0xba); // mov edx, committed native archetype storage row count
+    bytes.extend_from_slice(&(row_count_after_spawn as u32).to_le_bytes());
+    bytes.extend_from_slice(&[0x48, 0x89, 0x10]); // mov qword ptr [rax], rdx
+    bytes.push(0xb8); // mov eax, committed materialized spawn row count
+    bytes.extend_from_slice(&(row_count_after_spawn as u32).to_le_bytes());
+    store_rax_to_stack_slot(bytes, ECS_SPAWN_ROW_COUNT_SLOT);
 }
 
-fn startup_spawn_descriptor_relations(
+fn startup_spawn_catalog_relations(
     spawn_slots: NativeSpawnStartupOperationSlots,
+    catalog_table: NativeStorageCatalogTableRow,
 ) -> [(u16, u16); 4] {
     [
         (
             spawn_slots.position_component_id.offset,
-            ECS_POSITION_DESCRIPTOR_ID_SLOT,
+            catalog_table.columns[0].slots.component_id.offset,
         ),
         (
             spawn_slots.position_payload_len.offset,
-            ECS_POSITION_DESCRIPTOR_SIZE_SLOT,
+            catalog_table.columns[0].slots.element_size.offset,
         ),
         (
             spawn_slots.velocity_component_id.offset,
-            ECS_VELOCITY_DESCRIPTOR_ID_SLOT,
+            catalog_table.columns[1].slots.component_id.offset,
         ),
         (
             spawn_slots.velocity_payload_len.offset,
-            ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT,
+            catalog_table.columns[1].slots.element_size.offset,
         ),
     ]
+}
+
+fn emit_catalog_payload_store(
+    bytes: &mut Vec<u8>,
+    column: NativeStorageCatalogColumnRow,
+    row_index: usize,
+    payload_slot: u16,
+) {
+    load_stack_slot_to_rax(bytes, column.slots.payload_base_address.offset);
+    for _ in 0..row_index {
+        add_stack_slot_to_rax(bytes, column.slots.element_size.offset);
+    }
+    load_stack_slot_to_rdx(bytes, payload_slot);
+    bytes.extend_from_slice(&[0x48, 0x89, 0x10]); // mov qword ptr [rax], rdx
 }
 
 fn emit_run_schedule_startup_operation_handler(
@@ -4657,6 +4715,17 @@ fn load_stack_slot_to_rax(bytes: &mut Vec<u8>, stack_slot: u16) {
         bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, stack_slot as u8]); // mov rax, qword ptr [rsp + slot]
     } else {
         bytes.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]); // mov rax, qword ptr [rsp + slot]
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+    }
+}
+
+fn load_stack_slot_to_rdx(bytes: &mut Vec<u8>, stack_slot: u16) {
+    if stack_slot == 0 {
+        bytes.extend_from_slice(&[0x48, 0x8b, 0x14, 0x24]); // mov rdx, qword ptr [rsp]
+    } else if stack_slot <= 127 {
+        bytes.extend_from_slice(&[0x48, 0x8b, 0x54, 0x24, stack_slot as u8]); // mov rdx, qword ptr [rsp + slot]
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x8b, 0x94, 0x24]); // mov rdx, qword ptr [rsp + slot]
         bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
     }
 }
@@ -7933,6 +8002,186 @@ mod tests {
     }
 
     #[test]
+    fn materializes_spawn_rows_through_storage_catalog() {
+        let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+
+        for (fixture_name, source, expected_row_count) in [
+            (
+                "move_system.arc",
+                include_str!("../../../examples/move_system.arc"),
+                1usize,
+            ),
+            (
+                "move_system_two_rows.arc",
+                include_str!("../../../examples/move_system_two_rows.arc"),
+                2usize,
+            ),
+        ] {
+            let tokens =
+                lexer::lex(source).unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
+            let program = parser::parse_program(&tokens)
+                .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
+            let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+                .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
+            let metadata = ecs_metadata::encode_ecs_metadata(&assembly)
+                .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
+            let startup_payloads = startup_payloads(&metadata)
+                .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
+            assert_eq!(startup_payloads.spawn_operations.len(), expected_row_count);
+
+            let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+                .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
+
+            for row_index in 0..expected_row_count {
+                let spawn_slots = startup_spawn_slots(row_index).expect("bounded spawn row exists");
+                let payload_slots = startup_payload_storage_slots(row_index)
+                    .expect("bounded payload staging row exists");
+                let physical_slots =
+                    archetype_storage_row_slots(row_index).expect("bounded physical row exists");
+                let committed_count = (row_index + 1) as u32;
+
+                let mut handler = Vec::new();
+                let mut jump_offsets = Vec::new();
+                emit_spawn_startup_operation_handler(
+                    &mut handler,
+                    row_index,
+                    u64::from(committed_count),
+                    &mut jump_offsets,
+                );
+
+                for sequence in [
+                    compare_stack_slots_equal_sequence(
+                        spawn_slots.component_count.offset,
+                        catalog_table.slots.column_count.offset,
+                    ),
+                    compare_stack_slot_sequence(
+                        catalog_table.slots.column_count.offset,
+                        catalog_table.columns.len() as u64,
+                    ),
+                    compare_stack_slot_sequence(ECS_SPAWN_ROW_COUNT_SLOT, row_index as u64),
+                    compare_qword_at_stack_address_sequence(
+                        catalog_table.slots.row_count_address.offset,
+                        row_index as u64,
+                    ),
+                    compare_stack_slot_sequence(
+                        catalog_table.slots.capacity.offset,
+                        ECS_ARCHETYPE_STORAGE_CAPACITY,
+                    ),
+                ] {
+                    assert!(
+                        contains_subsequence(&handler, &sequence),
+                        "{fixture_name} row {row_index} should validate catalog bounds/count state"
+                    );
+                }
+                for (startup_slot, catalog_slot) in
+                    startup_spawn_catalog_relations(spawn_slots, catalog_table)
+                {
+                    assert!(
+                        contains_subsequence(
+                            &handler,
+                            &compare_stack_slots_equal_sequence(startup_slot, catalog_slot),
+                        ),
+                        "{fixture_name} row {row_index} should validate startup field {startup_slot} against catalog field {catalog_slot}"
+                    );
+                }
+
+                let position_stage = metadata_qword_via_offset_slot_to_qword_store_sequence(
+                    spawn_slots.position_payload_offset.offset,
+                    payload_slots.position_payload.offset,
+                );
+                let velocity_stage = metadata_qword_via_offset_slot_to_qword_store_sequence(
+                    spawn_slots.velocity_payload_offset.offset,
+                    payload_slots.velocity_payload.offset,
+                );
+                let position_store = catalog_payload_store_sequence(
+                    catalog_table.columns[0],
+                    row_index,
+                    payload_slots.position_payload.offset,
+                );
+                let velocity_store = catalog_payload_store_sequence(
+                    catalog_table.columns[1],
+                    row_index,
+                    payload_slots.velocity_payload.offset,
+                );
+                let count_commit = catalog_row_count_commit_sequence(
+                    catalog_table.slots.row_count_address.offset,
+                    committed_count,
+                    ECS_SPAWN_ROW_COUNT_SLOT,
+                );
+
+                let position_stage_index = find_subsequence_from(&handler, &position_stage, 0)
+                    .expect("Position payload should stage");
+                let velocity_stage_index = find_subsequence_from(
+                    &handler,
+                    &velocity_stage,
+                    position_stage_index + position_stage.len(),
+                )
+                .expect("Velocity payload should stage after Position");
+                let position_store_index = find_subsequence_from(
+                    &handler,
+                    &position_store,
+                    velocity_stage_index + velocity_stage.len(),
+                )
+                .expect("Position payload should store through its catalog base");
+                let velocity_store_index = find_subsequence_from(
+                    &handler,
+                    &velocity_store,
+                    position_store_index + position_store.len(),
+                )
+                .expect("Velocity payload should store through its catalog base");
+                let count_commit_index = find_subsequence_from(
+                    &handler,
+                    &count_commit,
+                    velocity_store_index + velocity_store.len(),
+                )
+                .expect("row count should commit after both payload stores");
+
+                assert!(jump_offsets
+                    .iter()
+                    .all(|offset| *offset < position_stage_index));
+                assert!(
+                    !handler[position_store_index..count_commit_index]
+                        .windows(2)
+                        .any(|window| window == [0x0f, 0x85]),
+                    "{fixture_name} row {row_index} should not branch between storage writes and count commit"
+                );
+                assert!(contains_subsequence(&text, &position_store));
+                assert!(contains_subsequence(&text, &velocity_store));
+                assert!(contains_subsequence(&text, &count_commit));
+
+                assert!(
+                    !contains_subsequence(
+                        &handler,
+                        &load_store_stack_slot_sequence(
+                            payload_slots.position_payload.offset,
+                            physical_slots.position_payload.offset,
+                        ),
+                    ),
+                    "{fixture_name} row {row_index} must not copy staged Position directly to a physical slot"
+                );
+                assert!(
+                    !contains_subsequence(
+                        &handler,
+                        &load_store_stack_slot_sequence(
+                            payload_slots.velocity_payload.offset,
+                            physical_slots.velocity_payload.offset,
+                        ),
+                    ),
+                    "{fixture_name} row {row_index} must not copy staged Velocity directly to a physical slot"
+                );
+            }
+
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+                ),
+                "{fixture_name} should preserve compiled success exit 47"
+            );
+        }
+    }
+
+    #[test]
     fn iterates_native_startup_operation_table_generically() {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
@@ -7988,7 +8237,6 @@ mod tests {
                         ECS_STARTUP_TABLE_SPAWN_KIND_SLOT,
                         ECS_STARTUP_OP_SPAWN as u64,
                     ),
-                    mov_eax_one_store_sequence(ECS_SPAWN_ROW_COUNT_SLOT),
                     metadata_qword_via_offset_slot_to_qword_store_sequence(
                         ECS_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT,
                         ECS_POSITION_PAYLOAD_STORAGE_SLOT,
@@ -7997,6 +8245,7 @@ mod tests {
                         ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT,
                         ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
                     ),
+                    mov_eax_one_store_sequence(ECS_SPAWN_ROW_COUNT_SLOT),
                     compare_stack_slot_sequence(
                         ECS_STARTUP_TABLE_RUN_SCHEDULE_KIND_SLOT,
                         ECS_STARTUP_OP_RUN_SCHEDULE as u64,
@@ -8110,13 +8359,14 @@ mod tests {
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        assert!(
-            contains_subsequence(
-                &text,
-                &mov_eax_one_store_sequence(ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT),
+        assert!(contains_subsequence(
+            &text,
+            &catalog_row_count_commit_sequence(
+                catalog_table.slots.row_count_address.offset,
+                1,
+                ECS_SPAWN_ROW_COUNT_SLOT,
             ),
-            "generated startup should set native storage row count from decoded spawn count"
-        );
+        ));
         assert!(
             contains_subsequence(
                 &text,
@@ -8148,21 +8398,23 @@ mod tests {
                         ECS_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT,
                         ECS_POSITION_PAYLOAD_STORAGE_SLOT,
                     ),
-                    load_store_stack_slot_sequence(
-                        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
-                        ECS_ARCHETYPE_STORAGE_POSITION_ROW0_PAYLOAD_SLOT,
-                    ),
                     metadata_qword_via_offset_slot_to_qword_store_sequence(
                         ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT,
                         ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
                     ),
-                    load_store_stack_slot_sequence(
+                    catalog_payload_store_sequence(
+                        catalog_table.columns[0],
+                        0,
+                        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
+                    ),
+                    catalog_payload_store_sequence(
+                        catalog_table.columns[1],
+                        0,
                         ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
-                        ECS_ARCHETYPE_STORAGE_VELOCITY_ROW0_PAYLOAD_SLOT,
                     ),
                 ],
             ),
-            "generated startup should copy decoded spawn payloads into storage columns"
+            "generated startup should stage both payloads and write them through catalog columns"
         );
         assert!(
             contains_subsequence(
@@ -9983,15 +10235,19 @@ mod tests {
                 descriptor_slot
             );
         }
-        for (startup_table_slot, descriptor_slot) in ECS_SPAWN_STARTUP_DESCRIPTOR_RELATIONS {
+        let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+        let first_spawn = NATIVE_ECS_TABLE_MODEL.startup_operations.spawn_rows[0];
+        for (startup_table_slot, catalog_slot) in
+            startup_spawn_catalog_relations(first_spawn, catalog_table)
+        {
             assert!(
                 contains_subsequence(
                     &text,
-                    &compare_stack_slots_equal_sequence(startup_table_slot, descriptor_slot),
+                    &compare_stack_slots_equal_sequence(startup_table_slot, catalog_slot),
                 ),
-                "spawn startup table slot {} should be checked against decoded descriptor slot {}",
+                "spawn startup table slot {} should be checked against catalog slot {}",
                 startup_table_slot,
-                descriptor_slot
+                catalog_slot
             );
         }
         let schedule_build_row = ECS_COMPILED_SCHEDULE_BUILD_ROWS[0];
@@ -10306,6 +10562,47 @@ mod tests {
         bytes
     }
 
+    fn catalog_payload_store_sequence(
+        column: NativeStorageCatalogColumnRow,
+        row_index: usize,
+        payload_slot: u16,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_load_stack_slot_to_rax(&mut bytes, column.slots.payload_base_address.offset);
+        for _ in 0..row_index {
+            append_add_stack_slot_to_rax(&mut bytes, column.slots.element_size.offset);
+        }
+        append_load_stack_slot_to_rdx(&mut bytes, payload_slot);
+        bytes.extend_from_slice(&[0x48, 0x89, 0x10]);
+        bytes
+    }
+
+    fn catalog_row_count_commit_sequence(
+        row_count_address_slot: u16,
+        committed_count: u32,
+        logical_count_slot: u16,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_load_stack_slot_to_rax(&mut bytes, row_count_address_slot);
+        bytes.push(0xba);
+        bytes.extend_from_slice(&committed_count.to_le_bytes());
+        bytes.extend_from_slice(&[0x48, 0x89, 0x10]);
+        bytes.extend_from_slice(&mov_eax_immediate_store_sequence(
+            committed_count,
+            logical_count_slot,
+        ));
+        bytes
+    }
+
+    fn compare_qword_at_stack_address_sequence(address_slot: u16, expected: u64) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_load_stack_slot_to_rax(&mut bytes, address_slot);
+        bytes.extend_from_slice(&[0x48, 0x8b, 0x00, 0x48, 0xba]);
+        bytes.extend_from_slice(&expected.to_le_bytes());
+        bytes.extend_from_slice(&[0x48, 0x39, 0xd0]);
+        bytes
+    }
+
     fn metadata_dword_via_offset_slot_to_dword_store_sequence(
         offset_slot: u16,
         target_slot: u16,
@@ -10457,6 +10754,17 @@ mod tests {
             bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, offset as u8]);
         } else {
             bytes.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]);
+            bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+        }
+    }
+
+    fn append_load_stack_slot_to_rdx(bytes: &mut Vec<u8>, offset: u16) {
+        if offset == 0 {
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x14, 0x24]);
+        } else if offset <= 127 {
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x54, 0x24, offset as u8]);
+        } else {
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x94, 0x24]);
             bytes.extend_from_slice(&(offset as u32).to_le_bytes());
         }
     }
