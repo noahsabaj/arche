@@ -3,11 +3,12 @@
 use std::collections::HashMap;
 
 use crate::core::{
-    BlockId, CoreBinaryOp, CoreBlock, CoreFunction, CoreInstruction, CoreLocal, CoreProgram,
-    CoreQueryAccess, CoreQueryLoop, CoreQueryLoopBinding, CoreQueryTerm, CoreSchedule,
-    CoreScheduleItem, CoreSpawnComponent, CoreSpawnField, CoreSpawnFieldValue, CoreSystem,
-    CoreSystemBinaryOp, CoreSystemBody, CoreSystemExpression, CoreSystemParam, CoreSystemParamKind,
-    CoreSystemPlace, CoreSystemStatement, CoreTerminator, CoreType, CoreWorld, LocalId, ValueId,
+    BlockId, CoreBinaryOp, CoreBlock, CoreComponent, CoreField, CoreFunction, CoreInstruction,
+    CoreLocal, CoreProgram, CoreQueryAccess, CoreQueryLoop, CoreQueryLoopBinding, CoreQueryTerm,
+    CoreResource, CoreSchedule, CoreScheduleItem, CoreSpawnComponent, CoreSpawnField,
+    CoreSpawnFieldValue, CoreSystem, CoreSystemBinaryOp, CoreSystemBody, CoreSystemExpression,
+    CoreSystemParam, CoreSystemParamKind, CoreSystemPlace, CoreSystemStatement, CoreTerminator,
+    CoreType, CoreWorld, LocalId, ValueId,
 };
 use crate::layout;
 use crate::parser::{
@@ -28,6 +29,8 @@ pub fn lower_program_to_core(program: &Program) -> Result<CoreProgram, CoreLower
         .startup
         .as_ref()
         .ok_or_else(|| lower_error("expected startup block"))?;
+    let components = lower_components(program)?;
+    let resources = lower_resources(program)?;
     let systems = lower_systems(program)?;
     let schedules = lower_schedules(program)?;
     let (locals, instructions, terminator) = StartupLowerer::new(program).lower_startup(startup)?;
@@ -36,6 +39,8 @@ pub fn lower_program_to_core(program: &Program) -> Result<CoreProgram, CoreLower
         world: CoreWorld {
             name: program.world.name.clone(),
         },
+        components,
+        resources,
         systems,
         schedules,
         functions: vec![CoreFunction {
@@ -49,6 +54,67 @@ pub fn lower_program_to_core(program: &Program) -> Result<CoreProgram, CoreLower
             }],
         }],
     })
+}
+
+fn lower_components(program: &Program) -> Result<Vec<CoreComponent>, CoreLowerError> {
+    program
+        .components
+        .iter()
+        .map(|component| {
+            Ok(CoreComponent {
+                id: layout::stable_component_id(&program.world.name, &component.name).0,
+                name: layout::component_qualified_name(&program.world.name, &component.name),
+                fields: lower_fields(
+                    component
+                        .fields
+                        .iter()
+                        .map(|field| (field.name.as_str(), field.type_name.name.as_str())),
+                )?,
+            })
+        })
+        .collect()
+}
+
+fn lower_resources(program: &Program) -> Result<Vec<CoreResource>, CoreLowerError> {
+    program
+        .resources
+        .iter()
+        .map(|resource| {
+            Ok(CoreResource {
+                id: runtime::stable_resource_id(&program.world.name, &resource.name).0,
+                name: qualified_name(&program.world.name, &resource.name),
+                fields: lower_fields(
+                    resource
+                        .fields
+                        .iter()
+                        .map(|field| (field.name.as_str(), field.type_name.name.as_str())),
+                )?,
+            })
+        })
+        .collect()
+}
+
+fn lower_fields<'a>(
+    fields: impl Iterator<Item = (&'a str, &'a str)>,
+) -> Result<Vec<CoreField>, CoreLowerError> {
+    fields
+        .map(|(name, type_name)| {
+            Ok(CoreField {
+                name: name.to_string(),
+                ty: lower_core_type(type_name)?,
+            })
+        })
+        .collect()
+}
+
+fn lower_core_type(type_name: &str) -> Result<CoreType, CoreLowerError> {
+    match type_name {
+        "i32" => Ok(CoreType::I32),
+        "f32" => Ok(CoreType::F32),
+        _ => Err(lower_error(format!(
+            "unknown primitive type `{type_name}` while lowering Core"
+        ))),
+    }
 }
 
 fn lower_schedules(program: &Program) -> Result<Vec<CoreSchedule>, CoreLowerError> {
@@ -70,6 +136,7 @@ fn lower_schedule(
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(CoreSchedule {
+        id: runtime::stable_schedule_id(&program.world.name, &schedule.name).0,
         name: schedule.name.clone(),
         items,
     })
@@ -107,6 +174,7 @@ fn lower_system(program: &Program, system: &SystemDecl) -> Result<CoreSystem, Co
     let body = lower_system_body(&params, system)?;
 
     Ok(CoreSystem {
+        id: runtime::stable_system_id(&program.world.name, &system.name).0,
         name: system.name.clone(),
         params,
         body,
@@ -646,6 +714,8 @@ mod tests {
             world: CoreWorld {
                 name: "Main".to_string(),
             },
+            components: vec![],
+            resources: vec![],
             systems: vec![],
             schedules: vec![],
             functions: vec![CoreFunction {
@@ -701,6 +771,21 @@ mod tests {
             world: CoreWorld {
                 name: "Demo".to_string(),
             },
+            components: vec![CoreComponent {
+                id: 0x002202c6aeb4f27b,
+                name: "Demo.Position".to_string(),
+                fields: vec![
+                    CoreField {
+                        name: "x".to_string(),
+                        ty: CoreType::F32,
+                    },
+                    CoreField {
+                        name: "y".to_string(),
+                        ty: CoreType::F32,
+                    },
+                ],
+            }],
+            resources: vec![],
             systems: vec![],
             schedules: vec![],
             functions: vec![CoreFunction {
@@ -760,6 +845,7 @@ mod tests {
         assert_eq!(
             actual.schedules,
             vec![CoreSchedule {
+                id: 0xed3d905325519b05,
                 name: "Main".to_string(),
                 items: vec![CoreScheduleItem::Run {
                     system_id: 0x723b6b52df270ed5,
@@ -1079,7 +1165,20 @@ startup {
             world: CoreWorld {
                 name: "Demo".to_string(),
             },
+            components: vec![
+                xy_core_component(0x002202c6aeb4f27b, "Demo.Position"),
+                xy_core_component(0x2cf8a68bcb7f913b, "Demo.Velocity"),
+            ],
+            resources: vec![CoreResource {
+                id: 0x7924ce11db524521,
+                name: "Demo.Time".to_string(),
+                fields: vec![CoreField {
+                    name: "delta".to_string(),
+                    ty: CoreType::F32,
+                }],
+            }],
             systems: vec![CoreSystem {
+                id: 0x723b6b52df270ed5,
                 name: "Move".to_string(),
                 params: vec![
                     CoreSystemParam {
@@ -1132,6 +1231,7 @@ startup {
                 },
             }],
             schedules: vec![CoreSchedule {
+                id: 0xed3d905325519b05,
                 name: "Main".to_string(),
                 items: vec![CoreScheduleItem::Run {
                     system_id: 0x723b6b52df270ed5,
@@ -1185,6 +1285,23 @@ startup {
                     terminator: CoreTerminator::Exit { value: ValueId(0) },
                 }],
             }],
+        }
+    }
+
+    fn xy_core_component(id: u64, name: &str) -> CoreComponent {
+        CoreComponent {
+            id,
+            name: name.to_string(),
+            fields: vec![
+                CoreField {
+                    name: "x".to_string(),
+                    ty: CoreType::F32,
+                },
+                CoreField {
+                    name: "y".to_string(),
+                    ty: CoreType::F32,
+                },
+            ],
         }
     }
 }

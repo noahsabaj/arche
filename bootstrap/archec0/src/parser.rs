@@ -15,35 +15,41 @@ pub struct Program {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorldDecl {
     pub name: String,
+    pub name_span: Span,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComponentDecl {
     pub name: String,
+    pub name_span: Span,
     pub fields: Vec<ComponentField>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComponentField {
     pub name: String,
+    pub name_span: Span,
     pub type_name: TypeName,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceDecl {
     pub name: String,
+    pub name_span: Span,
     pub fields: Vec<ResourceField>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceField {
     pub name: String,
+    pub name_span: Span,
     pub type_name: TypeName,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SystemDecl {
     pub name: String,
+    pub name_span: Span,
     pub params: Vec<SystemParam>,
     pub body: SystemBody,
 }
@@ -51,6 +57,7 @@ pub struct SystemDecl {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SystemParam {
     pub name: String,
+    pub name_span: Span,
     pub kind: SystemParamKind,
 }
 
@@ -113,6 +120,7 @@ pub struct SystemAddAssignStatement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ScheduleDecl {
     pub name: String,
+    pub name_span: Span,
     pub items: Vec<ScheduleItem>,
 }
 
@@ -141,6 +149,7 @@ pub enum Statement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LetStatement {
     pub name: String,
+    pub name_span: Span,
     pub type_name: TypeName,
     pub initializer: Expression,
 }
@@ -148,6 +157,7 @@ pub struct LetStatement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunStatement {
     pub schedule_name: String,
+    pub schedule_span: Span,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,24 +168,28 @@ pub struct SpawnStatement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpawnComponentLiteral {
     pub name: String,
+    pub name_span: Span,
     pub fields: Vec<SpawnComponentField>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpawnComponentField {
     pub name: String,
+    pub name_span: Span,
     pub value: ComponentLiteralValue,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceStatement {
     pub name: String,
+    pub name_span: Span,
     pub fields: Vec<ResourceLiteralField>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResourceLiteralField {
     pub name: String,
+    pub name_span: Span,
     pub value: ComponentLiteralValue,
 }
 
@@ -300,23 +314,15 @@ impl Parser<'_> {
         }
         self.advance();
 
-        let name_token = self.peek();
-        let name = match &name_token.kind {
-            TokenKind::Identifier(name) => name.clone(),
-            _ => {
-                return Err(ParseError {
-                    span: name_token.span,
-                    message: "expected world name after `world`".to_string(),
-                })
-            }
-        };
-        self.advance();
+        let (name, name_span) =
+            self.parse_identifier_with_span("expected world name after `world`")?;
 
-        Ok(WorldDecl { name })
+        Ok(WorldDecl { name, name_span })
     }
 
     fn parse_component_declaration(&mut self) -> Result<ComponentDecl, ParseError> {
-        let name = self.parse_identifier("expected component name after `component`")?;
+        let (name, name_span) =
+            self.parse_identifier_with_span("expected component name after `component`")?;
         self.expect(TokenKind::LeftBrace, "expected `{` after component name")?;
 
         let mut fields = Vec::new();
@@ -328,21 +334,31 @@ impl Parser<'_> {
                 });
             }
 
-            let name = self.parse_identifier("expected component field name")?;
+            let (name, name_span) =
+                self.parse_identifier_with_span("expected component field name")?;
             self.expect(TokenKind::Colon, "expected `:` after component field name")?;
             let type_name = self.parse_type_name("expected component field type after `:`")?;
-            fields.push(ComponentField { name, type_name });
+            fields.push(ComponentField {
+                name,
+                name_span,
+                type_name,
+            });
         }
 
         self.expect(
             TokenKind::RightBrace,
             "expected `}` to close component declaration",
         )?;
-        Ok(ComponentDecl { name, fields })
+        Ok(ComponentDecl {
+            name,
+            name_span,
+            fields,
+        })
     }
 
     fn parse_resource_declaration(&mut self) -> Result<ResourceDecl, ParseError> {
-        let name = self.parse_identifier("expected resource name after `resource`")?;
+        let (name, name_span) =
+            self.parse_identifier_with_span("expected resource name after `resource`")?;
         self.expect(TokenKind::LeftBrace, "expected `{` after resource name")?;
 
         let mut fields = Vec::new();
@@ -354,21 +370,31 @@ impl Parser<'_> {
                 });
             }
 
-            let name = self.parse_identifier("expected resource field name")?;
+            let (name, name_span) =
+                self.parse_identifier_with_span("expected resource field name")?;
             self.expect(TokenKind::Colon, "expected `:` after resource field name")?;
             let type_name = self.parse_type_name("expected resource field type after `:`")?;
-            fields.push(ResourceField { name, type_name });
+            fields.push(ResourceField {
+                name,
+                name_span,
+                type_name,
+            });
         }
 
         self.expect(
             TokenKind::RightBrace,
             "expected `}` to close resource declaration",
         )?;
-        Ok(ResourceDecl { name, fields })
+        Ok(ResourceDecl {
+            name,
+            name_span,
+            fields,
+        })
     }
 
     fn parse_system_declaration(&mut self) -> Result<SystemDecl, ParseError> {
-        let name = self.parse_identifier("expected system name after `system`")?;
+        let (name, name_span) =
+            self.parse_identifier_with_span("expected system name after `system`")?;
         self.expect(TokenKind::LeftParen, "expected `(` after system name")?;
 
         let mut params = Vec::new();
@@ -390,7 +416,12 @@ impl Parser<'_> {
         )?;
         let body = self.parse_system_body()?;
 
-        Ok(SystemDecl { name, params, body })
+        Ok(SystemDecl {
+            name,
+            name_span,
+            params,
+            body,
+        })
     }
 
     fn parse_system_body(&mut self) -> Result<SystemBody, ParseError> {
@@ -496,7 +527,8 @@ impl Parser<'_> {
     }
 
     fn parse_schedule_declaration(&mut self) -> Result<ScheduleDecl, ParseError> {
-        let name = self.parse_identifier("expected schedule name after `schedule`")?;
+        let (name, name_span) =
+            self.parse_identifier_with_span("expected schedule name after `schedule`")?;
         self.expect(TokenKind::LeftBrace, "expected `{` after schedule name")?;
 
         let mut items = Vec::new();
@@ -515,7 +547,11 @@ impl Parser<'_> {
             TokenKind::RightBrace,
             "expected `}` to close schedule declaration",
         )?;
-        Ok(ScheduleDecl { name, items })
+        Ok(ScheduleDecl {
+            name,
+            name_span,
+            items,
+        })
     }
 
     fn parse_schedule_item(&mut self) -> Result<ScheduleItem, ParseError> {
@@ -535,7 +571,8 @@ impl Parser<'_> {
     }
 
     fn parse_system_param(&mut self) -> Result<SystemParam, ParseError> {
-        let name = self.parse_identifier("expected system parameter name")?;
+        let (name, name_span) =
+            self.parse_identifier_with_span("expected system parameter name")?;
         self.expect(TokenKind::Colon, "expected `:` after system parameter name")?;
 
         if self.match_keyword(Keyword::Read) {
@@ -544,6 +581,7 @@ impl Parser<'_> {
 
             return Ok(SystemParam {
                 name,
+                name_span,
                 kind: SystemParamKind::ReadResource {
                     resource_name,
                     resource_span,
@@ -556,6 +594,7 @@ impl Parser<'_> {
 
             return Ok(SystemParam {
                 name,
+                name_span,
                 kind: SystemParamKind::Query { terms },
             });
         }
@@ -656,7 +695,8 @@ impl Parser<'_> {
     }
 
     fn parse_let_statement(&mut self) -> Result<Statement, ParseError> {
-        let name = self.parse_identifier("expected binding name after `let`")?;
+        let (name, name_span) =
+            self.parse_identifier_with_span("expected binding name after `let`")?;
         self.expect(TokenKind::Colon, "expected `:` after let binding name")?;
         let type_name = self.parse_type_name("expected type name after `:`")?;
         self.expect(TokenKind::Equal, "expected `=` after let binding type")?;
@@ -664,15 +704,20 @@ impl Parser<'_> {
 
         Ok(Statement::Let(LetStatement {
             name,
+            name_span,
             type_name,
             initializer,
         }))
     }
 
     fn parse_run_statement(&mut self) -> Result<Statement, ParseError> {
-        let schedule_name = self.parse_identifier("expected schedule name after `run`")?;
+        let (schedule_name, schedule_span) =
+            self.parse_identifier_with_span("expected schedule name after `run`")?;
 
-        Ok(Statement::Run(RunStatement { schedule_name }))
+        Ok(Statement::Run(RunStatement {
+            schedule_name,
+            schedule_span,
+        }))
     }
 
     fn parse_exit_statement(&mut self) -> Result<Statement, ParseError> {
@@ -693,7 +738,8 @@ impl Parser<'_> {
                 });
             }
 
-            let name = self.parse_identifier("expected component literal in spawn block")?;
+            let (name, name_span) =
+                self.parse_identifier_with_span("expected component literal in spawn block")?;
             self.expect(
                 TokenKind::LeftBrace,
                 "expected `{` after component literal name",
@@ -721,7 +767,11 @@ impl Parser<'_> {
                 TokenKind::RightBrace,
                 "expected `}` after component literal fields",
             )?;
-            components.push(SpawnComponentLiteral { name, fields });
+            components.push(SpawnComponentLiteral {
+                name,
+                name_span,
+                fields,
+            });
         }
 
         self.expect(TokenKind::RightBrace, "expected `}` to close spawn block")?;
@@ -729,7 +779,8 @@ impl Parser<'_> {
     }
 
     fn parse_resource_statement(&mut self) -> Result<Statement, ParseError> {
-        let name = self.parse_identifier("expected resource literal name after `resource`")?;
+        let (name, name_span) =
+            self.parse_identifier_with_span("expected resource literal name after `resource`")?;
         self.expect(
             TokenKind::LeftBrace,
             "expected `{` after resource literal name",
@@ -757,29 +808,43 @@ impl Parser<'_> {
             TokenKind::RightBrace,
             "expected `}` after resource literal fields",
         )?;
-        Ok(Statement::Resource(ResourceStatement { name, fields }))
+        Ok(Statement::Resource(ResourceStatement {
+            name,
+            name_span,
+            fields,
+        }))
     }
 
     fn parse_resource_literal_field(&mut self) -> Result<ResourceLiteralField, ParseError> {
-        let name = self.parse_identifier("expected resource literal field name")?;
+        let (name, name_span) =
+            self.parse_identifier_with_span("expected resource literal field name")?;
         self.expect(
             TokenKind::Colon,
             "expected `:` after resource literal field name",
         )?;
         let value = self.parse_component_literal_value()?;
 
-        Ok(ResourceLiteralField { name, value })
+        Ok(ResourceLiteralField {
+            name,
+            name_span,
+            value,
+        })
     }
 
     fn parse_spawn_component_field(&mut self) -> Result<SpawnComponentField, ParseError> {
-        let name = self.parse_identifier("expected component literal field name")?;
+        let (name, name_span) =
+            self.parse_identifier_with_span("expected component literal field name")?;
         self.expect(
             TokenKind::Colon,
             "expected `:` after component literal field name",
         )?;
         let value = self.parse_component_literal_value()?;
 
-        Ok(SpawnComponentField { name, value })
+        Ok(SpawnComponentField {
+            name,
+            name_span,
+            value,
+        })
     }
 
     fn parse_component_literal_value(&mut self) -> Result<ComponentLiteralValue, ParseError> {
@@ -797,12 +862,6 @@ impl Parser<'_> {
         self.advance();
 
         Ok(ComponentLiteralValue::Float { text, span })
-    }
-
-    fn parse_identifier(&mut self, message: &str) -> Result<String, ParseError> {
-        let (name, _) = self.parse_identifier_with_span(message)?;
-
-        Ok(name)
     }
 
     fn parse_identifier_with_span(&mut self, message: &str) -> Result<(String, Span), ParseError> {

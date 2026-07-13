@@ -3,6 +3,7 @@ use crate::core::{
     CoreSystemParamKind, CoreSystemPlace, CoreSystemStatement,
 };
 use crate::core_lower;
+use crate::core_verify;
 use crate::parser::{BinaryOperator, Expression, Program, Statement};
 
 const NATIVE_ECS_QWORD_BYTE_LEN: u16 = 8;
@@ -2625,6 +2626,12 @@ fn native_move_query_loop_observable(
     let core = core_lower::lower_program_to_core(program).map_err(|error| CodegenError {
         message: format!(
             "could not lower Core for native query-loop observable: {}",
+            error.message
+        ),
+    })?;
+    core_verify::verify_core_program(&core).map_err(|error| CodegenError {
+        message: format!(
+            "invalid Core for native query-loop observable: {}",
             error.message
         ),
     })?;

@@ -1,0 +1,73 @@
+name: Proof
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-linux:
+    name: Proof / Native Linux
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.95.0
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path ./bootstrap/archec0/Cargo.toml -- --check
+
+      - name: Run locked release tests
+        run: cargo test --locked --release --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+
+      - name: Install cargo-audit 0.22.2
+        run: cargo install cargo-audit --version 0.22.2 --locked
+
+      - name: Audit locked dependencies
+        run: cargo audit --file ./bootstrap/archec0/Cargo.lock
+
+      - name: Run complete native proof suite
+        run: pwsh -NoLogo -NoProfile -File ./tools/test.ps1
+
+      - name: Verify no tracked files changed
+        run: git diff --exit-code
+
+  windows:
+    name: Proof / Windows
+    runs-on: windows-2025
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+          rustup override set 1.95.0
+
+      - name: Run locked release tests
+        run: cargo test --locked --release --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+
+      - name: Run Clippy
+        run: cargo clippy --locked --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+
+      - name: Run proof suite under PowerShell Core
+        run: pwsh -NoLogo -NoProfile -File .\tools\test.ps1 -SkipGeneratedLinuxExecution
+
+      - name: Run proof suite under Windows PowerShell 5.1
+        run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -SkipGeneratedLinuxExecution
+
+      - name: Verify no tracked files changed
+        run: git diff --exit-code

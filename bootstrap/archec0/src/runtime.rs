@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use crate::layout::ComponentId;
-use std::alloc::{alloc, dealloc, Layout};
-use std::ptr::{self, NonNull};
+use std::alloc::{alloc_zeroed, dealloc, Layout};
+use std::ptr::NonNull;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ArcheEntity(pub u64);
@@ -44,6 +44,19 @@ impl EntityTable {
 
     pub fn len(&self) -> usize {
         self.slots.len()
+    }
+
+    fn prepare_alloc(&mut self) -> Result<(), SpawnEntityError> {
+        if !self.free_indices.is_empty() {
+            return Ok(());
+        }
+
+        u32::try_from(self.slots.len()).map_err(|_| SpawnEntityError {
+            message: "entity index space is exhausted".to_string(),
+        })?;
+        self.slots.try_reserve(1).map_err(|error| SpawnEntityError {
+            message: format!("failed to reserve entity slot: {error}"),
+        })
     }
 
     pub fn alloc(&mut self) -> ArcheEntity {
@@ -466,12 +479,85 @@ pub fn stable_query_id(world_name: &str, system_name: &str, query_name: &str) ->
 }
 
 #[derive(Debug)]
+struct AlignedByteStorage {
+    storage: NonNull<u8>,
+    layout: Layout,
+}
+
+impl AlignedByteStorage {
+    fn allocate_zeroed(
+        byte_size: usize,
+        byte_align: usize,
+        allocation_name: &str,
+    ) -> Result<Self, String> {
+        if byte_size == 0 {
+            return Err(format!("{allocation_name} size must be greater than 0"));
+        }
+
+        let layout = Layout::from_size_align(byte_size, byte_align).map_err(|_| {
+            format!("invalid {allocation_name} layout size {byte_size} align {byte_align}")
+        })?;
+        let storage = {
+            let raw = unsafe { alloc_zeroed(layout) };
+            NonNull::new(raw).ok_or_else(|| format!("{allocation_name} allocation failed"))?
+        };
+
+        Ok(Self { storage, layout })
+    }
+
+    fn len(&self) -> usize {
+        self.layout.size()
+    }
+
+    fn align(&self) -> usize {
+        self.layout.align()
+    }
+
+    fn as_ptr(&self) -> *const u8 {
+        self.storage.as_ptr()
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(self.storage.as_ptr(), self.len()) }
+    }
+
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.storage.as_ptr(), self.len()) }
+    }
+
+    fn copy_prefix_from(
+        &mut self,
+        source: &AlignedByteStorage,
+        byte_count: usize,
+    ) -> Result<(), String> {
+        if byte_count > self.len() || byte_count > source.len() {
+            return Err(format!(
+                "storage prefix copy of {byte_count} bytes exceeds source size {} or destination size {}",
+                source.len(),
+                self.len()
+            ));
+        }
+
+        self.as_mut_slice()[..byte_count].copy_from_slice(&source.as_slice()[..byte_count]);
+        Ok(())
+    }
+}
+
+impl Drop for AlignedByteStorage {
+    fn drop(&mut self) {
+        unsafe {
+            dealloc(self.storage.as_ptr(), self.layout);
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct ResourceStorage {
     resource_id: ResourceId,
     byte_size: usize,
     byte_align: usize,
-    storage: NonNull<u8>,
-    layout: Layout,
+    initialized: bool,
+    storage: AlignedByteStorage,
 }
 
 impl ResourceStorage {
@@ -479,31 +565,16 @@ impl ResourceStorage {
         let byte_size = descriptor.size as usize;
         let byte_align = descriptor.align as usize;
 
-        if byte_size == 0 {
-            return Err(ResourceStorageError {
-                message: "resource storage size must be greater than 0".to_string(),
-            });
-        }
-
-        let layout =
-            Layout::from_size_align(byte_size, byte_align).map_err(|_| ResourceStorageError {
-                message: format!(
-                    "invalid resource storage layout size {byte_size} align {byte_align}"
-                ),
-            })?;
-        let storage = {
-            let raw = unsafe { alloc(layout) };
-            NonNull::new(raw).ok_or_else(|| ResourceStorageError {
-                message: "resource storage allocation failed".to_string(),
-            })?
-        };
+        let storage =
+            AlignedByteStorage::allocate_zeroed(byte_size, byte_align, "resource storage")
+                .map_err(|message| ResourceStorageError { message })?;
 
         Ok(Self {
             resource_id: descriptor.id,
             byte_size,
             byte_align,
+            initialized: false,
             storage,
-            layout,
         })
     }
 
@@ -520,15 +591,28 @@ impl ResourceStorage {
     }
 
     pub fn storage_byte_size(&self) -> usize {
-        self.layout.size()
+        self.storage.len()
     }
 
-    pub fn storage_ptr(&self) -> *mut u8 {
+    fn storage_ptr(&self) -> *const u8 {
         self.storage.as_ptr()
     }
 
-    pub fn payload_bytes(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.storage.as_ptr(), self.byte_size) }
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
+    fn payload_bytes(&self) -> Result<&[u8], ResourceStorageError> {
+        if !self.initialized {
+            return Err(ResourceStorageError {
+                message: format!(
+                    "resource storage 0x{:016x} has not been initialized",
+                    self.resource_id.0
+                ),
+            });
+        }
+
+        Ok(&self.storage.as_slice()[..self.byte_size])
     }
 
     pub fn store_payload(&mut self, payload_bytes: &[u8]) -> Result<(), ResourceStorageError> {
@@ -542,22 +626,9 @@ impl ResourceStorage {
             });
         }
 
-        unsafe {
-            ptr::copy_nonoverlapping(
-                payload_bytes.as_ptr(),
-                self.storage.as_ptr(),
-                payload_bytes.len(),
-            );
-        }
+        self.storage.as_mut_slice()[..self.byte_size].copy_from_slice(payload_bytes);
+        self.initialized = true;
         Ok(())
-    }
-}
-
-impl Drop for ResourceStorage {
-    fn drop(&mut self) {
-        unsafe {
-            dealloc(self.storage.as_ptr(), self.layout);
-        }
     }
 }
 
@@ -607,7 +678,7 @@ impl ArchetypeTable {
         self.entities.len()
     }
 
-    pub fn insert_entity(&mut self, entity: ArcheEntity) -> usize {
+    fn insert_entity(&mut self, entity: ArcheEntity) -> usize {
         let row = self.entities.len();
         self.entities.push(entity);
         row
@@ -621,7 +692,7 @@ impl ArchetypeTable {
         self.entities.is_empty()
     }
 
-    pub fn allocate_component_column(
+    fn allocate_component_column(
         &mut self,
         descriptor: &ComponentDescriptor,
         row_capacity: usize,
@@ -635,7 +706,7 @@ impl ArchetypeTable {
         Ok(true)
     }
 
-    pub fn copy_component_payload(
+    fn copy_component_payload(
         &mut self,
         component_id: ComponentId,
         row: usize,
@@ -674,8 +745,7 @@ pub struct ComponentColumn {
     element_align: usize,
     row_capacity: usize,
     row_count: usize,
-    storage: NonNull<u8>,
-    layout: Layout,
+    storage: AlignedByteStorage,
 }
 
 impl ComponentColumn {
@@ -704,19 +774,9 @@ impl ComponentColumn {
                 .ok_or_else(|| ComponentColumnError {
                     message: "component column byte size overflowed".to_string(),
                 })?;
-        let layout = Layout::from_size_align(byte_size, element_align).map_err(|_| {
-            ComponentColumnError {
-                message: format!(
-                    "invalid component column layout size {byte_size} align {element_align}"
-                ),
-            }
-        })?;
-        let storage = {
-            let raw = unsafe { alloc(layout) };
-            NonNull::new(raw).ok_or_else(|| ComponentColumnError {
-                message: "component column allocation failed".to_string(),
-            })?
-        };
+        let storage =
+            AlignedByteStorage::allocate_zeroed(byte_size, element_align, "component column")
+                .map_err(|message| ComponentColumnError { message })?;
 
         Ok(Self {
             component_id: descriptor.id,
@@ -725,7 +785,6 @@ impl ComponentColumn {
             row_capacity,
             row_count: 0,
             storage,
-            layout,
         })
     }
 
@@ -750,11 +809,51 @@ impl ComponentColumn {
     }
 
     pub fn storage_byte_size(&self) -> usize {
-        self.layout.size()
+        self.storage.len()
     }
 
-    pub fn storage_ptr(&self) -> *mut u8 {
+    fn storage_ptr(&self) -> *const u8 {
         self.storage.as_ptr()
+    }
+
+    fn prepare_growth(
+        &self,
+        required_rows: usize,
+    ) -> Result<Option<PreparedColumnGrowth>, ComponentColumnError> {
+        if required_rows <= self.row_capacity {
+            return Ok(None);
+        }
+
+        let doubled_capacity = self.row_capacity.checked_mul(2).unwrap_or(required_rows);
+        let row_capacity = doubled_capacity.max(required_rows);
+        let byte_size =
+            self.element_size
+                .checked_mul(row_capacity)
+                .ok_or_else(|| ComponentColumnError {
+                    message: "component column byte size overflowed while growing".to_string(),
+                })?;
+        let initialized_byte_size =
+            self.element_size
+                .checked_mul(self.row_count)
+                .ok_or_else(|| ComponentColumnError {
+                    message: "component column initialized byte size overflowed".to_string(),
+                })?;
+        let mut storage =
+            AlignedByteStorage::allocate_zeroed(byte_size, self.element_align, "component column")
+                .map_err(|message| ComponentColumnError { message })?;
+        storage
+            .copy_prefix_from(&self.storage, initialized_byte_size)
+            .map_err(|message| ComponentColumnError { message })?;
+
+        Ok(Some(PreparedColumnGrowth {
+            storage,
+            row_capacity,
+        }))
+    }
+
+    fn install_growth(&mut self, growth: PreparedColumnGrowth) {
+        self.storage = growth.storage;
+        self.row_capacity = growth.row_capacity;
     }
 
     fn copy_payload(
@@ -762,6 +861,15 @@ impl ComponentColumn {
         row: usize,
         payload_bytes: &[u8],
     ) -> Result<(), ComponentColumnError> {
+        if row > self.row_count {
+            return Err(ComponentColumnError {
+                message: format!(
+                    "component row {row} would leave an uninitialized gap after row {}",
+                    self.row_count
+                ),
+            });
+        }
+
         if row >= self.row_capacity {
             return Err(ComponentColumnError {
                 message: format!(
@@ -781,17 +889,22 @@ impl ComponentColumn {
             });
         }
 
-        let offset = row * self.element_size;
-        unsafe {
-            ptr::copy_nonoverlapping(
-                payload_bytes.as_ptr(),
-                self.storage.as_ptr().add(offset),
-                self.element_size,
-            );
-        }
-        self.row_count = self.row_count.max(row + 1);
+        self.commit_payload(row, payload_bytes);
 
         Ok(())
+    }
+
+    fn commit_payload(&mut self, row: usize, payload_bytes: &[u8]) {
+        debug_assert!(row <= self.row_count);
+        debug_assert!(row < self.row_capacity);
+        debug_assert_eq!(payload_bytes.len(), self.element_size);
+
+        let offset = row * self.element_size;
+        let end = offset + self.element_size;
+        self.storage.as_mut_slice()[offset..end].copy_from_slice(payload_bytes);
+        if row == self.row_count {
+            self.row_count += 1;
+        }
     }
 
     pub fn row_bytes(&self, row: usize) -> Option<&[u8]> {
@@ -800,23 +913,187 @@ impl ComponentColumn {
         }
 
         let offset = row * self.element_size;
-        Some(unsafe {
-            std::slice::from_raw_parts(self.storage.as_ptr().add(offset), self.element_size)
-        })
+        Some(&self.storage.as_slice()[offset..offset + self.element_size])
     }
 }
 
-impl Drop for ComponentColumn {
-    fn drop(&mut self) {
-        unsafe {
-            dealloc(self.storage.as_ptr(), self.layout);
-        }
-    }
+#[derive(Debug)]
+struct PreparedColumnGrowth {
+    storage: AlignedByteStorage,
+    row_capacity: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComponentColumnError {
     pub message: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpawnEntityError {
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ComponentPayload<'a> {
+    pub component_id: ComponentId,
+    pub payload_bytes: &'a [u8],
+}
+
+struct ResolvedComponentPayload<'a> {
+    descriptor: ComponentDescriptor,
+    payload_bytes: &'a [u8],
+}
+
+struct IndexedColumnGrowth {
+    column_index: usize,
+    growth: PreparedColumnGrowth,
+}
+
+struct PreparedTableSpawn {
+    growths: Vec<IndexedColumnGrowth>,
+    new_columns: Vec<ComponentColumn>,
+}
+
+impl ArchetypeTable {
+    fn prepare_spawn(
+        &mut self,
+        components: &[ResolvedComponentPayload<'_>],
+    ) -> Result<PreparedTableSpawn, SpawnEntityError> {
+        let entity_count = self.entities.len();
+        let required_rows = entity_count
+            .checked_add(1)
+            .ok_or_else(|| SpawnEntityError {
+                message: "archetype row count overflowed".to_string(),
+            })?;
+
+        for (index, column) in self.columns.iter().enumerate() {
+            if self.columns[..index]
+                .iter()
+                .any(|previous| previous.component_id == column.component_id)
+            {
+                return Err(SpawnEntityError {
+                    message: format!(
+                        "archetype has duplicate component column 0x{:016x}",
+                        column.component_id.0
+                    ),
+                });
+            }
+
+            let component = components
+                .iter()
+                .find(|component| component.descriptor.id == column.component_id)
+                .ok_or_else(|| SpawnEntityError {
+                    message: format!(
+                        "archetype has unexpected component column 0x{:016x}",
+                        column.component_id.0
+                    ),
+                })?;
+            if column.element_size != component.descriptor.size as usize
+                || column.element_align != component.descriptor.align as usize
+            {
+                return Err(SpawnEntityError {
+                    message: format!(
+                        "component column `{}` does not match its registered descriptor",
+                        component.descriptor.name
+                    ),
+                });
+            }
+            if column.row_count != entity_count {
+                return Err(SpawnEntityError {
+                    message: format!(
+                        "component column `{}` has {} committed rows but archetype has {entity_count} entities",
+                        component.descriptor.name, column.row_count
+                    ),
+                });
+            }
+        }
+
+        let mut growths = Vec::new();
+        growths
+            .try_reserve(self.columns.len())
+            .map_err(|error| SpawnEntityError {
+                message: format!("failed to reserve component growth plan: {error}"),
+            })?;
+        for (column_index, column) in self.columns.iter().enumerate() {
+            if let Some(growth) =
+                column
+                    .prepare_growth(required_rows)
+                    .map_err(|error| SpawnEntityError {
+                        message: error.message,
+                    })?
+            {
+                growths.push(IndexedColumnGrowth {
+                    column_index,
+                    growth,
+                });
+            }
+        }
+
+        let missing_count = components
+            .iter()
+            .filter(|component| self.column(component.descriptor.id).is_none())
+            .count();
+        if entity_count > 0 && missing_count > 0 {
+            return Err(SpawnEntityError {
+                message: "established archetype is missing one or more component columns"
+                    .to_string(),
+            });
+        }
+
+        let mut new_columns = Vec::new();
+        new_columns
+            .try_reserve(missing_count)
+            .map_err(|error| SpawnEntityError {
+                message: format!("failed to reserve new component columns: {error}"),
+            })?;
+        for component in components {
+            if self.column(component.descriptor.id).is_none() {
+                new_columns.push(
+                    ComponentColumn::allocate(&component.descriptor, required_rows).map_err(
+                        |error| SpawnEntityError {
+                            message: error.message,
+                        },
+                    )?,
+                );
+            }
+        }
+
+        self.entities
+            .try_reserve(1)
+            .map_err(|error| SpawnEntityError {
+                message: format!("failed to reserve archetype entity row: {error}"),
+            })?;
+        self.columns
+            .try_reserve(new_columns.len())
+            .map_err(|error| SpawnEntityError {
+                message: format!("failed to reserve archetype component columns: {error}"),
+            })?;
+
+        Ok(PreparedTableSpawn {
+            growths,
+            new_columns,
+        })
+    }
+
+    fn install_spawn_preparation(&mut self, preparation: PreparedTableSpawn) {
+        for indexed in preparation.growths {
+            self.columns[indexed.column_index].install_growth(indexed.growth);
+        }
+        self.columns.extend(preparation.new_columns);
+    }
+
+    fn commit_spawn(&mut self, entity: ArcheEntity, components: &[ResolvedComponentPayload<'_>]) {
+        let row = self.entities.len();
+        for component in components {
+            let column = self
+                .columns
+                .iter_mut()
+                .find(|column| column.component_id == component.descriptor.id)
+                .expect("prepared spawn component column must exist");
+            column.commit_payload(row, component.payload_bytes);
+        }
+        self.entities.push(entity);
+    }
 }
 
 #[derive(Debug)]
@@ -851,8 +1128,111 @@ impl ArcheWorld {
         &self.entities
     }
 
-    pub fn alloc_entity(&mut self) -> ArcheEntity {
+    fn alloc_entity(&mut self) -> ArcheEntity {
         self.entities.alloc()
+    }
+
+    pub fn spawn_entity_with_payloads(
+        &mut self,
+        payloads: &[ComponentPayload<'_>],
+    ) -> Result<ArcheEntity, SpawnEntityError> {
+        let mut components = Vec::new();
+        components
+            .try_reserve(payloads.len())
+            .map_err(|error| SpawnEntityError {
+                message: format!("failed to reserve component payload plan: {error}"),
+            })?;
+
+        for payload in payloads {
+            if components
+                .iter()
+                .any(|component: &ResolvedComponentPayload<'_>| {
+                    component.descriptor.id == payload.component_id
+                })
+            {
+                return Err(SpawnEntityError {
+                    message: format!(
+                        "duplicate spawn component 0x{:016x}",
+                        payload.component_id.0
+                    ),
+                });
+            }
+
+            let descriptor = self
+                .component_descriptors
+                .get(payload.component_id)
+                .cloned()
+                .ok_or_else(|| SpawnEntityError {
+                    message: format!(
+                        "component descriptor 0x{:016x} is not registered",
+                        payload.component_id.0
+                    ),
+                })?;
+            let element_size = descriptor.size as usize;
+            let element_align = descriptor.align as usize;
+            if element_size == 0 {
+                return Err(SpawnEntityError {
+                    message: format!("component descriptor `{}` has zero size", descriptor.name),
+                });
+            }
+            Layout::from_size_align(element_size, element_align).map_err(|_| SpawnEntityError {
+                message: format!(
+                    "component descriptor `{}` has invalid layout size {element_size} align {element_align}",
+                    descriptor.name
+                ),
+            })?;
+            if payload.payload_bytes.len() != element_size {
+                return Err(SpawnEntityError {
+                    message: format!(
+                        "component payload size {} does not match descriptor size {} for `{}`",
+                        payload.payload_bytes.len(),
+                        descriptor.size,
+                        descriptor.name
+                    ),
+                });
+            }
+
+            components.push(ResolvedComponentPayload {
+                descriptor,
+                payload_bytes: payload.payload_bytes,
+            });
+        }
+
+        let mut component_ids = Vec::new();
+        component_ids
+            .try_reserve(components.len())
+            .map_err(|error| SpawnEntityError {
+                message: format!("failed to reserve archetype key: {error}"),
+            })?;
+        component_ids.extend(components.iter().map(|component| component.descriptor.id));
+        let key = ArchetypeKey::new(component_ids);
+
+        if let Some(archetype_index) = self.archetypes.iter().position(|table| table.key() == &key)
+        {
+            let preparation = self.archetypes[archetype_index].prepare_spawn(&components)?;
+            self.entities.prepare_alloc()?;
+
+            let entity = self.alloc_entity();
+            let table = &mut self.archetypes[archetype_index];
+            table.install_spawn_preparation(preparation);
+            table.commit_spawn(entity, &components);
+            return Ok(entity);
+        }
+
+        let mut table = ArchetypeTable::new(key);
+        let preparation = table.prepare_spawn(&components)?;
+        table.install_spawn_preparation(preparation);
+        self.archetypes
+            .try_reserve(1)
+            .map_err(|error| SpawnEntityError {
+                message: format!("failed to reserve archetype table: {error}"),
+            })?;
+        self.entities.prepare_alloc()?;
+
+        let entity = self.alloc_entity();
+        table.commit_spawn(entity, &components);
+        self.archetypes.push(table);
+        Ok(entity)
     }
 
     pub fn register_component_descriptor(&mut self, descriptor: ComponentDescriptor) -> bool {
@@ -1088,7 +1468,7 @@ impl ArcheWorld {
                 message: format!("resource storage 0x{:016x} is not allocated", id.0),
             })?;
 
-        Ok(storage.payload_bytes())
+        storage.payload_bytes()
     }
 
     pub fn read_resource_f32_field(
@@ -1166,7 +1546,7 @@ impl ArcheWorld {
         self.archetypes.get_mut(index)
     }
 
-    pub fn get_or_create_archetype(&mut self, key: ArchetypeKey) -> &mut ArchetypeTable {
+    fn get_or_create_archetype(&mut self, key: ArchetypeKey) -> &mut ArchetypeTable {
         if let Some(index) = self.archetypes.iter().position(|table| table.key() == &key) {
             return &mut self.archetypes[index];
         }
@@ -1363,6 +1743,41 @@ fn debug_format_resource_field_value(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_resource_descriptor() -> ResourceDescriptor {
+        ResourceDescriptor {
+            id: stable_resource_id("Test", "Time"),
+            name: "Test.Time".to_string(),
+            size: 4,
+            align: 4,
+            fields: vec![ResourceFieldDescriptor {
+                name: "delta".to_string(),
+                type_name: "f32".to_string(),
+                offset: 0,
+            }],
+        }
+    }
+
+    fn test_xy_component_descriptor(id: ComponentId, name: &str) -> ComponentDescriptor {
+        ComponentDescriptor {
+            id,
+            name: name.to_string(),
+            size: 8,
+            align: 4,
+            fields: vec![
+                ComponentFieldDescriptor {
+                    name: "x".to_string(),
+                    type_name: "f32".to_string(),
+                    offset: 0,
+                },
+                ComponentFieldDescriptor {
+                    name: "y".to_string(),
+                    type_name: "f32".to_string(),
+                    offset: 4,
+                },
+            ],
+        }
+    }
 
     #[test]
     fn arche_entity_packs_index_and_generation() {
@@ -2383,6 +2798,76 @@ mod tests {
     }
 
     #[test]
+    fn rejects_reads_until_resource_storage_is_initialized() {
+        let descriptor = test_resource_descriptor();
+        let resource_id = descriptor.id;
+        let mut world = ArcheWorld::create();
+
+        assert!(world.register_resource_descriptor(descriptor.clone()));
+        assert!(world
+            .allocate_resource_storage(&descriptor)
+            .expect("resource allocation succeeds"));
+        let storage = world
+            .resource_storage(resource_id)
+            .expect("resource storage exists");
+        assert!(!storage.is_initialized());
+        assert!(storage.storage.as_slice().iter().all(|byte| *byte == 0));
+
+        let error = world
+            .resource_payload(resource_id)
+            .expect_err("uninitialized resource read must fail");
+        assert!(error.message.contains("has not been initialized"));
+        let error = world
+            .read_resource_f32_field(resource_id, "delta")
+            .expect_err("uninitialized resource field read must fail");
+        assert!(error.message.contains("has not been initialized"));
+
+        world
+            .store_resource_payload(resource_id, &1.5_f32.to_le_bytes())
+            .expect("exact-size resource store succeeds");
+        assert_eq!(
+            world
+                .read_resource_f32_field(resource_id, "delta")
+                .expect("initialized resource field reads"),
+            1.5
+        );
+    }
+
+    #[test]
+    fn failed_resource_stores_preserve_payload_and_initialization_state() {
+        let descriptor = test_resource_descriptor();
+        let resource_id = descriptor.id;
+        let mut world = ArcheWorld::create();
+
+        assert!(world.register_resource_descriptor(descriptor.clone()));
+        assert!(world
+            .allocate_resource_storage(&descriptor)
+            .expect("resource allocation succeeds"));
+        assert!(world.store_resource_payload(resource_id, &[0, 1]).is_err());
+        assert!(!world
+            .resource_storage(resource_id)
+            .expect("resource storage exists")
+            .is_initialized());
+        assert!(world.resource_payload(resource_id).is_err());
+
+        let original = 2.5_f32.to_le_bytes();
+        world
+            .store_resource_payload(resource_id, &original)
+            .expect("exact-size resource store succeeds");
+        assert!(world.store_resource_payload(resource_id, &[9, 9]).is_err());
+        assert_eq!(
+            world
+                .resource_payload(resource_id)
+                .expect("previous payload remains readable"),
+            original.as_slice()
+        );
+        assert!(world
+            .resource_storage(resource_id)
+            .expect("resource storage exists")
+            .is_initialized());
+    }
+
+    #[test]
     fn stores_time_delta_resource_payload() {
         let time_id = stable_resource_id("Demo", "Time");
         let time = ResourceDescriptor {
@@ -2571,6 +3056,193 @@ mod tests {
             .allocate_component_column(&position, 1)
             .expect("duplicate allocation check should not fail"));
         assert_eq!(table.column_count(), 1);
+    }
+
+    #[test]
+    fn component_column_rejects_row_gaps_and_tracks_a_contiguous_prefix() {
+        let descriptor = test_xy_component_descriptor(ComponentId(0x10), "Test.Position");
+        let first = f32_pair_payload(1.0, 2.0);
+        let replacement = f32_pair_payload(3.0, 4.0);
+        let second = f32_pair_payload(5.0, 6.0);
+        let mut column =
+            ComponentColumn::allocate(&descriptor, 2).expect("component column allocates");
+
+        assert!(column.storage.as_slice().iter().all(|byte| *byte == 0));
+        let error = column
+            .copy_payload(1, &second)
+            .expect_err("row one cannot be initialized before row zero");
+        assert!(error.message.contains("uninitialized gap"));
+        assert_eq!(column.row_count(), 0);
+        assert_eq!(column.row_bytes(0), None);
+
+        column
+            .copy_payload(0, &first)
+            .expect("first contiguous row appends");
+        column
+            .copy_payload(0, &replacement)
+            .expect("existing initialized row updates");
+        column
+            .copy_payload(1, &second)
+            .expect("next contiguous row appends");
+
+        assert_eq!(column.row_count(), 2);
+        assert_eq!(column.row_bytes(0), Some(replacement.as_slice()));
+        assert_eq!(column.row_bytes(1), Some(second.as_slice()));
+    }
+
+    #[test]
+    fn component_growth_failure_preserves_the_live_column() {
+        let descriptor = test_xy_component_descriptor(ComponentId(0x11), "Test.Position");
+        let payload = f32_pair_payload(7.0, 8.0);
+        let mut column =
+            ComponentColumn::allocate(&descriptor, 1).expect("component column allocates");
+        column
+            .copy_payload(0, &payload)
+            .expect("first payload stores");
+        let original_ptr = column.storage_ptr();
+
+        let error = column
+            .prepare_growth(usize::MAX)
+            .expect_err("impossible byte size must fail");
+
+        assert!(error.message.contains("overflowed"));
+        assert_eq!(column.storage_ptr(), original_ptr);
+        assert_eq!(column.row_capacity(), 1);
+        assert_eq!(column.row_count(), 1);
+        assert_eq!(column.row_bytes(0), Some(payload.as_slice()));
+    }
+
+    #[test]
+    fn world_spawn_grows_columns_geometrically_and_preserves_rows() {
+        let position_id = ComponentId(0x20);
+        let position = ComponentDescriptor {
+            id: position_id,
+            name: "Test.HighAlignmentPosition".to_string(),
+            size: 64,
+            align: 64,
+            fields: Vec::new(),
+        };
+        let mut payloads = [[0_u8; 64]; 4];
+        for (index, payload) in payloads.iter_mut().enumerate() {
+            payload[..8].copy_from_slice(&f32_pair_payload(index as f32 + 1.0, index as f32 + 2.0));
+            payload[63] = index as u8;
+        }
+        let expected_capacities = [1, 2, 4, 4];
+        let key = ArchetypeKey::new(vec![position_id]);
+        let mut world = ArcheWorld::create();
+        assert!(world.register_component_descriptor(position));
+
+        for (row, payload) in payloads.iter().enumerate() {
+            let entity = world
+                .spawn_entity_with_payloads(&[ComponentPayload {
+                    component_id: position_id,
+                    payload_bytes: payload,
+                }])
+                .expect("transactional spawn succeeds");
+            assert_eq!(entity.index(), row as u32);
+            assert!(world.entities().is_alive(entity));
+
+            let table = world.archetype(&key).expect("position archetype exists");
+            let column = table.column(position_id).expect("position column exists");
+            assert_eq!(table.entity_count(), row + 1);
+            assert_eq!(column.row_count(), row + 1);
+            assert_eq!(column.row_capacity(), expected_capacities[row]);
+            assert_eq!(column.element_align(), 64);
+            assert_eq!((column.storage_ptr() as usize) % 64, 0);
+            for (stored_row, stored_payload) in payloads[..=row].iter().enumerate() {
+                assert_eq!(
+                    column.row_bytes(stored_row),
+                    Some(stored_payload.as_slice())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_second_spawn_leaves_world_logically_unchanged() {
+        let position_id = ComponentId(0x30);
+        let velocity_id = ComponentId(0x31);
+        let position = test_xy_component_descriptor(position_id, "Test.Position");
+        let velocity = test_xy_component_descriptor(velocity_id, "Test.Velocity");
+        let position_payload = f32_pair_payload(1.0, 2.0);
+        let velocity_payload = f32_pair_payload(3.0, 4.0);
+        let key = ArchetypeKey::new(vec![position_id, velocity_id]);
+        let mut world = ArcheWorld::create();
+        assert!(world.register_component_descriptor(position));
+        assert!(world.register_component_descriptor(velocity));
+
+        let first_entity = world
+            .spawn_entity_with_payloads(&[
+                ComponentPayload {
+                    component_id: position_id,
+                    payload_bytes: &position_payload,
+                },
+                ComponentPayload {
+                    component_id: velocity_id,
+                    payload_bytes: &velocity_payload,
+                },
+            ])
+            .expect("first spawn succeeds");
+        let error = world
+            .spawn_entity_with_payloads(&[
+                ComponentPayload {
+                    component_id: position_id,
+                    payload_bytes: &position_payload,
+                },
+                ComponentPayload {
+                    component_id: velocity_id,
+                    payload_bytes: &[0, 1],
+                },
+            ])
+            .expect_err("invalid second payload must fail before commit");
+
+        assert!(error.message.contains("payload size"));
+        assert_eq!(world.entities().len(), 1);
+        assert!(world.entities().is_alive(first_entity));
+        assert_eq!(world.archetype_count(), 1);
+        let table = world.archetype(&key).expect("original archetype remains");
+        assert_eq!(table.entity_count(), 1);
+        assert_eq!(table.entity(0), Some(first_entity));
+        let position_column = table.column(position_id).expect("position column exists");
+        let velocity_column = table.column(velocity_id).expect("velocity column exists");
+        assert_eq!(position_column.row_capacity(), 1);
+        assert_eq!(velocity_column.row_capacity(), 1);
+        assert_eq!(position_column.row_count(), 1);
+        assert_eq!(velocity_column.row_count(), 1);
+        assert_eq!(
+            position_column.row_bytes(0),
+            Some(position_payload.as_slice())
+        );
+        assert_eq!(
+            velocity_column.row_bytes(0),
+            Some(velocity_payload.as_slice())
+        );
+    }
+
+    #[test]
+    fn duplicate_spawn_components_are_rejected_without_world_mutation() {
+        let position_id = ComponentId(0x40);
+        let position = test_xy_component_descriptor(position_id, "Test.Position");
+        let payload = f32_pair_payload(1.0, 2.0);
+        let mut world = ArcheWorld::create();
+        assert!(world.register_component_descriptor(position));
+
+        let error = world
+            .spawn_entity_with_payloads(&[
+                ComponentPayload {
+                    component_id: position_id,
+                    payload_bytes: &payload,
+                },
+                ComponentPayload {
+                    component_id: position_id,
+                    payload_bytes: &payload,
+                },
+            ])
+            .expect_err("duplicate component must fail");
+
+        assert!(error.message.contains("duplicate spawn component"));
+        assert_eq!(world.entities().len(), 0);
+        assert_eq!(world.archetype_count(), 0);
     }
 
     #[test]

@@ -8,11 +8,12 @@ use crate::parser::{
 };
 use crate::runtime::{
     stable_query_id, stable_resource_id, stable_schedule_id, stable_system_id, ArcheEntity,
-    ArcheWorld, ArchetypeKey, ComponentDescriptor, ComponentFieldDescriptor, QueryAccess,
+    ArcheWorld, ComponentDescriptor, ComponentFieldDescriptor, ComponentPayload, QueryAccess,
     QueryDescriptor, QueryTermDescriptor, ResourceDescriptor, ResourceFieldDescriptor, ResourceId,
     ScheduleDescriptor, ScheduleId, ScheduleItemDescriptor, SystemAccess, SystemDescriptor,
     SystemParamDescriptor, SystemParamDescriptorKind, SystemQueryTermDescriptor,
 };
+use std::alloc::Layout;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeAssemblyError {
@@ -182,6 +183,26 @@ pub fn execute_startup_resource_payload_operation(
             ))
         })?;
 
+    let byte_size = descriptor.size as usize;
+    let byte_align = descriptor.align as usize;
+    if byte_size == 0 {
+        return Err(assembly_error(format!(
+            "resource descriptor `{resource_name}` has zero size"
+        )));
+    }
+    Layout::from_size_align(byte_size, byte_align).map_err(|_| {
+        assembly_error(format!(
+            "resource descriptor `{resource_name}` has invalid layout size {byte_size} align {byte_align}"
+        ))
+    })?;
+    if payload_bytes.len() != byte_size {
+        return Err(assembly_error(format!(
+            "resource payload size {} does not match descriptor size {} for `{resource_name}`",
+            payload_bytes.len(),
+            descriptor.size
+        )));
+    }
+
     let allocated = world
         .allocate_resource_storage(&descriptor)
         .map_err(|error| assembly_error(error.message))?;
@@ -207,55 +228,17 @@ pub fn execute_startup_spawn_operation(
         }
     };
 
-    let mut resolved_components = Vec::new();
-    for component in components {
-        let descriptor = world
-            .component_descriptors()
-            .get(component.component_id)
-            .cloned()
-            .ok_or_else(|| {
-                assembly_error(format!(
-                    "component descriptor `{}` is not registered",
-                    component.component_name
-                ))
-            })?;
+    let payloads = components
+        .iter()
+        .map(|component| ComponentPayload {
+            component_id: component.component_id,
+            payload_bytes: &component.payload_bytes,
+        })
+        .collect::<Vec<_>>();
 
-        if component.payload_bytes.len() != descriptor.size as usize {
-            return Err(assembly_error(format!(
-                "component payload size {} does not match descriptor size {} for `{}`",
-                component.payload_bytes.len(),
-                descriptor.size,
-                component.component_name
-            )));
-        }
-
-        resolved_components.push((descriptor, component.payload_bytes.as_slice()));
-    }
-
-    let key = ArchetypeKey::new(
-        resolved_components
-            .iter()
-            .map(|(descriptor, _)| descriptor.id)
-            .collect(),
-    );
-    let entity = world.alloc_entity();
-    let table = world.get_or_create_archetype(key);
-    let row_capacity = table.entity_count() + 1;
-
-    for (descriptor, _) in &resolved_components {
-        table
-            .allocate_component_column(descriptor, row_capacity)
-            .map_err(|error| assembly_error(error.message))?;
-    }
-
-    let row = table.insert_entity(entity);
-    for (descriptor, payload_bytes) in resolved_components {
-        table
-            .copy_component_payload(descriptor.id, row, payload_bytes)
-            .map_err(|error| assembly_error(error.message))?;
-    }
-
-    Ok(entity)
+    world
+        .spawn_entity_with_payloads(&payloads)
+        .map_err(|error| assembly_error(error.message))
 }
 
 pub fn execute_startup_run_schedule_operation(
@@ -706,7 +689,7 @@ mod tests {
     use super::*;
     use crate::layout::ComponentId;
     use crate::runtime::{
-        stable_query_id, stable_resource_id, stable_schedule_id, stable_system_id,
+        stable_query_id, stable_resource_id, stable_schedule_id, stable_system_id, ArchetypeKey,
         ComponentFieldDescriptor, QueryAccess, QueryTermDescriptor, ResourceFieldDescriptor,
         ScheduleItemDescriptor, SystemAccess, SystemParamDescriptor, SystemParamDescriptorKind,
         SystemQueryTermDescriptor,
@@ -1338,6 +1321,34 @@ mod tests {
     }
 
     #[test]
+    fn invalid_startup_resource_payload_does_not_allocate_storage() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+        let mut invalid_operation = assembly.startup_operations[0].clone();
+        let StartupOperation::ResourcePayload { payload_bytes, .. } = &mut invalid_operation else {
+            panic!("fixture startup operation zero must be a resource payload");
+        };
+        payload_bytes.truncate(2);
+        let mut world = ArcheWorld::create();
+        register_assembly_descriptors_into_world(&assembly, &mut world)
+            .expect("assembly descriptors register into world");
+
+        let error = execute_startup_resource_payload_operation(&invalid_operation, &mut world)
+            .expect_err("invalid resource payload must fail before allocation");
+
+        assert!(error.message.contains("payload size"));
+        assert_eq!(world.resource_storage_count(), 0);
+        assert!(world
+            .resource_payload(ResourceId(0x7924ce11db524521))
+            .is_err());
+        assert_eq!(world.entities().len(), 0);
+        assert_eq!(world.archetype_count(), 0);
+    }
+
+    #[test]
     fn executes_startup_spawn_operation() {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
@@ -1394,6 +1405,100 @@ mod tests {
             assembly.startup_operations[2],
             StartupOperation::RunSchedule { .. }
         ));
+    }
+
+    #[test]
+    fn executes_two_startup_spawns_with_grown_aligned_columns() {
+        let source = include_str!("../../../examples/move_system_two_rows.arc");
+        let tokens = lexer::lex(source).expect("move_system_two_rows.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system_two_rows.arc parses");
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+        let mut world = ArcheWorld::create();
+
+        register_assembly_descriptors_into_world(&assembly, &mut world)
+            .expect("assembly descriptors register into world");
+        execute_startup_resource_payload_operation(&assembly.startup_operations[0], &mut world)
+            .expect("startup resource payload executes");
+        let first = execute_startup_spawn_operation(&assembly.startup_operations[1], &mut world)
+            .expect("first startup spawn executes");
+        let second = execute_startup_spawn_operation(&assembly.startup_operations[2], &mut world)
+            .expect("second startup spawn executes");
+        execute_startup_run_schedule_operation(&assembly.startup_operations[3], &mut world)
+            .expect("schedule executes for both rows");
+
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let key = ArchetypeKey::new(vec![position_id, velocity_id]);
+        let expected_positions = [f32_pair_payload(4.0, 6.0), f32_pair_payload(11.0, 22.0)];
+        let expected_velocities = [f32_pair_payload(3.0, 4.0), f32_pair_payload(1.0, 2.0)];
+        let table = world.archetype(&key).expect("spawn archetype exists");
+        let position = table.column(position_id).expect("position column exists");
+        let velocity = table.column(velocity_id).expect("velocity column exists");
+
+        assert_eq!(first.index(), 0);
+        assert_eq!(second.index(), 1);
+        assert!(world.entities().is_alive(first));
+        assert!(world.entities().is_alive(second));
+        assert_eq!(table.entity_count(), 2);
+        assert_eq!(position.row_count(), 2);
+        assert_eq!(velocity.row_count(), 2);
+        assert_eq!(position.row_capacity(), 2);
+        assert_eq!(velocity.row_capacity(), 2);
+        for row in 0..2 {
+            assert_eq!(
+                position.row_bytes(row),
+                Some(expected_positions[row].as_slice())
+            );
+            assert_eq!(
+                velocity.row_bytes(row),
+                Some(expected_velocities[row].as_slice())
+            );
+        }
+    }
+
+    #[test]
+    fn failed_repeated_startup_spawn_does_not_publish_partial_state() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly =
+            assemble_runtime_program_from_source(&program).expect("runtime descriptors assemble");
+        let mut invalid_spawn = assembly.startup_operations[1].clone();
+        let StartupOperation::Spawn { components } = &mut invalid_spawn else {
+            panic!("fixture startup operation one must be a spawn");
+        };
+        components[1].payload_bytes.truncate(4);
+        let mut world = ArcheWorld::create();
+
+        register_assembly_descriptors_into_world(&assembly, &mut world)
+            .expect("assembly descriptors register into world");
+        let first = execute_startup_spawn_operation(&assembly.startup_operations[1], &mut world)
+            .expect("first startup spawn executes");
+        let error = execute_startup_spawn_operation(&invalid_spawn, &mut world)
+            .expect_err("invalid repeated spawn must fail");
+
+        let position_id = ComponentId(0x002202c6aeb4f27b);
+        let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
+        let key = ArchetypeKey::new(vec![position_id, velocity_id]);
+        let initial_position = f32_pair_payload(1.0, 2.0);
+        let initial_velocity = f32_pair_payload(3.0, 4.0);
+        let table = world.archetype(&key).expect("original archetype remains");
+        let position = table.column(position_id).expect("position column exists");
+        let velocity = table.column(velocity_id).expect("velocity column exists");
+
+        assert!(error.message.contains("payload size"));
+        assert_eq!(world.entities().len(), 1);
+        assert!(world.entities().is_alive(first));
+        assert_eq!(world.archetype_count(), 1);
+        assert_eq!(table.entity_count(), 1);
+        assert_eq!(table.entity(0), Some(first));
+        assert_eq!(position.row_count(), 1);
+        assert_eq!(velocity.row_count(), 1);
+        assert_eq!(position.row_capacity(), 1);
+        assert_eq!(velocity.row_capacity(), 1);
+        assert_eq!(position.row_bytes(0), Some(initial_position.as_slice()));
+        assert_eq!(velocity.row_bytes(0), Some(initial_velocity.as_slice()));
     }
 
     #[test]

@@ -2,6 +2,8 @@
 name = "archec0"
 version = "0.0.0"
 edition = "2021"
+rust-version = "1.95.0"
 publish = false
 
 [dependencies]
+same-file = "=1.0.6"

@@ -10,6 +10,7 @@ The proof chain currently demonstrates:
 
 - A bootstrap compiler executable, `archec0`.
 - Linux x86-64 ELF64 executable emission with no libc.
+- Identity-safe, sibling-temporary executable publication that refuses source/output aliases and never exposes a partially written artifact.
 - Source-driven native exits, including `exit 42` and `exit 7`.
 - Primitive `i32` arithmetic compiled into native code for addition, subtraction, and multiplication fixtures.
 - Stable parser and AST output for the current minimal source forms.
@@ -124,8 +125,8 @@ Generated files live under `build/` and Rust build output lives under `bootstrap
 
 ## Requirements
 
-- Rust and Cargo
-- Windows PowerShell
+- Rust 1.95.0 and Cargo. The checked-in `rust-toolchain.toml` selects the exact verified toolchain; `rust-version = "1.95.0"` records the package requirement, not a historically tested lower MSRV.
+- PowerShell Core 7.6.3 (`pwsh`) is the preferred and verified proof shell. Windows PowerShell 5.1 remains supported.
 - WSL for running generated Linux ELF64 executables
 
 ## Run The Proof Suite
@@ -133,23 +134,25 @@ Generated files live under `build/` and Rust build output lives under `bootstrap
 From the repository root:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1
+pwsh -NoLogo -NoProfile -File .\tools\test.ps1
 ```
 
-The runner builds `archec0`, checks parser/Core/runtime proofs, emits ELF64 binaries, validates byte-level payloads, runs generated executables through WSL, and runs discovered e2e scripts.
+The runner executes the complete Cargo test inventory once with `--locked --all-targets`, checks the CLI/Core/runtime proofs, emits ELF64 binaries, validates byte-level payloads, runs generated executables through WSL, and runs discovered e2e scripts under the same PowerShell host. The legacy `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` command remains supported on Windows PowerShell 5.1.
 
 ## Useful Commands
 
 ```powershell
-cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- --help
-cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\math.arc --emit-ast
-cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\math.arc --emit-core
-cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\time_delta.arc --emit-ast
-cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast
-cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-core
-cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\position.arc --inspect-components
-cargo run --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\exit42.arc -o .\build\exit42
+cargo run --locked --manifest-path .\bootstrap\archec0\Cargo.toml -- --help
+cargo run --locked --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\math.arc --emit-ast
+cargo run --locked --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\math.arc --emit-core
+cargo run --locked --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\time_delta.arc --emit-ast
+cargo run --locked --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-ast
+cargo run --locked --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\move_system.arc --emit-core
+cargo run --locked --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\position.arc --inspect-components
+cargo run --locked --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\exit42.arc -o .\build\exit42
 ```
+
+Executable output is assembled in memory, written to a unique sibling temporary file, synced, made executable on native Unix, and renamed into place. Existing exact-path, relative, symlink, and hard-link aliases of the input source are rejected. The repeated checks prevent ordinary alias mistakes; they do not claim to defeat a malicious process racing namespace replacement during publication.
 
 ## Execution Model
 

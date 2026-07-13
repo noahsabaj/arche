@@ -1,18 +1,10 @@
-use std::fs;
-use std::io;
-use std::path::Path;
-
 const ELF_HEADER_SIZE: u16 = 64;
 const PROGRAM_HEADER_SIZE: u16 = 56;
 const TEXT_OFFSET: usize = ELF_HEADER_SIZE as usize + PROGRAM_HEADER_SIZE as usize;
 const LOAD_BASE: u64 = 0x400000;
 const ENTRY_POINT: u64 = LOAD_BASE + TEXT_OFFSET as u64;
 
-pub fn write_executable_with_metadata(
-    path: &Path,
-    text_payload: &[u8],
-    metadata_payload: &[u8],
-) -> io::Result<()> {
+pub fn encode_executable_with_metadata(text_payload: &[u8], metadata_payload: &[u8]) -> Vec<u8> {
     let file_size = TEXT_OFFSET + text_payload.len() + metadata_payload.len();
     let mut bytes = Vec::with_capacity(file_size);
 
@@ -22,7 +14,7 @@ pub fn write_executable_with_metadata(
     write_metadata_payload(&mut bytes, metadata_payload);
 
     debug_assert_eq!(bytes.len(), file_size);
-    fs::write(path, bytes)
+    bytes
 }
 
 fn write_elf_header(bytes: &mut Vec<u8>) {

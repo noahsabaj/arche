@@ -1,8 +1,18 @@
+param(
+    [switch] $SkipGeneratedLinuxExecution
+)
+
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
-$outputDir = Join-Path $repoRoot "build\e2e"
+$outputDir = Join-Path $repoRoot "build/e2e"
+$isWindowsPlatform = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+$isLinuxPlatform = $false
+if (!$isWindowsPlatform) {
+    $isLinuxVariable = Get-Variable -Name IsLinux -ErrorAction SilentlyContinue
+    $isLinuxPlatform = $null -ne $isLinuxVariable -and [bool] $isLinuxVariable.Value
+}
 
 function ConvertTo-WslPath {
     param(
@@ -253,7 +263,7 @@ function Test-ArithmeticCase {
     $outputPath = Join-Path $repoRoot $Output
     Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
 
-    & cargo run --manifest-path ".\bootstrap\archec0\Cargo.toml" -- $Source "-o" $Output
+    & cargo run --locked --manifest-path "./bootstrap/archec0/Cargo.toml" -- $Source "-o" $Output
     if ($LASTEXITCODE -ne 0) {
         Write-Error "$Name build failed with exit code $LASTEXITCODE"
         exit $LASTEXITCODE
@@ -261,16 +271,30 @@ function Test-ArithmeticCase {
 
     Test-Payload -Path $outputPath -ExpectedText $ExpectedText
 
-    $wslPath = ConvertTo-WslPath -Path $outputPath
-    & wsl $wslPath
+    if ($SkipGeneratedLinuxExecution) {
+        Write-Host "SKIP: $Name generated Linux execution (-SkipGeneratedLinuxExecution)"
+        return
+    }
+
+    if ($isWindowsPlatform) {
+        if (!(Get-Command wsl -ErrorAction SilentlyContinue)) {
+            Write-Error "wsl.exe is required to run the generated Linux ELF; use -SkipGeneratedLinuxExecution to skip explicitly"
+            exit 1
+        }
+
+        $wslPath = ConvertTo-WslPath -Path $outputPath
+        & wsl $wslPath
+    } elseif ($isLinuxPlatform) {
+        $resolvedOutputPath = (Resolve-Path -LiteralPath $outputPath).Path
+        & $resolvedOutputPath
+    } else {
+        Write-Error "Generated Linux ELF execution is supported only on Windows through WSL or directly on Linux; use -SkipGeneratedLinuxExecution to skip explicitly"
+        exit 1
+    }
+
     Assert-Equal -Name "$Name exit code" -Actual $LASTEXITCODE -Expected $ExpectedExitCode
 
     Write-Host "PASS: $Name exits $ExpectedExitCode"
-}
-
-if (!(Get-Command wsl -ErrorAction SilentlyContinue)) {
-    Write-Error "wsl.exe is required to run the generated Linux ELF"
-    exit 1
 }
 
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
@@ -281,9 +305,9 @@ $mulText = New-MulRuntimeText -Left 6 -Right 7
 
 Push-Location $repoRoot
 try {
-    Test-ArithmeticCase -Name "add math" -Source ".\examples\math.arc" -Output ".\build\e2e\math" -ExpectedText $addText -ExpectedExitCode 42
-    Test-ArithmeticCase -Name "sub42" -Source ".\examples\sub42.arc" -Output ".\build\e2e\sub42" -ExpectedText $subText -ExpectedExitCode 42
-    Test-ArithmeticCase -Name "mul42" -Source ".\examples\mul42.arc" -Output ".\build\e2e\mul42" -ExpectedText $mulText -ExpectedExitCode 42
+    Test-ArithmeticCase -Name "add math" -Source "./examples/math.arc" -Output "./build/e2e/math" -ExpectedText $addText -ExpectedExitCode 42
+    Test-ArithmeticCase -Name "sub42" -Source "./examples/sub42.arc" -Output "./build/e2e/sub42" -ExpectedText $subText -ExpectedExitCode 42
+    Test-ArithmeticCase -Name "mul42" -Source "./examples/mul42.arc" -Output "./build/e2e/mul42" -ExpectedText $mulText -ExpectedExitCode 42
 }
 finally {
     Pop-Location

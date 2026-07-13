@@ -248,6 +248,7 @@ fn format_local(local: LocalId, local_names: &HashMap<LocalId, &str>) -> String 
 fn format_type(ty: CoreType) -> &'static str {
     match ty {
         CoreType::I32 => "i32",
+        CoreType::F32 => "f32",
     }
 }
 

@@ -12,12 +12,14 @@ mod elf64;
 mod layout;
 mod lexer;
 mod machine;
+mod output;
 mod parser;
 mod runtime;
 mod runtime_assembly;
 
 use std::env;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::Path;
 use std::process;
 
@@ -136,7 +138,7 @@ fn emit_core(source_path: &str) {
     let source = read_source(path);
     let program = parse_source(path, &source);
 
-    if let Err(error) = checker::check_ecs_declarations(&program) {
+    if let Err(error) = checker::check_program(&program) {
         eprintln!("{}", diagnostics::format_check_error(path, &source, &error));
         process::exit(1);
     }
@@ -161,6 +163,11 @@ fn inspect_components(source_path: &str) {
     let path = Path::new(source_path);
     let source = read_source(path);
     let program = parse_source(path, &source);
+
+    if let Err(error) = checker::check_program(&program) {
+        eprintln!("{}", diagnostics::format_check_error(path, &source, &error));
+        process::exit(1);
+    }
 
     let output = match component_inspect::format_components(&program) {
         Ok(output) => output,
@@ -219,8 +226,17 @@ fn write_output(source_path: &str, output_path: &str) {
     let source = Path::new(source_path);
     let output = Path::new(output_path);
 
-    let source_text = read_source(source);
+    let (source_text, _source_file, source_identity) = read_source_for_output(source);
     let program = parse_source(source, &source_text);
+
+    if let Err(error) = checker::check_program(&program) {
+        eprintln!(
+            "{}",
+            diagnostics::format_check_error(source, &source_text, &error)
+        );
+        process::exit(1);
+    }
+
     let assembly = match runtime_assembly::assemble_runtime_program_from_source(&program) {
         Ok(assembly) => assembly,
         Err(error) => {
@@ -233,14 +249,6 @@ fn write_output(source_path: &str, output_path: &str) {
     };
 
     let (text_payload, metadata_payload) = if assembly.requires_ecs_metadata() {
-        if let Err(error) = checker::check_ecs_declarations(&program) {
-            eprintln!(
-                "{}",
-                diagnostics::format_check_error(source, &source_text, &error)
-            );
-            process::exit(1);
-        }
-
         let metadata_payload = match ecs_metadata::encode_ecs_metadata(&assembly) {
             Ok(metadata_payload) => metadata_payload,
             Err(error) => {
@@ -259,14 +267,6 @@ fn write_output(source_path: &str, output_path: &str) {
 
         (text_payload, metadata_payload)
     } else {
-        if let Err(error) = checker::check_program(&program) {
-            eprintln!(
-                "{}",
-                diagnostics::format_check_error(source, &source_text, &error)
-            );
-            process::exit(1);
-        }
-
         let text_payload = match codegen::startup_text_payload(&program) {
             Ok(text_payload) => text_payload,
             Err(error) => {
@@ -288,30 +288,67 @@ fn write_output(source_path: &str, output_path: &str) {
         (text_payload, metadata_payload)
     };
 
-    if let Some(parent) = output.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(error) = fs::create_dir_all(parent) {
-                eprintln!(
-                    "archec0: could not create output directory {}: {}",
-                    parent.display(),
-                    error
-                );
-                process::exit(1);
-            }
+    let executable = elf64::encode_executable_with_metadata(&text_payload, &metadata_payload);
+    match output::publish(&source_identity, output, &executable) {
+        Ok(()) => {}
+        Err(output::PublishError::SourceOutputAlias) => {
+            eprintln!(
+                "archec0: refusing to overwrite input source with output {}",
+                output.display()
+            );
+            process::exit(2);
+        }
+        Err(error) => {
+            eprintln!(
+                "archec0: could not write output {}: {}",
+                output.display(),
+                error
+            );
+            process::exit(1);
         }
     }
 
-    if let Err(error) =
-        elf64::write_executable_with_metadata(output, &text_payload, &metadata_payload)
-    {
+    println!("archec0: accepted source {}", source.display());
+    println!("archec0: wrote ELF64 executable {}", output.display());
+}
+
+fn read_source_for_output(path: &Path) -> (String, File, output::SourceIdentity) {
+    if !path.is_file() {
+        eprintln!("archec0: source file not found: {}", path.display());
+        process::exit(2);
+    }
+
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!(
+                "archec0: could not open source {}: {}",
+                path.display(),
+                error
+            );
+            process::exit(1);
+        }
+    };
+    let identity = match output::SourceIdentity::from_open_file(path, &file) {
+        Ok(identity) => identity,
+        Err(error) => {
+            eprintln!(
+                "archec0: could not identify source {}: {}",
+                path.display(),
+                error
+            );
+            process::exit(1);
+        }
+    };
+    let mut source = String::new();
+    if let Err(error) = file.read_to_string(&mut source) {
         eprintln!(
-            "archec0: could not write output {}: {}",
-            output.display(),
+            "archec0: could not read source {}: {}",
+            path.display(),
             error
         );
         process::exit(1);
     }
 
-    println!("archec0: accepted source {}", source.display());
-    println!("archec0: wrote ELF64 executable {}", output.display());
+    (source, file, identity)
 }

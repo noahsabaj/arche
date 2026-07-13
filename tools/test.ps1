@@ -1,8 +1,41 @@
+param(
+    [switch] $SkipGeneratedLinuxExecution
+)
+
 $ErrorActionPreference = "Stop"
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
-$e2eDir = Join-Path $repoRoot "tests\e2e"
+$e2eDir = Join-Path $repoRoot "tests/e2e"
+$powerShellExecutable = (Get-Process -Id $PID).Path
+$isWindowsPlatform = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+$isLinuxPlatform = $false
+if (!$isWindowsPlatform) {
+    $isLinuxVariable = Get-Variable -Name IsLinux -ErrorAction SilentlyContinue
+    $isLinuxPlatform = $null -ne $isLinuxVariable -and [bool] $isLinuxVariable.Value
+}
+$manifestPath = "./bootstrap/archec0/Cargo.toml"
+$debugExecutableName = "archec0"
+if ($isWindowsPlatform) {
+    $debugExecutableName = "archec0.exe"
+}
+$debugExecutablePath = Join-Path $repoRoot "bootstrap/archec0/target/debug/$debugExecutableName"
+
+function Add-CargoLockedArgument {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Executable,
+
+        [Parameter(Mandatory = $true)]
+        [string[]] $Arguments
+    )
+
+    if ($Executable -ne "cargo" -or $Arguments.Count -eq 0 -or $Arguments -contains "--locked") {
+        return $Arguments
+    }
+
+    return @($Arguments[0], "--locked") + @($Arguments | Select-Object -Skip 1)
+}
 
 function Invoke-CheckedCommand {
     param(
@@ -17,7 +50,8 @@ function Invoke-CheckedCommand {
     )
 
     Write-Host "==> $Name"
-    & $Executable @Arguments
+    $effectiveArguments = @(Add-CargoLockedArgument -Executable $Executable -Arguments $Arguments)
+    & $Executable @effectiveArguments
 
     if ($LASTEXITCODE -ne 0) {
         Write-Error "$Name failed with exit code $LASTEXITCODE"
@@ -40,7 +74,8 @@ function Invoke-CheckedCommandWithOutput {
     )
 
     Write-Host "==> $Name"
-    $output = @(& $Executable @Arguments)
+    $effectiveArguments = @(Add-CargoLockedArgument -Executable $Executable -Arguments $Arguments)
+    $output = @(& $Executable @effectiveArguments)
 
     if ($LASTEXITCODE -ne 0) {
         Write-Error "$Name failed with exit code $LASTEXITCODE"
@@ -60,14 +95,18 @@ function Invoke-CommandExpectFailure {
         [string] $Executable,
 
         [Parameter(Mandatory = $true)]
-        [string[]] $Arguments
+        [string[]] $Arguments,
+
+        [Parameter(Mandatory = $false)]
+        [int] $ExpectedExitCode = -1
     )
 
     Write-Host "==> $Name"
     $previousErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        $output = @(& $Executable @Arguments 2>&1)
+        $effectiveArguments = @(Add-CargoLockedArgument -Executable $Executable -Arguments $Arguments)
+        $output = @(& $Executable @effectiveArguments 2>&1)
         $exitCode = $LASTEXITCODE
     }
     finally {
@@ -76,6 +115,11 @@ function Invoke-CommandExpectFailure {
 
     if ($exitCode -eq 0) {
         Write-Error "$Name was expected to fail but exited 0"
+        exit 1
+    }
+
+    if ($ExpectedExitCode -ge 0 -and $exitCode -ne $ExpectedExitCode) {
+        Write-Error "$Name expected exit code $ExpectedExitCode but got $exitCode"
         exit 1
     }
 
@@ -138,6 +182,7 @@ function Assert-OutputContains {
         [string] $Name,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string[]] $Output,
 
         [Parameter(Mandatory = $true)]
@@ -1115,13 +1160,27 @@ function Test-LinuxExitCode {
 
     Write-Host "==> Linux execution check"
 
-    if (!(Get-Command wsl -ErrorAction SilentlyContinue)) {
-        Write-Error "wsl.exe is required to run the generated Linux ELF"
+    if ($SkipGeneratedLinuxExecution) {
+        Write-Host "SKIP: generated Linux execution for $Path (-SkipGeneratedLinuxExecution)"
+        return
+    }
+
+    if ($isWindowsPlatform) {
+        if (!(Get-Command wsl -ErrorAction SilentlyContinue)) {
+            Write-Error "wsl.exe is required to run the generated Linux ELF; use -SkipGeneratedLinuxExecution to skip explicitly"
+            exit 1
+        }
+
+        $wslPath = ConvertTo-WslPath -Path $Path
+        & wsl $wslPath
+    } elseif ($isLinuxPlatform) {
+        $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+        & $resolvedPath
+    } else {
+        Write-Error "Generated Linux ELF execution is supported only on Windows through WSL or directly on Linux; use -SkipGeneratedLinuxExecution to skip explicitly"
         exit 1
     }
 
-    $wslPath = ConvertTo-WslPath -Path $Path
-    & wsl $wslPath
     $actualExitCode = $LASTEXITCODE
 
     Assert-Equal -Name "Linux executable exit code" -Actual $actualExitCode -Expected $ExpectedExitCode
@@ -1130,450 +1189,32 @@ function Test-LinuxExitCode {
 
 Push-Location $repoRoot
 try {
-    Invoke-CheckedCommand `
-        -Name "core_represents_math_startup" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "core_represents_math_startup")
-
-    Invoke-CheckedCommand `
-        -Name "core_represents_move_system_body_model" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "core_represents_move_system_body_model")
-
-    Invoke-CheckedCommand `
-        -Name "lowers_query_loop_skeleton_to_core_body" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_query_loop_skeleton_to_core_body")
-
-    Invoke-CheckedCommand `
-        -Name "lowers_query_loop_field_expressions_to_core_body" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_query_loop_field_expressions_to_core_body")
-
-    Invoke-CheckedCommand `
-        -Name "lowers_query_loop_add_assign_to_core_body" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_query_loop_add_assign_to_core_body")
-
-    Invoke-CheckedCommand `
-        -Name "defines_native_move_query_loop_observable" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_move_query_loop_observable")
-
-    Invoke-CheckedCommand `
-        -Name "defines_native_ecs_execution_state_layout" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_ecs_execution_state_layout")
-
-    Invoke-CheckedCommand `
-        -Name "defines_reusable_native_ecs_table_model" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_reusable_native_ecs_table_model")
-
-    Invoke-CheckedCommand `
-        -Name "defines_native_archetype_table_storage_model" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_archetype_table_storage_model")
-
-    Invoke-CheckedCommand `
-        -Name "defines_native_table_iteration_cursor_model" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_native_table_iteration_cursor_model")
-
-    Invoke-CheckedCommand `
-        -Name "iterates_native_descriptor_table_rows_by_count" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "iterates_native_descriptor_table_rows_by_count")
-
-    Invoke-CheckedCommand `
-        -Name "decodes_native_descriptor_names_into_table_state" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "decodes_native_descriptor_names_into_table_state")
-
-    Invoke-CheckedCommand `
-        -Name "materializes_native_descriptor_record_state" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_descriptor_record_state")
-
-    Invoke-CheckedCommand `
-        -Name "decodes_native_component_resource_descriptor_records" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "decodes_native_component_resource_descriptor_records")
-
-    Invoke-CheckedCommand `
-        -Name "decodes_native_system_query_schedule_descriptor_records" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "decodes_native_system_query_schedule_descriptor_records")
-
-    Invoke-CheckedCommand `
-        -Name "dispatches_native_startup_operations" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "dispatches_native_startup_operations")
-
-    Invoke-CheckedCommand `
-        -Name "iterates_native_startup_operation_table_generically" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "iterates_native_startup_operation_table_generically")
-
-    Invoke-CheckedCommand `
-        -Name "iterates_native_startup_operation_table_rows_by_count" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "iterates_native_startup_operation_table_rows_by_count")
-
-    Invoke-CheckedCommand `
-        -Name "materializes_native_startup_operation_table" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_startup_operation_table")
-
-    Invoke-CheckedCommand `
-        -Name "materializes_native_spawn_rows_into_archetype_storage" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_spawn_rows_into_archetype_storage")
-
-    Invoke-CheckedCommand `
-        -Name "materializes_native_query_planning_state" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "materializes_native_query_planning_state")
-
-    Invoke-CheckedCommand `
-        -Name "builds_native_query_plan_from_descriptor_records" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_native_query_plan_from_descriptor_records")
-
-    Invoke-CheckedCommand `
-        -Name "builds_native_query_plan_from_table_rows_generically" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_native_query_plan_from_table_rows_generically")
-
-    Invoke-CheckedCommand `
-        -Name "builds_native_query_plan_from_iterated_table_rows" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_native_query_plan_from_iterated_table_rows")
-
-    Invoke-CheckedCommand `
-        -Name "builds_native_query_plan_from_archetype_storage" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_native_query_plan_from_archetype_storage")
-
-    Invoke-CheckedCommand `
-        -Name "executes_multi_row_native_ecs_table_proof" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_multi_row_native_ecs_table_proof")
-
-    Invoke-CheckedCommand `
-        -Name "executes_compiled_move_from_native_storage_columns" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_compiled_move_from_native_storage_columns")
-
-    Invoke-CheckedCommand `
-        -Name "executes_move_system_from_decoded_native_ecs_tables" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_move_system_from_decoded_native_ecs_tables")
-
-    Invoke-CheckedCommand `
-        -Name "executes_compiled_schedule_from_native_state" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_compiled_schedule_from_native_state")
-
-    Invoke-CheckedCommand `
-        -Name "executes_compiled_schedules_from_table_rows_generically" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_compiled_schedules_from_table_rows_generically")
-
-    Invoke-CheckedCommand `
-        -Name "emits_native_query_loop_row_scan_skeleton" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "emits_native_query_loop_row_scan_skeleton")
-
-    Invoke-CheckedCommand `
-        -Name "emits_native_query_loop_field_multiply" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "emits_native_query_loop_field_multiply")
-
-    Invoke-CheckedCommand `
-        -Name "emits_native_query_loop_position_stores" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "emits_native_query_loop_position_stores")
-
-    Invoke-CheckedCommand `
-        -Name "replaces_bootstrap_move_helper_with_compiled_query_loop" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "replaces_bootstrap_move_helper_with_compiled_query_loop")
-
-    Invoke-CheckedCommand `
-        -Name "lowers_math_ast_to_core" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_math_ast_to_core")
-
-    Invoke-CheckedCommand `
-        -Name "lowers_spawn_position_to_core" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_spawn_position_to_core")
-
-    Invoke-CheckedCommand `
-        -Name "lowers_move_system_to_core_metadata" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_move_system_to_core_metadata")
-
-    Invoke-CheckedCommand `
-        -Name "lowers_schedule_to_core_metadata" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "lowers_schedule_to_core_metadata")
-
-    Invoke-CheckedCommand `
-        -Name "core_verifier_accepts_lowered_math" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "core_verifier_accepts_lowered_math")
-
-    Invoke-CheckedCommand `
-        -Name "core_verifier_rejects_invalid_value_reference" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "core_verifier_rejects_invalid_value_reference")
-
-    Invoke-CheckedCommand `
-        -Name "primitive_type_layouts" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "primitive_type_layouts")
-
-    Invoke-CheckedCommand `
-        -Name "computes_position_field_offsets" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "computes_position_field_offsets")
-
-    Invoke-CheckedCommand `
-        -Name "computes_position_component_layout" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "computes_position_component_layout")
-
-    Invoke-CheckedCommand `
-        -Name "stable_component_ids" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "stable_component_ids")
-
-    Invoke-CheckedCommand `
-        -Name "encodes_position_component_metadata" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "encodes_position_component_metadata")
-
-    Invoke-CheckedCommand `
-        -Name "defines_ecs_metadata_binary_envelope" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_ecs_metadata_binary_envelope")
-
-    Invoke-CheckedCommand `
-        -Name "encodes_component_resource_descriptors_in_ecs_metadata" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "encodes_component_resource_descriptors_in_ecs_metadata")
-
-    Invoke-CheckedCommand `
-        -Name "encodes_system_query_schedule_descriptors_in_ecs_metadata" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "encodes_system_query_schedule_descriptors_in_ecs_metadata")
-
-    Invoke-CheckedCommand `
-        -Name "encodes_startup_operations_in_ecs_metadata" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "encodes_startup_operations_in_ecs_metadata")
-
-    Invoke-CheckedCommand `
-        -Name "defines_runtime_program_assembly_model" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_runtime_program_assembly_model")
-
-    Invoke-CheckedCommand `
-        -Name "assembles_component_and_resource_descriptors_from_source" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_component_and_resource_descriptors_from_source")
-
-    Invoke-CheckedCommand `
-        -Name "assembles_system_query_and_schedule_descriptors_from_source" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_system_query_and_schedule_descriptors_from_source")
-
-    Invoke-CheckedCommand `
-        -Name "assembles_startup_resource_payload_operation" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_startup_resource_payload_operation")
-
-    Invoke-CheckedCommand `
-        -Name "assembles_startup_spawn_operation" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_startup_spawn_operation")
-
-    Invoke-CheckedCommand `
-        -Name "assembles_startup_run_operation" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "assembles_startup_run_operation")
-
-    Invoke-CheckedCommand `
-        -Name "registers_assembly_descriptors_into_world" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "registers_assembly_descriptors_into_world")
-
-    Invoke-CheckedCommand `
-        -Name "executes_startup_resource_payload_operation" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_startup_resource_payload_operation")
-
-    Invoke-CheckedCommand `
-        -Name "executes_startup_spawn_operation" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_startup_spawn_operation")
-
-    Invoke-CheckedCommand `
-        -Name "executes_startup_run_schedule_operation" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_startup_run_schedule_operation")
-
-    Invoke-CheckedCommand `
-        -Name "executes_move_system_source_runtime_vertical_slice" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_move_system_source_runtime_vertical_slice")
-
-    Invoke-CheckedCommand `
-        -Name "arche_entity_packs_index_and_generation" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "arche_entity_packs_index_and_generation")
-
-    Invoke-CheckedCommand `
-        -Name "entity_table_allocates_and_reuses_generation" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "entity_table_allocates_and_reuses_generation")
-
-    Invoke-CheckedCommand `
-        -Name "registers_position_component_descriptor" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "registers_position_component_descriptor")
-
-    Invoke-CheckedCommand `
-        -Name "defines_time_delta_resource_descriptor" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_time_delta_resource_descriptor")
-
-    Invoke-CheckedCommand `
-        -Name "registers_move_system_descriptor" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "registers_move_system_descriptor")
-
-    Invoke-CheckedCommand `
-        -Name "registers_main_schedule_descriptor" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "registers_main_schedule_descriptor")
-
-    Invoke-CheckedCommand `
-        -Name "builds_sequential_schedule_plan" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_sequential_schedule_plan")
-
-    Invoke-CheckedCommand `
-        -Name "executes_runtime_schedule_plan" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "executes_runtime_schedule_plan")
-
-    Invoke-CheckedCommand `
-        -Name "defines_position_velocity_query_descriptor" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "defines_position_velocity_query_descriptor")
-
-    Invoke-CheckedCommand `
-        -Name "matches_position_velocity_query_to_archetype" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "matches_position_velocity_query_to_archetype")
-
-    Invoke-CheckedCommand `
-        -Name "builds_position_velocity_query_plan" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "builds_position_velocity_query_plan")
-
-    Invoke-CheckedCommand `
-        -Name "iterates_position_velocity_query_rows" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "iterates_position_velocity_query_rows")
-
-    Invoke-CheckedCommand `
-        -Name "reads_time_delta_during_query_iteration" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "reads_time_delta_during_query_iteration")
-
-    Invoke-CheckedCommand `
-        -Name "applies_move_system_to_position_rows" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "applies_move_system_to_position_rows")
-
-    Invoke-CheckedCommand `
-        -Name "allocates_time_delta_resource_storage" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "allocates_time_delta_resource_storage")
-
-    Invoke-CheckedCommand `
-        -Name "stores_time_delta_resource_payload" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "stores_time_delta_resource_payload")
-
-    Invoke-CheckedCommand `
-        -Name "retrieves_time_delta_resource_payload" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "retrieves_time_delta_resource_payload")
-
-    Invoke-CheckedCommand `
-        -Name "debug_inspects_time_delta_resource" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "debug_inspects_time_delta_resource")
-
-    Invoke-CheckedCommand `
-        -Name "creates_archetype_table_for_position" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "creates_archetype_table_for_position")
-
-    Invoke-CheckedCommand `
-        -Name "world_gets_or_creates_position_archetype" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "world_gets_or_creates_position_archetype")
-
-    Invoke-CheckedCommand `
-        -Name "inserts_entity_into_position_archetype" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "inserts_entity_into_position_archetype")
-
-    Invoke-CheckedCommand `
-        -Name "copies_position_payload_into_column" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "copies_position_payload_into_column")
-
-    Invoke-CheckedCommand `
-        -Name "debug_inspects_spawned_position_world" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "debug_inspects_spawned_position_world")
-
-    Invoke-CheckedCommand `
-        -Name "allocates_position_component_column" `
-        -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "allocates_position_component_column")
+    Write-Host "PowerShell host: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
 
     Invoke-CheckedCommand `
-        -Name "world_create_destroy_smoke" `
+        -Name "archec0 discovered Rust test suite" `
         -Executable "cargo" `
-        -Arguments @("test", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "world_create_destroy_smoke")
+        -Arguments @("test", "--locked", "--all-targets", "--manifest-path", $manifestPath)
 
     Invoke-CheckedCommand `
         -Name "archec0 --help" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", "--help")
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "--help")
 
     Invoke-CheckedCommand `
         -Name "archec0 --version" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", "--version")
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "--version")
 
     Invoke-CheckedCommand `
         -Name "archec0 examples/exit42.arc" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\exit42.arc")
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit42.arc")
 
     $tokenOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/exit42.arc --emit-tokens" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\exit42.arc", "--emit-tokens"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit42.arc", "--emit-tokens"))
 
     Assert-LinesEqual `
         -Name "exit42 token stream" `
@@ -1592,7 +1233,7 @@ try {
     $astOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/exit42.arc --emit-ast" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\exit42.arc", "--emit-ast"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit42.arc", "--emit-ast"))
 
     Assert-LinesEqual `
         -Name "exit42 AST" `
@@ -1608,7 +1249,7 @@ try {
     $exit007AstOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/exit007.arc --emit-ast" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\exit007.arc", "--emit-ast"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit007.arc", "--emit-ast"))
 
     Assert-LinesEqual `
         -Name "exit007 AST" `
@@ -1624,7 +1265,7 @@ try {
     $let40AstOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/let40.arc --emit-ast" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\let40.arc", "--emit-ast"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/let40.arc", "--emit-ast"))
 
     Assert-LinesEqual `
         -Name "let40 AST" `
@@ -1642,7 +1283,7 @@ try {
     $mathAstOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/math.arc --emit-ast" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\math.arc", "--emit-ast"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/math.arc", "--emit-ast"))
 
     Assert-LinesEqual `
         -Name "math AST" `
@@ -1662,7 +1303,7 @@ try {
     $sub42AstOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/sub42.arc --emit-ast" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\sub42.arc", "--emit-ast"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/sub42.arc", "--emit-ast"))
 
     Assert-LinesEqual `
         -Name "sub42 AST" `
@@ -1682,7 +1323,7 @@ try {
     $mul42AstOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/mul42.arc --emit-ast" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\mul42.arc", "--emit-ast"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/mul42.arc", "--emit-ast"))
 
     Assert-LinesEqual `
         -Name "mul42 AST" `
@@ -1702,7 +1343,7 @@ try {
     $positionAstOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/position.arc --emit-ast" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\position.arc", "--emit-ast"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/position.arc", "--emit-ast"))
 
     Assert-LinesEqual `
         -Name "position AST" `
@@ -1721,7 +1362,7 @@ try {
     $spawnPositionAstOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/spawn_position.arc --emit-ast" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\spawn_position.arc", "--emit-ast"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/spawn_position.arc", "--emit-ast"))
 
     Assert-LinesEqual `
         -Name "spawn_position AST" `
@@ -1746,7 +1387,7 @@ try {
     $timeDeltaAstOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/time_delta.arc --emit-ast" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\time_delta.arc", "--emit-ast"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/time_delta.arc", "--emit-ast"))
 
     Assert-LinesEqual `
         -Name "time_delta AST" `
@@ -1767,7 +1408,7 @@ try {
     $moveSystemAstOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/move_system.arc --emit-ast" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system.arc", "--emit-ast"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/move_system.arc", "--emit-ast"))
 
     Assert-LinesEqual `
         -Name "move_system AST" `
@@ -1840,7 +1481,7 @@ try {
     $positionInspectOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/position.arc --inspect-components" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\position.arc", "--inspect-components"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/position.arc", "--inspect-components"))
 
     Assert-LinesEqual `
         -Name "position component inspection" `
@@ -1857,12 +1498,12 @@ try {
     Invoke-CheckedCommand `
         -Name "archec0 examples/math.arc --check" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\math.arc", "--check")
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/math.arc", "--check")
 
     $mathMachineOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/math.arc --emit-machine" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\math.arc", "--emit-machine"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/math.arc", "--emit-machine"))
 
     Assert-LinesEqual `
         -Name "math machine" `
@@ -1881,7 +1522,7 @@ try {
     $mathCoreOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/math.arc --emit-core" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\math.arc", "--emit-core"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/math.arc", "--emit-core"))
 
     Assert-LinesEqual `
         -Name "math Core" `
@@ -1903,7 +1544,7 @@ try {
     $moveSystemCoreOutput = @(Invoke-CheckedCommandWithOutput `
         -Name "archec0 examples/move_system.arc --emit-core" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system.arc", "--emit-core"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/move_system.arc", "--emit-core"))
 
     Assert-LinesEqual `
         -Name "move_system Core" `
@@ -1937,89 +1578,112 @@ try {
             "}"
         )
 
-    Remove-Item -LiteralPath ".\build\exit42" -Force -ErrorAction SilentlyContinue
+    $sourceAliasDirectory = "./build/source-output-alias"
+    $sourceAliasPath = Join-Path $sourceAliasDirectory "source.arc"
+    Remove-Item -LiteralPath $sourceAliasDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $sourceAliasDirectory -Force | Out-Null
+    Copy-Item -LiteralPath "./examples/exit42.arc" -Destination $sourceAliasPath
+    $sourceAliasBefore = [System.IO.File]::ReadAllBytes(
+        (Resolve-Path -LiteralPath $sourceAliasPath)
+    )
+    $sourceAliasOutput = @(Invoke-CommandExpectFailure `
+        -Name "archec0 rejects source/output alias" `
+        -Executable $debugExecutablePath `
+        -Arguments @($sourceAliasPath, "-o", $sourceAliasPath) `
+        -ExpectedExitCode 2)
+    Assert-OutputContains `
+        -Name "source/output alias diagnostic" `
+        -Output $sourceAliasOutput `
+        -ExpectedText "refusing to overwrite input source"
+    Assert-BytesEqual `
+        -Name "source/output alias preserves source" `
+        -Actual ([System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $sourceAliasPath))) `
+        -Expected $sourceAliasBefore
+    Remove-Item -LiteralPath $sourceAliasDirectory -Recurse -Force
+
+    Remove-Item -LiteralPath "./build/exit42" -Force -ErrorAction SilentlyContinue
 
     Invoke-CheckedCommand `
         -Name "archec0 examples/exit42.arc -o build/exit42" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\exit42.arc", "-o", ".\build\exit42")
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit42.arc", "-o", "./build/exit42")
 
-    Test-Elf64Executable -Path ".\build\exit42" -ExpectedExitCode 42
-    Test-LinuxExitCode -Path ".\build\exit42" -ExpectedExitCode 42
+    Test-Elf64Executable -Path "./build/exit42" -ExpectedExitCode 42
+    Test-LinuxExitCode -Path "./build/exit42" -ExpectedExitCode 42
 
-    Remove-Item -LiteralPath ".\build\exit7" -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "./build/exit7" -Force -ErrorAction SilentlyContinue
 
     Invoke-CheckedCommand `
         -Name "archec0 examples/exit7.arc -o build/exit7" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\exit7.arc", "-o", ".\build\exit7")
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit7.arc", "-o", "./build/exit7")
 
-    Test-Elf64Executable -Path ".\build\exit7" -ExpectedExitCode 7
-    Test-LinuxExitCode -Path ".\build\exit7" -ExpectedExitCode 7
+    Test-Elf64Executable -Path "./build/exit7" -ExpectedExitCode 7
+    Test-LinuxExitCode -Path "./build/exit7" -ExpectedExitCode 7
 
-    Remove-Item -LiteralPath ".\build\math" -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "./build/math" -Force -ErrorAction SilentlyContinue
 
     Invoke-CheckedCommand `
         -Name "archec0 examples/math.arc -o build/math" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\math.arc", "-o", ".\build\math")
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/math.arc", "-o", "./build/math")
 
     $mathExpectedText = New-AddRuntimeText -Left 40 -Right 2
 
-    Test-Elf64Payload -Path ".\build\math" -ExpectedText $mathExpectedText
-    Test-LinuxExitCode -Path ".\build\math" -ExpectedExitCode 42
+    Test-Elf64Payload -Path "./build/math" -ExpectedText $mathExpectedText
+    Test-LinuxExitCode -Path "./build/math" -ExpectedExitCode 42
 
-    Remove-Item -LiteralPath ".\build\position" -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "./build/position" -Force -ErrorAction SilentlyContinue
 
     Invoke-CheckedCommand `
         -Name "archec0 examples/position.arc -o build/position" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\position.arc", "-o", ".\build\position")
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/position.arc", "-o", "./build/position")
 
-    Test-PositionComponentMetadata -Path ".\build\position"
+    Test-PositionComponentMetadata -Path "./build/position"
 
-    Remove-Item -LiteralPath ".\build\move_system" -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "./build/move_system" -Force -ErrorAction SilentlyContinue
 
     Invoke-CheckedCommand `
         -Name "archec0 examples/move_system.arc -o build/move_system" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system.arc", "-o", ".\build\move_system")
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/move_system.arc", "-o", "./build/move_system")
 
-    Test-EcsMetadataPayload -Path ".\build\move_system"
-    Test-LinuxExitCode -Path ".\build\move_system" -ExpectedExitCode 47
-    Test-CorruptEcsMetadataMagic -Path ".\build\move_system"
-    Test-CorruptEcsComponentDescriptorRecord -Path ".\build\move_system"
-    Test-CorruptEcsResourceDescriptorRecord -Path ".\build\move_system"
-    Test-CorruptEcsSystemDescriptorRecord -Path ".\build\move_system"
-    Test-CorruptEcsQueryDescriptorRecord -Path ".\build\move_system"
-    Test-CorruptEcsScheduleDescriptorRecord -Path ".\build\move_system"
-    Test-CorruptEcsPositionDescriptorName -Path ".\build\move_system"
-    Test-CorruptEcsMoversQueryDescriptorNameLength -Path ".\build\move_system"
-    Test-CorruptEcsMainScheduleDescriptorName -Path ".\build\move_system"
-    Test-CorruptEcsStartupResourceId -Path ".\build\move_system"
-    Test-CorruptEcsStartupSpawnComponentCount -Path ".\build\move_system"
-    Test-CorruptEcsStartupOperationKind -Path ".\build\move_system"
-    Test-CorruptEcsStartupSpawnOperationKind -Path ".\build\move_system"
-    Test-CorruptEcsStartupRunOperationKind -Path ".\build\move_system"
-    Test-CorruptEcsResourcePayload -Path ".\build\move_system"
-    Test-CorruptEcsSpawnPayload -Path ".\build\move_system"
-    Test-CorruptEcsRunSchedule -Path ".\build\move_system"
+    Test-EcsMetadataPayload -Path "./build/move_system"
+    Test-LinuxExitCode -Path "./build/move_system" -ExpectedExitCode 47
+    Test-CorruptEcsMetadataMagic -Path "./build/move_system"
+    Test-CorruptEcsComponentDescriptorRecord -Path "./build/move_system"
+    Test-CorruptEcsResourceDescriptorRecord -Path "./build/move_system"
+    Test-CorruptEcsSystemDescriptorRecord -Path "./build/move_system"
+    Test-CorruptEcsQueryDescriptorRecord -Path "./build/move_system"
+    Test-CorruptEcsScheduleDescriptorRecord -Path "./build/move_system"
+    Test-CorruptEcsPositionDescriptorName -Path "./build/move_system"
+    Test-CorruptEcsMoversQueryDescriptorNameLength -Path "./build/move_system"
+    Test-CorruptEcsMainScheduleDescriptorName -Path "./build/move_system"
+    Test-CorruptEcsStartupResourceId -Path "./build/move_system"
+    Test-CorruptEcsStartupSpawnComponentCount -Path "./build/move_system"
+    Test-CorruptEcsStartupOperationKind -Path "./build/move_system"
+    Test-CorruptEcsStartupSpawnOperationKind -Path "./build/move_system"
+    Test-CorruptEcsStartupRunOperationKind -Path "./build/move_system"
+    Test-CorruptEcsResourcePayload -Path "./build/move_system"
+    Test-CorruptEcsSpawnPayload -Path "./build/move_system"
+    Test-CorruptEcsRunSchedule -Path "./build/move_system"
 
-    Remove-Item -LiteralPath ".\build\move_system_two_rows" -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "./build/move_system_two_rows" -Force -ErrorAction SilentlyContinue
 
     Invoke-CheckedCommand `
         -Name "archec0 examples/move_system_two_rows.arc -o build/move_system_two_rows" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\examples\move_system_two_rows.arc", "-o", ".\build\move_system_two_rows")
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/move_system_two_rows.arc", "-o", "./build/move_system_two_rows")
 
-    Test-LinuxExitCode -Path ".\build\move_system_two_rows" -ExpectedExitCode 47
+    Test-LinuxExitCode -Path "./build/move_system_two_rows" -ExpectedExitCode 47
 
-    Remove-Item -LiteralPath ".\build\bad" -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "./build/bad" -Force -ErrorAction SilentlyContinue
 
     $badSyntaxOutput = @(Invoke-CommandExpectFailure `
         -Name "archec0 tests/e2e/bad_syntax.arc rejects syntax" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\tests\e2e\bad_syntax.arc", "-o", ".\build\bad"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_syntax.arc", "-o", "./build/bad"))
 
     Assert-OutputContains -Name "bad syntax diagnostic path" -Output $badSyntaxOutput -ExpectedText "bad_syntax.arc"
     Assert-OutputContains -Name "bad syntax diagnostic location" -Output $badSyntaxOutput -ExpectedText "5:1"
@@ -2029,17 +1693,17 @@ try {
     $badArithmeticOutput = @(Invoke-CommandExpectFailure `
         -Name "archec0 tests/e2e/bad_i32_arithmetic.arc rejects type check" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\tests\e2e\bad_i32_arithmetic.arc", "--check"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_i32_arithmetic.arc", "--check"))
 
     Assert-OutputContains -Name "bad arithmetic diagnostic path" -Output $badArithmeticOutput -ExpectedText "bad_i32_arithmetic.arc"
     Assert-OutputContains -Name "bad arithmetic diagnostic location" -Output $badArithmeticOutput -ExpectedText "4:12"
     Assert-OutputContains -Name "bad arithmetic diagnostic code" -Output $badArithmeticOutput -ExpectedText "error[CHECK001]"
-    Assert-OutputContains -Name "bad arithmetic diagnostic message" -Output $badArithmeticOutput -ExpectedText "expected i32 binding for arithmetic expression"
+    Assert-OutputContains -Name "bad arithmetic diagnostic message" -Output $badArithmeticOutput -ExpectedText 'unknown local type `bool`'
 
     $badUnknownScheduleRunOutput = @(Invoke-CommandExpectFailure `
         -Name "archec0 tests/e2e/bad_unknown_schedule_run.arc rejects unknown schedule run target" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\tests\e2e\bad_unknown_schedule_run.arc", "--check"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_unknown_schedule_run.arc", "--check"))
 
     Assert-OutputContains -Name "bad unknown schedule run diagnostic path" -Output $badUnknownScheduleRunOutput -ExpectedText "bad_unknown_schedule_run.arc"
     Assert-OutputContains -Name "bad unknown schedule run diagnostic location" -Output $badUnknownScheduleRunOutput -ExpectedText "7:9"
@@ -2049,7 +1713,7 @@ try {
     $badUnknownResourceParamOutput = @(Invoke-CommandExpectFailure `
         -Name "archec0 tests/e2e/bad_unknown_resource_param.arc rejects unknown system resource parameter" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\tests\e2e\bad_unknown_resource_param.arc", "--check"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_unknown_resource_param.arc", "--check"))
 
     Assert-OutputContains -Name "bad unknown resource param diagnostic path" -Output $badUnknownResourceParamOutput -ExpectedText "bad_unknown_resource_param.arc"
     Assert-OutputContains -Name "bad unknown resource param diagnostic location" -Output $badUnknownResourceParamOutput -ExpectedText "3:24"
@@ -2059,7 +1723,7 @@ try {
     $badUnknownQueryComponentOutput = @(Invoke-CommandExpectFailure `
         -Name "archec0 tests/e2e/bad_unknown_query_component.arc rejects unknown query component" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\tests\e2e\bad_unknown_query_component.arc", "--check"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_unknown_query_component.arc", "--check"))
 
     Assert-OutputContains -Name "bad unknown query component diagnostic path" -Output $badUnknownQueryComponentOutput -ExpectedText "bad_unknown_query_component.arc"
     Assert-OutputContains -Name "bad unknown query component diagnostic location" -Output $badUnknownQueryComponentOutput -ExpectedText "3:27"
@@ -2069,7 +1733,7 @@ try {
     $badConflictingQueryAccessOutput = @(Invoke-CommandExpectFailure `
         -Name "archec0 tests/e2e/bad_conflicting_query_access.arc rejects conflicting query access" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", ".\bootstrap\archec0\Cargo.toml", "--", ".\tests\e2e\bad_conflicting_query_access.arc", "--check"))
+        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_conflicting_query_access.arc", "--check"))
 
     Assert-OutputContains -Name "bad conflicting query access diagnostic path" -Output $badConflictingQueryAccessOutput -ExpectedText "bad_conflicting_query_access.arc"
     Assert-OutputContains -Name "bad conflicting query access diagnostic location" -Output $badConflictingQueryAccessOutput -ExpectedText "10:14"
@@ -2080,10 +1744,15 @@ try {
     Write-Host "$($e2eTests.Count) e2e tests discovered"
 
     foreach ($test in $e2eTests) {
+        $testArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $test.FullName)
+        if ($SkipGeneratedLinuxExecution) {
+            $testArguments += "-SkipGeneratedLinuxExecution"
+        }
+
         Invoke-CheckedCommand `
             -Name "e2e $($test.Name)" `
-            -Executable "powershell" `
-            -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $test.FullName)
+            -Executable $powerShellExecutable `
+            -Arguments $testArguments
     }
 
     Write-Host "All checks passed"
