@@ -104,7 +104,7 @@ The proof chain currently demonstrates:
 - Explicit stack-resident native archetype-table storage for the current `Demo.Position + Demo.Velocity` fixtures, with startup spawn rows materialized into storage columns and compiled `Demo.Move` executing through storage-backed query-plan addresses.
 - A bounded native storage catalog for the current archetype table is materialized after descriptor/startup-table decoding and before startup dispatch. Startup spawns independently require the supported eight-byte column width before staging, then validate and write through catalog columns; query plans resolve and independently width-check IDs, sizes, row count, bases, and later-row strides through the same catalog; compiled math/stores and storage validation consume only planned/catalog addresses.
 
-M23 native ECS world storage bridge is complete. M24-001 through M24-004 now define, materialize, and consume the bounded catalog for spawn and query execution over the one-row and two-row fixtures; M24-005 is the closure gate. Physical storage addresses enter semantic execution only during catalog construction. M24 is not a heap world, allocator, scheduler, command buffer, source syntax change, or `ARCHEECS` format change.
+M23 native ECS world storage bridge and M24 native ECS storage catalog are complete. The bounded catalog is defined, materialized, and consumed for spawn and query execution over the one-row and two-row fixtures; native Linux and Windows proof gates close the milestone. Physical storage addresses enter semantic execution only during catalog construction. M24 is not a heap world, allocator, scheduler, command buffer, source syntax change, or `ARCHEECS` format change.
 
 ## What This Is Not Yet
 

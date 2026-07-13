@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M24 native ECS storage catalog and descriptor-driven column binding is active; M24-005 is Ready.
+**Current focus:** M24 native ECS storage catalog and descriptor-driven column binding is complete; the M25 design checkpoint is next and has not started.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -103,7 +103,7 @@ Current missing links:
 - `move_system.arc --emit-core` can print the lowered `Demo.Move` query-loop body.
 - The native ECS table slots now have a reusable row model and cursor model for descriptor, startup, compiled schedule, and query-plan state, including decoded descriptor name references; descriptor decoding, startup operation dispatch, query planning, and compiled `Demo.Move` execution now consume count-driven/iterated table-row matches for the current one-row and bounded two-row native proofs.
 - M23 bridges the current bounded native proof rows into an explicit stack-resident native archetype-table storage model: startup spawn rows become storage-shaped table rows, query planning derives row count and payload addresses from storage, and compiled `Demo.Move` consumes storage-backed payload addresses for the one-row and bounded two-row fixtures.
-- M24-001 defines one bounded native storage-catalog table row with two descriptor-linked column rows over the current archetype storage. M24-002 materializes it from decoded state, M24-003 routes bounded spawn validation/writes through it, and M24-004 makes query-plan identity/size matching, row-count dereference, planned bases, later-row strides, compiled math/stores, and storage validation consume catalog/planned addresses. M24-005 now owns only full closure evidence.
+- M24 is complete. One bounded native storage-catalog table row with two descriptor-linked columns is materialized from decoded state; bounded spawn validation/writes, query-plan identity/size matching, row-count dereference, planned bases, later-row strides, compiled math/stores, and storage validation consume catalog/planned addresses. Local debug/release/PowerShell proofs and required Windows/native-Linux CI close the milestone.
 
 ## Integration Debt
 
@@ -193,7 +193,7 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M24-005 | Close catalog-backed native move proof | `pwsh -NoLogo -NoProfile -File .\tools\test.ps1` passes with all M24 focused proofs wired into the full runner, both native move fixtures still exiting `47`, docs recording M24 complete, and Ready/Backlog/Doing empty. |
+| - | - | Empty. |
 
 ### Backlog
 
@@ -211,6 +211,7 @@ Board rules:
 
 | Issue | Title | Evidence |
 |---|---|---|
+| M24-005 | Close catalog-backed native move proof | On 2026-07-13, formatting, locked debug and release all-target suites (123/123), normal Clippy, both complete local runners (PowerShell Core 7.6.3 and Windows PowerShell 5.1), `cargo audit`, and `git diff --check` passed; both locally generated movement fixtures exited `47` through WSL. Strict production Clippy reproduced only two `too_many_arguments`, one `type_complexity`, and one `filter_map_bool_then` diagnostic—four versus the audit's eight, with no new category. Required CI run [`29277842859`](https://github.com/noahsabaj/arche/actions/runs/29277842859) passed: `Proof / Native Linux` job `86911289675` on `ubuntu-24.04` ran the native ELF, Unix symlink, and executable-permission gates; `Proof / Windows` job `86911289699` on `windows-2025` passed PowerShell Core and Windows PowerShell 5.1 compatibility with generated-Linux execution explicitly skipped there. Both jobs verified no tracked diff. Every phase preserved repository `AUDIT.md` SHA-256 `B5A84B5DA0E28106A220D0A05F0AC1B54720D955DEA98608376E51BCBB41C48E` and external ledger SHA-256 `0F82FFA0178BEC66298FE535A75A8824B3501DB7DA919B430BCCA7762B25A2A7`; tooling changed no repository file, while `cargo audit` refreshed only the user-level advisory cache. Ready, Doing, and Backlog are empty. |
 | M24-004 | Bind query plans through storage catalog | `cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml builds_query_plan_through_storage_catalog` passed for both movement fixtures, and the preserved historical `builds_native_query_plan_from_archetype_storage` command again executes one real compatibility proof. Locked all-target tests and the complete PowerShell runner passed with 123 discovered Rust tests and both generated movement fixtures exiting `47` through WSL; normal Clippy retained only the established diagnostics. Spawn and query consumers now independently require the supported eight-byte catalog element width before staging or address arithmetic, preventing correlated descriptor/payload-length corruption from escaping a bounded column. Query-plan rows dereference the catalog row-count address; copy catalog component IDs, sizes, and bases; cross-check IDs/sizes against query, system, and descriptor rows; and advance later rows through planned sizes. The focused proof isolates the builder's ordered target writes, proves that emitted builder is contiguous before planned math without an intervening plan rewrite, and rejects the known direct physical row-count, header, payload-address, and payload-validation encodings. Physical storage addresses remain only at catalog construction. |
 | M24-003 | Route spawn storage writes through catalog columns | `cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml materializes_spawn_rows_through_storage_catalog` passed for both movement fixtures. The complete PowerShell runner then passed with 122 discovered Rust tests, all byte/metadata/diagnostic checks, both discovered e2e scripts, and both native movement fixtures exiting `47` through WSL. Each bounded spawn now validates component count, current row, capacity, component IDs, and payload lengths through the catalog; stages both payloads; writes row zero through catalog bases and row one through `base + element_size`; and only then publishes the authoritative row count through the catalog address and mirrors the logical spawn count. The focused proof rejects the superseded staging-to-physical-slot sequences and verifies no failure branch separates the dual writes from count publication. Query consumption remains M24-004 work. |
 | M24-002 | Materialize storage catalog rows from decoded descriptors | `cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml materializes_native_storage_catalog_from_descriptors` passed. The complete PowerShell runner then passed with 121 discovered Rust tests, all byte/metadata/diagnostic checks, both discovered e2e scripts, and both native movement fixtures exiting `47` through WSL. Native startup now materializes the catalog exactly once after descriptor/name/startup-table decoding and before startup dispatch: the first spawn supplies column count, the authoritative storage row-count address is retained, capacity stays bounded at `2`, row stride derives from decoded component sizes, and column IDs/sizes/alignments/bases derive from decoded descriptor-linked rows. Spawn and query consumers remain intentionally deferred to M24-003 and M24-004. |
@@ -1972,15 +1973,15 @@ Subproblem confidence:
 | M24-001 defines the storage catalog model before any generated behavior changes | 96/100 |
 | M24-002 through M24-004 sequence catalog materialization, spawn writes, and query-plan binding so each proof has one clear behavior change | 95/100 |
 | M24-005 closes through the full runner with both native move fixtures still exiting `47` and docs recording milestone completion | 97/100 |
-| Board state has exactly M24-005 Ready, Backlog/Doing empty, and M24-001 through M24-004 recorded in Done | 98/100 |
+| Board state has Ready, Backlog, and Doing empty with M24-001 through M24-005 recorded in Done | 99/100 |
 
 Weighted confidence: 97/100.
 
 Verification pass:
 
-- `Ready` contains M24-005.
+- `Ready` is empty.
 - `Doing` is empty.
 - `Backlog` is empty.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, completed M18, completed M19, completed M20, completed M21, M22-001 through M22-005, M23-001 through M23-005, and M24-001 through M24-004.
+- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, completed M18, completed M19, completed M20, completed M21, M22-001 through M22-005, M23-001 through M23-005, and M24-001 through M24-005.
 - Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, M16-001 through M16-005, M17-001 through M17-005, M18-001 through M18-005, M19-001 through M19-005, M20-001 through M20-005, M21-001 through M21-005, M22-001 through M22-005, M23-001 through M23-005, and M24-001 through M24-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, M18 native codegen for compiled query loops, M19 native ECS execution state, M20 native ECS descriptor-table decoding, M21 native ECS table generalization, M22 native ECS table row iteration, and M23 native ECS world storage bridge are complete. M24 native ECS storage catalog and descriptor-driven column binding has M24-001 through M24-004 complete and M24-005 Ready for closure.
+- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, M18 native codegen for compiled query loops, M19 native ECS execution state, M20 native ECS descriptor-table decoding, M21 native ECS table generalization, M22 native ECS table row iteration, M23 native ECS world storage bridge, and M24 native ECS storage catalog and descriptor-driven column binding are complete. M25 has not started.
