@@ -102,9 +102,9 @@ The proof chain currently demonstrates:
 - Native query-plan construction through iterated query-plan table rows.
 - A bounded two-row generated-native ECS table proof for `Demo.Position + Demo.Velocity` startup rows and compiled `Demo.Move` execution.
 - Explicit stack-resident native archetype-table storage for the current `Demo.Position + Demo.Velocity` fixtures, with startup spawn rows materialized into storage columns and compiled `Demo.Move` executing through storage-backed query-plan addresses.
-- A bounded native storage catalog for the current archetype table is materialized after descriptor/startup-table decoding and before startup dispatch. Startup spawns validate catalog identity, sizes, row bounds, and capacity; write each component through catalog bases plus per-column element sizes; and publish row counts only after both component writes.
+- A bounded native storage catalog for the current archetype table is materialized after descriptor/startup-table decoding and before startup dispatch. Startup spawns independently require the supported eight-byte column width before staging, then validate and write through catalog columns; query plans resolve and independently width-check IDs, sizes, row count, bases, and later-row strides through the same catalog; compiled math/stores and storage validation consume only planned/catalog addresses.
 
-M23 native ECS world storage bridge is complete. M24-001 defines the bounded native storage catalog, M24-002 materializes it from decoded descriptor/startup state before dispatch, and M24-003 routes bounded spawn writes through catalog columns for the one-row and two-row fixtures. Query planning and compiled row addressing still use physical storage slots until M24-004. M24 is not a heap world, allocator, scheduler, command buffer, source syntax change, or `ARCHEECS` format change.
+M23 native ECS world storage bridge is complete. M24-001 through M24-004 now define, materialize, and consume the bounded catalog for spawn and query execution over the one-row and two-row fixtures; M24-005 is the closure gate. Physical storage addresses enter semantic execution only during catalog construction. M24 is not a heap world, allocator, scheduler, command buffer, source syntax change, or `ARCHEECS` format change.
 
 ## What This Is Not Yet
 
