@@ -12,6 +12,7 @@ mod elf64;
 mod layout;
 mod lexer;
 mod machine;
+mod native_world_plan;
 mod output;
 mod parser;
 mod runtime;
