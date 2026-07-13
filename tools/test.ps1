@@ -3,7 +3,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$NativeRuntimeFrameSize = 1088
+$DefaultNativeRuntimeFrameSize = 1088
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
@@ -334,6 +334,10 @@ function Test-Elf64Payload {
     }
 
     $entryFileOffsetInt = [int]$entryFileOffset
+    Assert-RuntimeFrameEnvelope `
+        -Bytes $bytes `
+        -EntryFileOffset $entryFileOffsetInt `
+        -TextEnd ([UInt64]($bytes.Length - $ExpectedTrailingPayloadLength))
     for ($i = 0; $i -lt $expectedText.Length; $i++) {
         Assert-Equal -Name "ELF entrypoint byte $i" -Actual $bytes[$entryFileOffsetInt + $i] -Expected $expectedText[$i]
     }
@@ -385,12 +389,18 @@ function Test-Elf64TrailingPayload {
     Assert-Equal -Name "ELF load segment file size" -Actual $loadFileSize -Expected $bytes.Length
     Assert-Equal -Name "ELF load segment memory size" -Actual ([BitConverter]::ToUInt64($bytes, 104)) -Expected $bytes.Length
     Assert-Equal -Name "ELF entrypoint" -Actual $entrypoint -Expected ($loadVaddr + 120)
-    Assert-Equal -Name "ELF entrypoint file offset" -Actual ([UInt64]$loadOffset + ($entrypoint - $loadVaddr)) -Expected 120
+    $entryFileOffset = [UInt64]$loadOffset + ($entrypoint - $loadVaddr)
+    Assert-Equal -Name "ELF entrypoint file offset" -Actual $entryFileOffset -Expected 120
 
     if ($metadataStart -le 120) {
         Write-Error "ELF text payload is missing before trailing metadata"
         exit 1
     }
+
+    Assert-RuntimeFrameEnvelope `
+        -Bytes $bytes `
+        -EntryFileOffset ([int]$entryFileOffset) `
+        -TextEnd $metadataStart
 
     Write-Host "PASS: ELF64 header check"
 }
@@ -512,28 +522,129 @@ function Add-ZeroQwordStore {
 }
 
 function New-RuntimeStateQwordOffsets {
-    0..(($NativeRuntimeFrameSize / 8) - 1) | ForEach-Object { $_ * 8 }
+    param(
+        [int] $FrameSize = $DefaultNativeRuntimeFrameSize
+    )
+
+    0..(($FrameSize / 8) - 1) | ForEach-Object { $_ * 8 }
 }
 
 function New-RuntimeCreatePrefix {
+    param(
+        [int] $FrameSize = $DefaultNativeRuntimeFrameSize
+    )
+
     $bytes = [System.Collections.Generic.List[byte]]::new()
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize $NativeRuntimeFrameSize
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize $FrameSize
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
-    foreach ($offset in (New-RuntimeStateQwordOffsets)) {
+    foreach ($offset in (New-RuntimeStateQwordOffsets -FrameSize $FrameSize)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
     }
     [byte[]]$bytes.ToArray()
 }
 
 function New-RuntimeDestroySuffix {
+    param(
+        [int] $FrameSize = $DefaultNativeRuntimeFrameSize
+    )
+
     $bytes = [System.Collections.Generic.List[byte]]::new()
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
-    foreach ($offset in (New-RuntimeStateQwordOffsets)) {
+    foreach ($offset in (New-RuntimeStateQwordOffsets -FrameSize $FrameSize)) {
         Add-ZeroQwordStore -Bytes $bytes -Offset $offset
     }
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize $NativeRuntimeFrameSize
+    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize $FrameSize
     Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05))
     [byte[]]$bytes.ToArray()
+}
+
+function Get-RuntimeFrameSizeAtEntry {
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]] $Bytes,
+
+        [Parameter(Mandatory = $true)]
+        [int] $EntryFileOffset
+    )
+
+    if (($EntryFileOffset -lt 0) -or ($EntryFileOffset + 4 -gt $Bytes.Length)) {
+        Write-Error "runtime entry does not contain a complete stack-frame instruction"
+        exit 1
+    }
+
+    if (($Bytes[$EntryFileOffset] -ne 0x48) -or ($Bytes[$EntryFileOffset + 2] -ne 0xec)) {
+        Write-Error "runtime entry does not begin with sub rsp"
+        exit 1
+    }
+
+    if ($Bytes[$EntryFileOffset + 1] -eq 0x83) {
+        $frameSize = [int]$Bytes[$EntryFileOffset + 3]
+    } elseif ($Bytes[$EntryFileOffset + 1] -eq 0x81) {
+        if ($EntryFileOffset + 7 -gt $Bytes.Length) {
+            Write-Error "runtime entry does not contain the complete sub rsp immediate"
+            exit 1
+        }
+        $rawFrameSize = [BitConverter]::ToUInt32($Bytes, $EntryFileOffset + 3)
+        if ($rawFrameSize -gt [int]::MaxValue) {
+            Write-Error "runtime frame size exceeds the supported signed range"
+            exit 1
+        }
+        $frameSize = [int]$rawFrameSize
+    } else {
+        Write-Error "runtime entry uses an unsupported sub rsp encoding"
+        exit 1
+    }
+
+    if (($frameSize -le 0) -or (($frameSize % 16) -ne 0)) {
+        Write-Error "runtime frame size must be positive and 16-byte aligned, got $frameSize"
+        exit 1
+    }
+
+    return $frameSize
+}
+
+function Assert-RuntimeFrameEnvelope {
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]] $Bytes,
+
+        [Parameter(Mandatory = $true)]
+        [int] $EntryFileOffset,
+
+        [Parameter(Mandatory = $true)]
+        [UInt64] $TextEnd
+    )
+
+    if (($TextEnd -gt [UInt64]$Bytes.Length) -or ($TextEnd -gt [int]::MaxValue)) {
+        Write-Error "runtime text end is outside the artifact"
+        exit 1
+    }
+
+    $frameSize = Get-RuntimeFrameSizeAtEntry -Bytes $Bytes -EntryFileOffset $EntryFileOffset
+    [byte[]]$expectedPrefix = New-RuntimeCreatePrefix -FrameSize $frameSize
+    [byte[]]$expectedSuffix = New-RuntimeDestroySuffix -FrameSize $frameSize
+    $textEndInt = [int]$TextEnd
+    $suffixStart = $textEndInt - $expectedSuffix.Length
+
+    if (($EntryFileOffset + $expectedPrefix.Length -gt $suffixStart) -or ($suffixStart -lt 0)) {
+        Write-Error "runtime text is too short for its discovered frame envelope"
+        exit 1
+    }
+
+    for ($i = 0; $i -lt $expectedPrefix.Length; $i++) {
+        if ($Bytes[$EntryFileOffset + $i] -ne $expectedPrefix[$i]) {
+            Write-Error "runtime create prefix byte $i does not match discovered frame size $frameSize"
+            exit 1
+        }
+    }
+    for ($i = 0; $i -lt $expectedSuffix.Length; $i++) {
+        if ($Bytes[$suffixStart + $i] -ne $expectedSuffix[$i]) {
+            Write-Error "runtime destroy suffix byte $i does not match discovered frame size $frameSize"
+            exit 1
+        }
+    }
+
+    Write-Host "PASS: runtime frame envelope ($frameSize bytes)"
 }
 
 function New-RuntimeWrappedText {

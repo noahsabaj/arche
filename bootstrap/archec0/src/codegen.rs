@@ -4,7 +4,12 @@ use crate::core::{
 };
 use crate::core_lower;
 use crate::core_verify;
+use crate::native_world_plan::{
+    derive_native_world_storage_plan, NativeCatalogColumnSlots, NativeSlot, NativeWorldStoragePlan,
+    NATIVE_STORAGE_BASE_OFFSET,
+};
 use crate::parser::{BinaryOperator, Expression, Program, Statement};
+use crate::runtime_assembly;
 
 const NATIVE_ECS_QWORD_BYTE_LEN: u16 = 8;
 const NATIVE_ECS_DWORD_BYTE_LEN: u16 = 4;
@@ -444,6 +449,19 @@ struct NativeStorageCatalogColumnRow {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeStorageCatalogModel {
     table_rows: [NativeStorageCatalogTableRow; 1],
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NativeStorageCompatibilityModel {
+    catalog_table: NativeStorageCatalogTableRow,
+    capacity: u64,
+    row_stride: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct NativeCompiledQueryExecution<'a> {
+    observable: &'a NativeMoveQueryLoopObservable,
+    storage_compatibility: NativeStorageCompatibilityModel,
 }
 
 #[allow(dead_code)]
@@ -1607,7 +1625,9 @@ const ECS_ARCHETYPE_STORAGE_VELOCITY_ROW1_PAYLOAD_SLOT: u16 = NATIVE_ECS_EXECUTI
     .velocity_column
     .payload_rows[1]
     .offset;
+#[cfg(test)]
 const ECS_ARCHETYPE_STORAGE_CAPACITY: u64 = 2;
+#[cfg(test)]
 const ECS_ARCHETYPE_STORAGE_ROW_STRIDE: u64 = 16;
 const ECS_QUERY_LOOP_TARGET_POSITION_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .compiled_move
@@ -2752,7 +2772,10 @@ pub fn startup_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> 
         _ => Err(unsupported_shape()),
     }?;
 
-    Ok(runtime_wrapped_payload(&startup_body))
+    Ok(runtime_wrapped_payload(
+        &startup_body,
+        NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size,
+    ))
 }
 
 pub fn ecs_metadata_decoder_text_payload(
@@ -2769,20 +2792,44 @@ pub fn ecs_metadata_decoder_text_payload(
         });
     }
 
+    let core = lower_verified_core(program)?;
+    let assembly =
+        runtime_assembly::assemble_runtime_program_from_source(program).map_err(|error| {
+            CodegenError {
+                message: format!(
+                    "could not assemble native world storage input: {}",
+                    error.message
+                ),
+            }
+        })?;
+    let storage_plan =
+        derive_native_world_storage_plan(&core, &assembly, NATIVE_STORAGE_BASE_OFFSET).map_err(
+            |error| CodegenError {
+                message: format!(
+                    "could not derive native world storage plan: {}",
+                    error.message
+                ),
+            },
+        )?;
     let startup_payloads = startup_payloads(metadata_payload)?;
-    let query_loop_observable = native_move_query_loop_observable(program, &startup_payloads)?;
+    let query_loop_observable =
+        native_move_query_loop_observable_from_core(&core, &startup_payloads)?;
+    let storage_compatibility =
+        native_storage_compatibility_model(&storage_plan, &query_loop_observable)?;
     let startup_body = ecs_metadata_decoder_body(
         &metadata_payload[..ECS_METADATA_ENVELOPE_SIZE],
         startup_payloads,
         query_loop_observable,
+        &storage_plan,
+        storage_compatibility,
     );
-    Ok(runtime_wrapped_payload(&startup_body))
+    Ok(runtime_wrapped_payload(
+        &startup_body,
+        storage_plan.frame_size,
+    ))
 }
 
-fn native_move_query_loop_observable(
-    program: &Program,
-    startup_payloads: &EcsStartupPayloads,
-) -> Result<NativeMoveQueryLoopObservable, CodegenError> {
+fn lower_verified_core(program: &Program) -> Result<CoreProgram, CodegenError> {
     let core = core_lower::lower_program_to_core(program).map_err(|error| CodegenError {
         message: format!(
             "could not lower Core for native query-loop observable: {}",
@@ -2795,6 +2842,15 @@ fn native_move_query_loop_observable(
             error.message
         ),
     })?;
+    Ok(core)
+}
+
+#[cfg(test)]
+fn native_move_query_loop_observable(
+    program: &Program,
+    startup_payloads: &EcsStartupPayloads,
+) -> Result<NativeMoveQueryLoopObservable, CodegenError> {
+    let core = lower_verified_core(program)?;
 
     native_move_query_loop_observable_from_core(&core, startup_payloads)
 }
@@ -3466,6 +3522,8 @@ fn ecs_metadata_decoder_body(
     envelope: &[u8],
     startup_payloads: EcsStartupPayloads,
     query_loop_observable: NativeMoveQueryLoopObservable,
+    storage_plan: &NativeWorldStoragePlan,
+    storage_compatibility: NativeStorageCompatibilityModel,
 ) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut jump_to_metadata_failure_offsets = Vec::new();
@@ -3514,12 +3572,13 @@ fn ecs_metadata_decoder_body(
     );
     emit_descriptor_name_table_decodes(&mut bytes, &mut jump_to_startup_state_failure_offsets);
     emit_startup_operation_table_decodes(&mut bytes, &startup_payloads);
-    emit_native_storage_catalog_materialization(&mut bytes);
+    emit_native_storage_catalog_materialization(&mut bytes, storage_plan);
 
     emit_native_startup_operation_table_iteration(
         &mut bytes,
         &startup_payloads,
         &query_loop_observable,
+        storage_compatibility,
         &mut jump_to_startup_state_failure_offsets,
         &mut jump_to_query_loop_scan_failure_offsets,
         &mut jump_to_query_loop_field_math_failure_offsets,
@@ -3646,7 +3705,8 @@ fn ecs_metadata_decoder_body(
         jump_from_query_loop_position_store_failure_to_done_offset + 5,
     );
 
-    let metadata_displacement = (bytes.len() + runtime_destroy_suffix().len() - 7) as i32;
+    let metadata_displacement =
+        (bytes.len() + runtime_destroy_suffix(storage_plan.frame_size).len() - 7) as i32;
     patch_i32(&mut bytes, 3, metadata_displacement);
 
     bytes
@@ -3735,6 +3795,7 @@ fn emit_native_startup_operation_table_iteration(
     bytes: &mut Vec<u8>,
     startup_payloads: &EcsStartupPayloads,
     query_loop_observable: &NativeMoveQueryLoopObservable,
+    storage_compatibility: NativeStorageCompatibilityModel,
     startup_state_failure_offsets: &mut Vec<usize>,
     scan_failure_offsets: &mut Vec<usize>,
     field_math_failure_offsets: &mut Vec<usize>,
@@ -3765,6 +3826,7 @@ fn emit_native_startup_operation_table_iteration(
                     bytes,
                     spawn_row_index,
                     row.dispatch_row.dispatch_count_after_row,
+                    storage_compatibility,
                     startup_state_failure_offsets,
                 )
             }
@@ -3773,6 +3835,7 @@ fn emit_native_startup_operation_table_iteration(
                     bytes,
                     startup_payloads,
                     query_loop_observable,
+                    storage_compatibility,
                     startup_state_failure_offsets,
                     scan_failure_offsets,
                     field_math_failure_offsets,
@@ -3817,13 +3880,14 @@ fn emit_spawn_startup_operation_handler(
     bytes: &mut Vec<u8>,
     spawn_row_index: usize,
     row_count_after_spawn: u64,
+    storage_compatibility: NativeStorageCompatibilityModel,
     jump_offsets: &mut Vec<usize>,
 ) {
     let spawn_slots =
         startup_spawn_slots(spawn_row_index).expect("startup iteration row matches spawn table");
     let payload_slots = startup_payload_storage_slots(spawn_row_index)
         .expect("startup iteration row matches spawn payload storage");
-    let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+    let catalog_table = storage_compatibility.catalog_table;
 
     compare_stack_slots_equal(
         bytes,
@@ -3852,7 +3916,7 @@ fn emit_spawn_startup_operation_handler(
     compare_stack_slot_to_u64(
         bytes,
         catalog_table.slots.capacity.offset,
-        ECS_ARCHETYPE_STORAGE_CAPACITY,
+        storage_compatibility.capacity,
         jump_offsets,
     );
     for (startup_table_slot, catalog_slot) in
@@ -3964,6 +4028,7 @@ fn emit_run_schedule_startup_operation_handler(
     bytes: &mut Vec<u8>,
     startup_payloads: &EcsStartupPayloads,
     query_loop_observable: &NativeMoveQueryLoopObservable,
+    storage_compatibility: NativeStorageCompatibilityModel,
     startup_state_failure_offsets: &mut Vec<usize>,
     scan_failure_offsets: &mut Vec<usize>,
     field_math_failure_offsets: &mut Vec<usize>,
@@ -3974,12 +4039,14 @@ fn emit_run_schedule_startup_operation_handler(
         bytes,
         startup_payloads,
         query_loop_observable,
+        storage_compatibility,
         startup_state_failure_offsets,
         dispatch_failure_offsets,
     );
     emit_compiled_demo_main_schedule(
         bytes,
         query_loop_observable,
+        storage_compatibility,
         scan_failure_offsets,
         field_math_failure_offsets,
         position_store_failure_offsets,
@@ -3991,6 +4058,7 @@ fn emit_startup_operation_state_validations(
     bytes: &mut Vec<u8>,
     startup_payloads: &EcsStartupPayloads,
     query_loop_observable: &NativeMoveQueryLoopObservable,
+    storage_compatibility: NativeStorageCompatibilityModel,
     startup_state_failure_offsets: &mut Vec<usize>,
     dispatch_failure_offsets: &mut Vec<usize>,
 ) {
@@ -4048,7 +4116,7 @@ fn emit_startup_operation_state_validations(
         startup_payloads.spawn_operations.len() as u64,
         startup_state_failure_offsets,
     );
-    let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+    let catalog_table = storage_compatibility.catalog_table;
     compare_qword_at_stack_address_to_u64(
         bytes,
         catalog_table.slots.row_count_address.offset,
@@ -4058,13 +4126,13 @@ fn emit_startup_operation_state_validations(
     compare_stack_slot_to_u64(
         bytes,
         catalog_table.slots.capacity.offset,
-        ECS_ARCHETYPE_STORAGE_CAPACITY,
+        storage_compatibility.capacity,
         startup_state_failure_offsets,
     );
     compare_stack_slot_to_u64(
         bytes,
         catalog_table.slots.row_stride.offset,
-        ECS_ARCHETYPE_STORAGE_ROW_STRIDE,
+        storage_compatibility.row_stride,
         startup_state_failure_offsets,
     );
     for (row_index, spawn) in startup_payloads.spawn_operations.iter().enumerate() {
@@ -4372,39 +4440,63 @@ fn emit_startup_operation_table_decodes(
     );
 }
 
-fn emit_native_storage_catalog_materialization(bytes: &mut Vec<u8>) {
-    let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
-    let first_spawn = NATIVE_ECS_TABLE_MODEL.startup_operations.spawn_rows[0];
+fn emit_native_storage_catalog_materialization(
+    bytes: &mut Vec<u8>,
+    storage_plan: &NativeWorldStoragePlan,
+) {
+    for table in &storage_plan.tables {
+        emit_u64_to_stack_slot(
+            bytes,
+            table.columns.len() as u64,
+            table.catalog.column_count.offset,
+        );
 
-    load_stack_slot_to_rax(bytes, first_spawn.component_count.offset);
-    store_rax_to_stack_slot(bytes, catalog_table.slots.column_count.offset);
+        emit_lea_stack_address_to_rax(bytes, table.storage.row_count.offset);
+        store_rax_to_stack_slot(bytes, table.catalog.row_count_address.offset);
 
-    emit_lea_stack_address_to_rax(bytes, catalog_table.storage.row_count.offset);
-    store_rax_to_stack_slot(bytes, catalog_table.slots.row_count_address.offset);
+        emit_u64_to_stack_slot(
+            bytes,
+            u64::from(table.capacity),
+            table.storage.capacity.offset,
+        );
+        emit_u64_to_stack_slot(
+            bytes,
+            u64::from(table.capacity),
+            table.catalog.capacity.offset,
+        );
+        emit_u64_to_stack_slot(
+            bytes,
+            u64::from(table.logical_row_stride),
+            table.storage.row_stride.offset,
+        );
+        emit_u64_to_stack_slot(
+            bytes,
+            u64::from(table.logical_row_stride),
+            table.catalog.row_stride.offset,
+        );
 
-    bytes.push(0xb8); // mov eax, bounded archetype storage capacity
-    bytes.extend_from_slice(&(ECS_ARCHETYPE_STORAGE_CAPACITY as u32).to_le_bytes());
-    store_rax_to_stack_slot(bytes, catalog_table.storage.capacity.offset);
-    load_stack_slot_to_rax(bytes, catalog_table.storage.capacity.offset);
-    store_rax_to_stack_slot(bytes, catalog_table.slots.capacity.offset);
-
-    load_stack_slot_to_rax(bytes, catalog_table.columns[0].descriptor.size.offset);
-    add_stack_slot_to_rax(bytes, catalog_table.columns[1].descriptor.size.offset);
-    store_rax_to_stack_slot(bytes, catalog_table.storage.row_stride.offset);
-    store_rax_to_stack_slot(bytes, catalog_table.slots.row_stride.offset);
-
-    for column in catalog_table.columns {
-        for (source, target) in [
-            (column.descriptor.id, column.slots.component_id),
-            (column.descriptor.size, column.slots.element_size),
-            (column.descriptor.align, column.slots.element_align),
-        ] {
-            load_stack_slot_to_rax(bytes, source.offset);
-            store_rax_to_stack_slot(bytes, target.offset);
+        for column in &table.columns {
+            emit_u64_to_stack_slot(bytes, column.schema.id, column.catalog.component_id.offset);
+            emit_u64_to_stack_slot(
+                bytes,
+                u64::from(column.schema.size),
+                column.catalog.element_size.offset,
+            );
+            emit_u64_to_stack_slot(
+                bytes,
+                u64::from(column.schema.align),
+                column.catalog.element_align.offset,
+            );
+            emit_lea_stack_address_to_rax(bytes, column.payload.offset);
+            store_rax_to_stack_slot(bytes, column.catalog.payload_base_address.offset);
         }
-        emit_lea_stack_address_to_rax(bytes, column.payload_column.payload_rows[0].offset);
-        store_rax_to_stack_slot(bytes, column.slots.payload_base_address.offset);
     }
+}
+
+fn emit_u64_to_stack_slot(bytes: &mut Vec<u8>, value: u64, stack_slot: u16) {
+    bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, immediate
+    bytes.extend_from_slice(&value.to_le_bytes());
+    store_rax_to_stack_slot(bytes, stack_slot);
 }
 
 fn emit_startup_table_qword_load(bytes: &mut Vec<u8>, metadata_offset: i32, stack_slot: u16) {
@@ -4570,16 +4662,21 @@ fn emit_native_query_plan_term_row(
 fn emit_compiled_demo_main_schedule(
     bytes: &mut Vec<u8>,
     query_loop_observable: &NativeMoveQueryLoopObservable,
+    storage_compatibility: NativeStorageCompatibilityModel,
     scan_failure_offsets: &mut Vec<usize>,
     field_math_failure_offsets: &mut Vec<usize>,
     position_store_failure_offsets: &mut Vec<usize>,
     dispatch_failure_offsets: &mut Vec<usize>,
 ) {
+    let query_execution = NativeCompiledQueryExecution {
+        observable: query_loop_observable,
+        storage_compatibility,
+    };
     for row in ECS_COMPILED_SCHEDULE_BUILD_ROWS {
         emit_compiled_schedule_build_row(
             bytes,
             row,
-            query_loop_observable,
+            query_execution,
             scan_failure_offsets,
             field_math_failure_offsets,
             position_store_failure_offsets,
@@ -4591,7 +4688,7 @@ fn emit_compiled_demo_main_schedule(
 fn emit_compiled_schedule_build_row(
     bytes: &mut Vec<u8>,
     row: NativeCompiledScheduleBuildRow,
-    query_loop_observable: &NativeMoveQueryLoopObservable,
+    query_execution: NativeCompiledQueryExecution<'_>,
     scan_failure_offsets: &mut Vec<usize>,
     field_math_failure_offsets: &mut Vec<usize>,
     position_store_failure_offsets: &mut Vec<usize>,
@@ -4631,13 +4728,13 @@ fn emit_compiled_schedule_build_row(
 
     emit_native_query_plan_builder(
         bytes,
-        ECS_QUERY_PLAN_TABLE_ITERATION_ROWS[row.query_plan_row_index],
-        query_loop_observable.rows.len() as u64,
+        native_query_plan_iteration_row(query_execution.storage_compatibility),
+        query_execution.observable.rows.len() as u64,
         scan_failure_offsets,
     );
     emit_compiled_demo_move_query_loop(
         bytes,
-        query_loop_observable,
+        query_execution.observable,
         scan_failure_offsets,
         field_math_failure_offsets,
         position_store_failure_offsets,
@@ -4858,9 +4955,9 @@ fn patch_i32(bytes: &mut [u8], offset: usize, value: i32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
 }
 
-fn runtime_wrapped_payload(startup_body: &[u8]) -> Vec<u8> {
-    let create_prefix = runtime_create_prefix();
-    let destroy_suffix = runtime_destroy_suffix();
+fn runtime_wrapped_payload(startup_body: &[u8], frame_size: u16) -> Vec<u8> {
+    let create_prefix = runtime_create_prefix(frame_size);
+    let destroy_suffix = runtime_destroy_suffix(frame_size);
     let mut bytes =
         Vec::with_capacity(create_prefix.len() + startup_body.len() + destroy_suffix.len());
 
@@ -4871,30 +4968,22 @@ fn runtime_wrapped_payload(startup_body: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn runtime_create_prefix() -> Vec<u8> {
+fn runtime_create_prefix(frame_size: u16) -> Vec<u8> {
     let mut bytes = Vec::new();
-    emit_stack_frame_adjust(
-        &mut bytes,
-        0xec,
-        NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size,
-    );
+    emit_stack_frame_adjust(&mut bytes, 0xec, frame_size);
     bytes.extend_from_slice(&[0x31, 0xc0]); // xor eax, eax
-    for offset in NATIVE_ECS_EXECUTION_STATE_LAYOUT.zeroed_qword_offsets {
+    for offset in (0..frame_size).step_by(usize::from(NATIVE_ECS_QWORD_BYTE_LEN)) {
         store_rax_to_stack_slot(&mut bytes, offset);
     }
     bytes
 }
 
-fn runtime_destroy_suffix() -> Vec<u8> {
+fn runtime_destroy_suffix(frame_size: u16) -> Vec<u8> {
     let mut bytes = vec![0x31, 0xc0]; // xor eax, eax
-    for offset in NATIVE_ECS_EXECUTION_STATE_LAYOUT.zeroed_qword_offsets {
+    for offset in (0..frame_size).step_by(usize::from(NATIVE_ECS_QWORD_BYTE_LEN)) {
         store_rax_to_stack_slot(&mut bytes, offset);
     }
-    emit_stack_frame_adjust(
-        &mut bytes,
-        0xc4,
-        NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size,
-    );
+    emit_stack_frame_adjust(&mut bytes, 0xc4, frame_size);
     bytes.extend_from_slice(&[
         0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, 60
         0x0f, 0x05, // syscall
@@ -5042,11 +5131,119 @@ fn native_move_query_loop_observable_error() -> CodegenError {
     }
 }
 
+fn native_storage_compatibility_model(
+    plan: &NativeWorldStoragePlan,
+    query_loop_observable: &NativeMoveQueryLoopObservable,
+) -> Result<NativeStorageCompatibilityModel, CodegenError> {
+    let [table] = plan.tables.as_slice() else {
+        return Err(native_storage_compatibility_error());
+    };
+    if table.columns.len() != 2 {
+        return Err(native_storage_compatibility_error());
+    }
+    let position_column = table
+        .columns
+        .iter()
+        .find(|column| column.schema.id == query_loop_observable.position_component_id)
+        .ok_or_else(native_storage_compatibility_error)?;
+    let velocity_column = table
+        .columns
+        .iter()
+        .find(|column| column.schema.id == query_loop_observable.velocity_component_id)
+        .ok_or_else(native_storage_compatibility_error)?;
+    if table.rows.is_empty()
+        || table.rows.len() > 2
+        || position_column.schema.id == velocity_column.schema.id
+        || position_column.schema.size != u32::from(NATIVE_ECS_QWORD_BYTE_LEN)
+        || velocity_column.schema.size != u32::from(NATIVE_ECS_QWORD_BYTE_LEN)
+    {
+        return Err(native_storage_compatibility_error());
+    }
+
+    let fixed_catalog = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+    let catalog_table = NativeStorageCatalogTableRow {
+        slots: NativeStorageCatalogTableRowSlots {
+            column_count: native_ecs_slot(table.catalog.column_count),
+            row_count_address: native_ecs_slot(table.catalog.row_count_address),
+            capacity: native_ecs_slot(table.catalog.capacity),
+            row_stride: native_ecs_slot(table.catalog.row_stride),
+        },
+        storage: fixed_catalog.storage,
+        columns: [
+            NativeStorageCatalogColumnRow {
+                slots: native_storage_catalog_column_slots(position_column.catalog),
+                descriptor: fixed_catalog.columns[0].descriptor,
+                payload_column: fixed_catalog.columns[0].payload_column,
+            },
+            NativeStorageCatalogColumnRow {
+                slots: native_storage_catalog_column_slots(velocity_column.catalog),
+                descriptor: fixed_catalog.columns[1].descriptor,
+                payload_column: fixed_catalog.columns[1].payload_column,
+            },
+        ],
+    };
+
+    Ok(NativeStorageCompatibilityModel {
+        catalog_table,
+        capacity: u64::from(table.capacity),
+        row_stride: u64::from(table.logical_row_stride),
+    })
+}
+
+fn native_ecs_slot(slot: NativeSlot) -> NativeEcsSlot {
+    NativeEcsSlot {
+        offset: slot.offset,
+        byte_len: slot.byte_len,
+    }
+}
+
+fn native_storage_catalog_column_slots(
+    slots: NativeCatalogColumnSlots,
+) -> NativeStorageCatalogColumnRowSlots {
+    NativeStorageCatalogColumnRowSlots {
+        component_id: native_ecs_slot(slots.component_id),
+        element_size: native_ecs_slot(slots.element_size),
+        element_align: native_ecs_slot(slots.element_align),
+        payload_base_address: native_ecs_slot(slots.payload_base_address),
+    }
+}
+
+fn native_query_plan_iteration_row(
+    compatibility: NativeStorageCompatibilityModel,
+) -> NativeQueryPlanTableIterationRow {
+    let mut row = ECS_QUERY_PLAN_TABLE_ITERATION_ROWS[0];
+    row.build_row.catalog_column_count_slot = compatibility.catalog_table.slots.column_count.offset;
+    row.build_row.catalog_row_count_address_slot =
+        compatibility.catalog_table.slots.row_count_address.offset;
+    for (term, column) in row
+        .build_row
+        .terms
+        .iter_mut()
+        .zip(compatibility.catalog_table.columns)
+    {
+        term.catalog_component_id_slot = column.slots.component_id.offset;
+        term.catalog_element_size_slot = column.slots.element_size.offset;
+        term.catalog_payload_base_address_slot = column.slots.payload_base_address.offset;
+    }
+    row
+}
+
+fn native_storage_compatibility_error() -> CodegenError {
+    CodegenError {
+        message: "native startup/query compatibility requires one one-or-two-row table containing the observable's two distinct eight-byte component columns"
+            .to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ecs_metadata;
     use crate::lexer;
+    use crate::native_world_plan::{
+        NativeByteRange, NativeCatalogTableSlots, NativeColumnStoragePlan, NativeComponentSchema,
+        NativePlannedSpawnRow, NativeTableStoragePlan, NativeTableStorageSlots,
+    };
     use crate::parser;
     use crate::runtime_assembly;
 
@@ -6081,11 +6278,11 @@ mod tests {
         );
 
         assert_eq!(
-            runtime_create_prefix().as_slice(),
+            runtime_create_prefix(layout.frame_size).as_slice(),
             expected_runtime_create_prefix(&layout).as_slice()
         );
         assert_eq!(
-            runtime_destroy_suffix().as_slice(),
+            runtime_destroy_suffix(layout.frame_size).as_slice(),
             expected_runtime_destroy_suffix(&layout).as_slice()
         );
     }
@@ -7197,6 +7394,7 @@ mod tests {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
         let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let storage_compatibility = storage_compatibility_for_program(&program);
         let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
             .expect("move_system.arc assembles");
         let metadata =
@@ -7289,7 +7487,8 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_qword_at_stack_address_store_sequence(
-                    NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0]
+                    storage_compatibility
+                        .catalog_table
                         .slots
                         .row_count_address
                         .offset,
@@ -7322,6 +7521,7 @@ mod tests {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
         let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let storage_compatibility = storage_compatibility_for_program(&program);
         let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
             .expect("move_system.arc assembles");
         let metadata =
@@ -7445,7 +7645,8 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_qword_at_stack_address_store_sequence(
-                    NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0]
+                    storage_compatibility
+                        .catalog_table
                         .slots
                         .row_count_address
                         .offset,
@@ -7951,11 +8152,16 @@ mod tests {
         let program = parser::parse_program(&tokens).expect("move_system.arc parses");
         let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
             .expect("move_system.arc assembles");
+        let core = core_lower::lower_program_to_core(&program).expect("move_system Core lowers");
+        let storage_plan =
+            derive_native_world_storage_plan(&core, &assembly, NATIVE_STORAGE_BASE_OFFSET)
+                .expect("move_system storage plan derives");
+        let table = &storage_plan.tables[0];
+        let storage_compatibility = storage_compatibility_for_program(&program);
         let metadata =
             ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
         let startup_payloads = startup_payloads(&metadata).expect("startup payloads parse");
-        let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
-        let first_spawn = NATIVE_ECS_TABLE_MODEL.startup_operations.spawn_rows[0];
+        let catalog_table = storage_compatibility.catalog_table;
 
         assert_eq!(startup_payloads.spawn_operations[0].component_count, 2);
         assert_eq!(catalog_table.columns.len(), 2);
@@ -7977,7 +8183,7 @@ mod tests {
             ECS_STARTUP_TABLE_RUN_SCHEDULE_ID_SLOT,
         );
         let catalog_materialization =
-            native_storage_catalog_materialization_sequence(catalog_table, first_spawn);
+            native_storage_catalog_materialization_sequence(&storage_plan);
         let startup_record_count_materialization = metadata_dword_load_store_sequence(
             ECS_STARTUP_RECORD_COUNT_OFFSET,
             ECS_STARTUP_OPERATION_COUNT_SLOT,
@@ -8038,58 +8244,48 @@ mod tests {
             contains_subsequence(
                 &text,
                 &lea_stack_address_store_sequence(
-                    catalog_table.storage.row_count.offset,
+                    table.storage.row_count.offset,
                     catalog_table.slots.row_count_address.offset,
                 ),
             ),
             "catalog row-count field should hold the authoritative storage row-count address"
         );
 
-        let capacity_materialization = storage_capacity_catalog_materialization_sequence(
-            ECS_ARCHETYPE_STORAGE_CAPACITY as u32,
-            catalog_table.storage.capacity.offset,
-            catalog_table.slots.capacity.offset,
-        );
-        assert_eq!(
-            count_subsequence(&text, &capacity_materialization),
-            1,
-            "bounded storage capacity should initialize once and then copy into the catalog"
-        );
+        for slot in [table.storage.capacity, table.catalog.capacity] {
+            assert!(contains_subsequence(
+                &text,
+                &u64_immediate_store_sequence(u64::from(table.capacity), slot.offset),
+            ));
+        }
+        for slot in [table.storage.row_stride, table.catalog.row_stride] {
+            assert!(contains_subsequence(
+                &text,
+                &u64_immediate_store_sequence(u64::from(table.logical_row_stride), slot.offset,),
+            ));
+        }
 
-        let row_stride_materialization = storage_row_stride_catalog_materialization_sequence(
-            catalog_table.columns[0].descriptor.size.offset,
-            catalog_table.columns[1].descriptor.size.offset,
-            catalog_table.storage.row_stride.offset,
-            catalog_table.slots.row_stride.offset,
-        );
-        assert_eq!(
-            count_subsequence(&text, &row_stride_materialization),
-            1,
-            "storage and catalog row stride should derive once from Position plus Velocity sizes"
-        );
-
-        for column in catalog_table.columns {
-            for (source_slot, catalog_slot) in [
-                (column.descriptor.id, column.slots.component_id),
-                (column.descriptor.size, column.slots.element_size),
-                (column.descriptor.align, column.slots.element_align),
+        for column in &table.columns {
+            for (value, catalog_slot) in [
+                (column.schema.id, column.catalog.component_id),
+                (u64::from(column.schema.size), column.catalog.element_size),
+                (u64::from(column.schema.align), column.catalog.element_align),
             ] {
                 assert!(
                     contains_subsequence(
                         &text,
-                        &load_store_stack_slot_sequence(source_slot.offset, catalog_slot.offset),
+                        &u64_immediate_store_sequence(value, catalog_slot.offset),
                     ),
-                    "catalog field at {} should copy decoded descriptor field at {}",
+                    "catalog field at {} should materialize descriptor-derived value {}",
                     catalog_slot.offset,
-                    source_slot.offset
+                    value
                 );
             }
             assert!(
                 contains_subsequence(
                     &text,
                     &lea_stack_address_store_sequence(
-                        column.payload_column.payload_rows[0].offset,
-                        column.slots.payload_base_address.offset,
+                        column.payload.offset,
+                        column.catalog.payload_base_address.offset,
                     ),
                 ),
                 "catalog column should address its physical row-zero payload base"
@@ -8106,9 +8302,171 @@ mod tests {
     }
 
     #[test]
-    fn materializes_spawn_rows_through_storage_catalog() {
-        let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+    fn emits_descriptor_sized_native_tables_and_columns() {
+        let source = include_str!("../../../examples/move_system_two_rows.arc");
+        let tokens = lexer::lex(source).expect("two-row movement fixture lexes");
+        let program = parser::parse_program(&tokens).expect("two-row movement fixture parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("two-row movement fixture assembles");
+        let metadata = ecs_metadata::encode_ecs_metadata(&assembly)
+            .expect("two-row movement metadata encodes");
+        let demo_plan = storage_plan_for_program(&program);
 
+        assert_eq!(demo_plan.frame_size, 1088);
+        assert_eq!(demo_plan.tables.len(), 1);
+        assert_eq!(demo_plan.tables[0].columns.len(), 2);
+        assert!(demo_plan.tables[0]
+            .columns
+            .iter()
+            .all(|column| column.schema.size == 8 && column.schema.align == 4));
+
+        let startup = startup_payloads(&metadata).expect("two-row startup payloads parse");
+        let observable = native_move_query_loop_observable(&program, &startup)
+            .expect("two-row query observable exists");
+        let mut reordered_role_plan = demo_plan.clone();
+        reordered_role_plan.tables[0].columns.reverse();
+        let role_compatibility =
+            native_storage_compatibility_model(&reordered_role_plan, &observable)
+                .expect("query component ids select catalog roles independently of plan order");
+        let position_column = reordered_role_plan.tables[0]
+            .columns
+            .iter()
+            .find(|column| column.schema.id == observable.position_component_id)
+            .expect("planned Position column exists");
+        let velocity_column = reordered_role_plan.tables[0]
+            .columns
+            .iter()
+            .find(|column| column.schema.id == observable.velocity_component_id)
+            .expect("planned Velocity column exists");
+        assert_eq!(
+            role_compatibility.catalog_table.columns[0]
+                .slots
+                .payload_base_address
+                .offset,
+            position_column.catalog.payload_base_address.offset,
+        );
+        assert_eq!(
+            role_compatibility.catalog_table.columns[1]
+                .slots
+                .payload_base_address
+                .offset,
+            velocity_column.catalog.payload_base_address.offset,
+        );
+
+        let demo_text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("the descriptor-sized Demo plan emits");
+        assert!(demo_text.starts_with(&runtime_create_prefix(demo_plan.frame_size)));
+        assert!(demo_text.ends_with(&runtime_destroy_suffix(demo_plan.frame_size)));
+        assert_eq!(
+            count_subsequence(
+                &demo_text,
+                &native_storage_catalog_materialization_sequence(&demo_plan),
+            ),
+            1,
+            "codegen should consume the complete derived Demo plan exactly once"
+        );
+
+        let arena_plan = descriptor_sized_arena_emission_plan();
+        assert_eq!(arena_plan.frame_size, 1328);
+        assert_eq!(arena_plan.tables.len(), 2);
+        assert_eq!(
+            arena_plan
+                .tables
+                .iter()
+                .map(|table| table.columns.len())
+                .collect::<Vec<_>>(),
+            [3, 2]
+        );
+        assert_eq!(
+            arena_plan.tables[0]
+                .columns
+                .iter()
+                .map(|column| column.schema.size)
+                .collect::<Vec<_>>(),
+            [12, 8, 4]
+        );
+        assert!(arena_plan
+            .tables
+            .iter()
+            .all(|table| table.columns.iter().all(|column| column.schema.align == 4)));
+
+        let mut arena_catalog = Vec::new();
+        emit_native_storage_catalog_materialization(&mut arena_catalog, &arena_plan);
+        assert_eq!(
+            arena_catalog,
+            native_storage_catalog_materialization_sequence(&arena_plan),
+            "every table and column should be emitted from the world plan in plan order"
+        );
+        for table in &arena_plan.tables {
+            assert!(contains_subsequence(
+                &arena_catalog,
+                &u64_immediate_store_sequence(
+                    table.columns.len() as u64,
+                    table.catalog.column_count.offset,
+                ),
+            ));
+            for column in &table.columns {
+                for (value, slot) in [
+                    (column.schema.id, column.catalog.component_id),
+                    (u64::from(column.schema.size), column.catalog.element_size),
+                    (u64::from(column.schema.align), column.catalog.element_align),
+                ] {
+                    assert!(contains_subsequence(
+                        &arena_catalog,
+                        &u64_immediate_store_sequence(value, slot.offset),
+                    ));
+                }
+                assert!(contains_subsequence(
+                    &arena_catalog,
+                    &lea_stack_address_store_sequence(
+                        column.payload.offset,
+                        column.catalog.payload_base_address.offset,
+                    ),
+                ));
+            }
+        }
+
+        let aligned_plan = aligned_synthetic_emission_plan();
+        let aligned_columns = &aligned_plan.tables[0].columns;
+        assert_eq!(
+            aligned_columns
+                .iter()
+                .map(|column| (
+                    column.schema.size,
+                    column.schema.align,
+                    column.payload.offset
+                ))
+                .collect::<Vec<_>>(),
+            [(8, 8, 960), (16, 16, 976)]
+        );
+        assert!(
+            u32::from(aligned_columns[0].payload.offset)
+                + u32::from(aligned_columns[0].payload.byte_len)
+                <= u32::from(aligned_columns[1].payload.offset),
+            "checked 16-byte padding should keep synthetic columns disjoint"
+        );
+        let mut aligned_catalog = Vec::new();
+        emit_native_storage_catalog_materialization(&mut aligned_catalog, &aligned_plan);
+        for column in aligned_columns {
+            assert!(contains_subsequence(
+                &aligned_catalog,
+                &u64_immediate_store_sequence(
+                    u64::from(column.schema.align),
+                    column.catalog.element_align.offset,
+                ),
+            ));
+            assert!(contains_subsequence(
+                &aligned_catalog,
+                &lea_stack_address_store_sequence(
+                    column.payload.offset,
+                    column.catalog.payload_base_address.offset,
+                ),
+            ));
+        }
+    }
+
+    #[test]
+    fn materializes_spawn_rows_through_storage_catalog() {
         for (fixture_name, source, expected_row_count) in [
             (
                 "move_system.arc",
@@ -8127,6 +8485,8 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
             let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
                 .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
+            let storage_compatibility = storage_compatibility_for_program(&program);
+            let catalog_table = storage_compatibility.catalog_table;
             let metadata = ecs_metadata::encode_ecs_metadata(&assembly)
                 .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
             let startup_payloads = startup_payloads(&metadata)
@@ -8150,6 +8510,7 @@ mod tests {
                     &mut handler,
                     row_index,
                     u64::from(committed_count),
+                    storage_compatibility,
                     &mut jump_offsets,
                 );
 
@@ -8169,7 +8530,7 @@ mod tests {
                     ),
                     compare_stack_slot_sequence(
                         catalog_table.slots.capacity.offset,
-                        ECS_ARCHETYPE_STORAGE_CAPACITY,
+                        storage_compatibility.capacity,
                     ),
                     compare_stack_slot_sequence(
                         catalog_table.columns[0].slots.element_size.offset,
@@ -8448,13 +8809,16 @@ mod tests {
         let program = parser::parse_program(&tokens).expect("move_system.arc parses");
         let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
             .expect("move_system.arc assembles");
+        let storage_plan = storage_plan_for_program(&program);
+        let planned_table = &storage_plan.tables[0];
+        let storage_compatibility = storage_compatibility_for_program(&program);
         let metadata =
             ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
         let startup_payloads = startup_payloads(&metadata).expect("startup payloads parse");
 
         assert_eq!(startup_payloads.spawn_operations.len(), 1);
         let storage = NATIVE_ECS_TABLE_MODEL.archetype_storage;
-        let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+        let catalog_table = storage_compatibility.catalog_table;
         let row0_storage = archetype_storage_row_slots(0).expect("row 0 storage slots are defined");
         assert_eq!(
             storage.row_count.offset,
@@ -8493,25 +8857,22 @@ mod tests {
         assert!(
             contains_subsequence(
                 &text,
-                &storage_capacity_catalog_materialization_sequence(
-                    ECS_ARCHETYPE_STORAGE_CAPACITY as u32,
-                    ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT,
-                    catalog_table.slots.capacity.offset,
+                &u64_immediate_store_sequence(
+                    u64::from(planned_table.capacity),
+                    planned_table.storage.capacity.offset,
                 ),
             ),
-            "generated startup should initialize bounded storage capacity once and copy it to the catalog"
+            "generated startup should initialize descriptor-planned storage capacity"
         );
         assert!(
             contains_subsequence(
                 &text,
-                &storage_row_stride_catalog_materialization_sequence(
-                    ECS_POSITION_DESCRIPTOR_SIZE_SLOT,
-                    ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT,
-                    ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT,
-                    catalog_table.slots.row_stride.offset,
+                &u64_immediate_store_sequence(
+                    u64::from(planned_table.logical_row_stride),
+                    planned_table.catalog.row_stride.offset,
                 ),
             ),
-            "generated startup should derive native storage and catalog row stride from descriptors"
+            "generated startup should materialize descriptor-planned catalog row stride"
         );
         assert!(
             contains_ordered_subsequences(
@@ -8885,6 +9246,7 @@ mod tests {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
         let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let storage_compatibility = storage_compatibility_for_program(&program);
         let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
             .expect("move_system.arc assembles");
         let metadata =
@@ -8917,7 +9279,8 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_qword_at_stack_address_store_sequence(
-                    NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0]
+                    storage_compatibility
+                        .catalog_table
                         .slots
                         .row_count_address
                         .offset,
@@ -8937,7 +9300,7 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
-                    NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0].columns[0]
+                    storage_compatibility.catalog_table.columns[0]
                         .slots
                         .payload_base_address
                         .offset,
@@ -8950,7 +9313,7 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_store_stack_slot_sequence(
-                    NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0].columns[1]
+                    storage_compatibility.catalog_table.columns[1]
                         .slots
                         .payload_base_address
                         .offset,
@@ -9114,6 +9477,8 @@ mod tests {
             }
         );
 
+        let row =
+            native_query_plan_iteration_row(storage_compatibility_for_program(&program)).build_row;
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
@@ -9265,6 +9630,8 @@ mod tests {
         ] {
             let tokens = lexer::lex(source).expect("movement fixture lexes");
             let program = parser::parse_program(&tokens).expect("movement fixture parses");
+            let storage_compatibility = storage_compatibility_for_program(&program);
+            let build_row = native_query_plan_iteration_row(storage_compatibility).build_row;
             let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
                 .expect("movement fixture assembles");
             let metadata = ecs_metadata::encode_ecs_metadata(&assembly)
@@ -9507,11 +9874,11 @@ mod tests {
 
         let one_row_text = ecs_metadata_decoder_text_payload(&one_row_program, &one_row_metadata)
             .expect("move_system ECS decoder text emits");
-        let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+        let one_row_catalog = storage_compatibility_for_program(&one_row_program).catalog_table;
         let one_row_position_address = find_subsequence_from(
             &one_row_text,
             &load_store_stack_slot_sequence(
-                catalog_table.columns[0].slots.payload_base_address.offset,
+                one_row_catalog.columns[0].slots.payload_base_address.offset,
                 ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
             ),
             0,
@@ -9520,7 +9887,7 @@ mod tests {
         let one_row_velocity_address = find_subsequence_from(
             &one_row_text,
             &load_store_stack_slot_sequence(
-                catalog_table.columns[1].slots.payload_base_address.offset,
+                one_row_catalog.columns[1].slots.payload_base_address.offset,
                 ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
             ),
             one_row_position_address,
@@ -9579,10 +9946,11 @@ mod tests {
 
         let two_row_text = ecs_metadata_decoder_text_payload(&two_row_program, &two_row_metadata)
             .expect("two-row ECS decoder text emits");
+        let two_row_catalog = storage_compatibility_for_program(&two_row_program).catalog_table;
         let row0_position_address = find_subsequence_from(
             &two_row_text,
             &load_store_stack_slot_sequence(
-                catalog_table.columns[0].slots.payload_base_address.offset,
+                two_row_catalog.columns[0].slots.payload_base_address.offset,
                 ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT,
             ),
             0,
@@ -9591,7 +9959,7 @@ mod tests {
         let row0_velocity_address = find_subsequence_from(
             &two_row_text,
             &load_store_stack_slot_sequence(
-                catalog_table.columns[1].slots.payload_base_address.offset,
+                two_row_catalog.columns[1].slots.payload_base_address.offset,
                 ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT,
             ),
             row0_position_address,
@@ -9700,7 +10068,8 @@ mod tests {
 
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
-        let iterated_row = rows[schedule_row.query_plan_row_index];
+        let iterated_row =
+            native_query_plan_iteration_row(storage_compatibility_for_program(&program));
         let build_row = iterated_row.build_row;
 
         let query_plan_identity =
@@ -10023,8 +10392,9 @@ mod tests {
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 1088);
-        let row = ECS_QUERY_PLAN_BUILD_ROWS[0];
+        assert_eq!(storage_plan_for_program(&program).frame_size, 1072);
+        let row =
+            native_query_plan_iteration_row(storage_compatibility_for_program(&program)).build_row;
         for (source_slot, target_slot) in [
             (row.query_id_slot, row.plan_query_id_slot),
             (row.query_term_count_slot, row.plan_term_count_slot),
@@ -10263,7 +10633,9 @@ mod tests {
             contains_subsequence(
                 &text,
                 &load_qword_at_stack_address_store_sequence(
-                    ECS_QUERY_PLAN_BUILD_ROWS[0].catalog_row_count_address_slot,
+                    native_query_plan_iteration_row(storage_compatibility_for_program(&program))
+                        .build_row
+                        .catalog_row_count_address_slot,
                     ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
                 ),
             ),
@@ -10509,7 +10881,7 @@ mod tests {
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 1088);
+        assert_eq!(storage_plan_for_program(&program).frame_size, 1072);
         for (startup_table_slot, descriptor_slot) in ECS_RESOURCE_STARTUP_DESCRIPTOR_RELATIONS {
             assert!(
                 contains_subsequence(
@@ -10521,7 +10893,8 @@ mod tests {
                 descriptor_slot
             );
         }
-        let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+        let storage_compatibility = storage_compatibility_for_program(&program);
+        let catalog_table = storage_compatibility.catalog_table;
         let first_spawn = NATIVE_ECS_TABLE_MODEL.startup_operations.spawn_rows[0];
         for (startup_table_slot, catalog_slot) in
             startup_spawn_catalog_relations(first_spawn, catalog_table)
@@ -10581,7 +10954,7 @@ mod tests {
                 descriptor_slot
             );
         }
-        let query_plan_build_row = ECS_QUERY_PLAN_TABLE_ITERATION_ROWS[0].build_row;
+        let query_plan_build_row = native_query_plan_iteration_row(storage_compatibility).build_row;
         assert!(
             contains_subsequence(
                 &text,
@@ -10778,6 +11151,158 @@ mod tests {
         bytes
     }
 
+    fn u64_immediate_store_sequence(value: u64, stack_slot: u16) -> Vec<u8> {
+        mov_rax_immediate_store_sequence(value, stack_slot)
+    }
+
+    fn storage_plan_for_program(program: &Program) -> NativeWorldStoragePlan {
+        let core = core_lower::lower_program_to_core(program).expect("fixture lowers to Core");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(program)
+            .expect("fixture assembles");
+        derive_native_world_storage_plan(&core, &assembly, NATIVE_STORAGE_BASE_OFFSET)
+            .expect("fixture has a native world storage plan")
+    }
+
+    fn storage_compatibility_for_program(program: &Program) -> NativeStorageCompatibilityModel {
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(program)
+            .expect("fixture assembles for storage compatibility");
+        let metadata = ecs_metadata::encode_ecs_metadata(&assembly)
+            .expect("fixture metadata encodes for storage compatibility");
+        let startup = startup_payloads(&metadata)
+            .expect("fixture startup payloads parse for storage compatibility");
+        let observable = native_move_query_loop_observable(program, &startup)
+            .expect("fixture query observable exists for storage compatibility");
+        native_storage_compatibility_model(&storage_plan_for_program(program), &observable)
+            .expect("fixture fits the bounded native execution compatibility model")
+    }
+
+    fn descriptor_sized_arena_emission_plan() -> NativeWorldStoragePlan {
+        let regeneration = planned_schema(10, "Regeneration", 12, 4);
+        let vitality = planned_schema(20, "Vitality", 8, 4);
+        let faction = planned_schema(30, "Faction", 4, 4);
+        NativeWorldStoragePlan {
+            frame_size: 1328,
+            tables: vec![
+                NativeTableStoragePlan {
+                    key: vec![10, 20, 30].into_boxed_slice(),
+                    rows: vec![
+                        planned_spawn_row(0),
+                        planned_spawn_row(1),
+                        planned_spawn_row(2),
+                    ],
+                    capacity_steps: vec![1, 2, 4].into_boxed_slice(),
+                    capacity: 4,
+                    logical_row_stride: 24,
+                    storage: planned_table_storage_slots(936),
+                    catalog: planned_catalog_table_slots(1104),
+                    columns: vec![
+                        planned_column(regeneration, 960, 48, 1168),
+                        planned_column(vitality.clone(), 1008, 32, 1200),
+                        planned_column(faction.clone(), 1040, 16, 1232),
+                    ],
+                },
+                NativeTableStoragePlan {
+                    key: vec![20, 30].into_boxed_slice(),
+                    rows: vec![planned_spawn_row(3), planned_spawn_row(4)],
+                    capacity_steps: vec![1, 2].into_boxed_slice(),
+                    capacity: 2,
+                    logical_row_stride: 12,
+                    storage: planned_table_storage_slots(1056),
+                    catalog: planned_catalog_table_slots(1136),
+                    columns: vec![
+                        planned_column(vitality, 1080, 16, 1264),
+                        planned_column(faction, 1096, 8, 1296),
+                    ],
+                },
+            ],
+        }
+    }
+
+    fn aligned_synthetic_emission_plan() -> NativeWorldStoragePlan {
+        NativeWorldStoragePlan {
+            frame_size: 1088,
+            tables: vec![NativeTableStoragePlan {
+                key: vec![40, 50].into_boxed_slice(),
+                rows: vec![planned_spawn_row(0)],
+                capacity_steps: vec![1].into_boxed_slice(),
+                capacity: 1,
+                logical_row_stride: 24,
+                storage: planned_table_storage_slots(936),
+                catalog: planned_catalog_table_slots(992),
+                columns: vec![
+                    planned_column(planned_schema(40, "Aligned8", 8, 8), 960, 8, 1024),
+                    planned_column(planned_schema(50, "Aligned16", 16, 16), 976, 16, 1056),
+                ],
+            }],
+        }
+    }
+
+    fn planned_spawn_row(spawn_ordinal: u32) -> NativePlannedSpawnRow {
+        NativePlannedSpawnRow {
+            spawn_ordinal,
+            startup_operation_index: spawn_ordinal,
+        }
+    }
+
+    fn planned_schema(id: u64, name: &str, size: u32, align: u32) -> NativeComponentSchema {
+        NativeComponentSchema {
+            id,
+            name: name.to_string(),
+            size,
+            align,
+            fields: Vec::new(),
+        }
+    }
+
+    fn planned_column(
+        schema: NativeComponentSchema,
+        payload_offset: u16,
+        payload_byte_len: u16,
+        catalog_offset: u16,
+    ) -> NativeColumnStoragePlan {
+        NativeColumnStoragePlan {
+            schema,
+            payload: NativeByteRange {
+                offset: payload_offset,
+                byte_len: payload_byte_len,
+            },
+            catalog: planned_catalog_column_slots(catalog_offset),
+        }
+    }
+
+    fn planned_table_storage_slots(offset: u16) -> NativeTableStorageSlots {
+        NativeTableStorageSlots {
+            row_count: planned_slot(offset),
+            capacity: planned_slot(offset + 8),
+            row_stride: planned_slot(offset + 16),
+        }
+    }
+
+    fn planned_catalog_table_slots(offset: u16) -> NativeCatalogTableSlots {
+        NativeCatalogTableSlots {
+            column_count: planned_slot(offset),
+            row_count_address: planned_slot(offset + 8),
+            capacity: planned_slot(offset + 16),
+            row_stride: planned_slot(offset + 24),
+        }
+    }
+
+    fn planned_catalog_column_slots(offset: u16) -> NativeCatalogColumnSlots {
+        NativeCatalogColumnSlots {
+            component_id: planned_slot(offset),
+            element_size: planned_slot(offset + 8),
+            element_align: planned_slot(offset + 16),
+            payload_base_address: planned_slot(offset + 24),
+        }
+    }
+
+    fn planned_slot(offset: u16) -> NativeSlot {
+        NativeSlot {
+            offset,
+            byte_len: NATIVE_ECS_QWORD_BYTE_LEN,
+        }
+    }
+
     fn load_store_stack_slot_sequence(load_slot: u16, store_slot: u16) -> Vec<u8> {
         let mut bytes = Vec::new();
         append_load_stack_slot_to_rax(&mut bytes, load_slot);
@@ -10849,69 +11374,46 @@ mod tests {
         bytes
     }
 
-    fn storage_capacity_catalog_materialization_sequence(
-        capacity: u32,
-        storage_slot: u16,
-        catalog_slot: u16,
-    ) -> Vec<u8> {
-        let mut bytes = mov_eax_immediate_store_sequence(capacity, storage_slot);
-        append_load_stack_slot_to_rax(&mut bytes, storage_slot);
-        append_rax_qword_store(&mut bytes, catalog_slot);
-        bytes
-    }
-
-    fn storage_row_stride_catalog_materialization_sequence(
-        position_size_slot: u16,
-        velocity_size_slot: u16,
-        storage_slot: u16,
-        catalog_slot: u16,
+    fn native_storage_catalog_materialization_sequence(
+        storage_plan: &NativeWorldStoragePlan,
     ) -> Vec<u8> {
         let mut bytes = Vec::new();
-        append_load_stack_slot_to_rax(&mut bytes, position_size_slot);
-        append_add_stack_slot_to_rax(&mut bytes, velocity_size_slot);
-        append_rax_qword_store(&mut bytes, storage_slot);
-        append_rax_qword_store(&mut bytes, catalog_slot);
-        bytes
-    }
-
-    fn native_storage_catalog_materialization_sequence(
-        catalog_table: NativeStorageCatalogTableRow,
-        first_spawn: NativeSpawnStartupOperationSlots,
-    ) -> Vec<u8> {
-        let mut bytes = load_store_stack_slot_sequence(
-            first_spawn.component_count.offset,
-            catalog_table.slots.column_count.offset,
-        );
-        bytes.extend_from_slice(&lea_stack_address_store_sequence(
-            catalog_table.storage.row_count.offset,
-            catalog_table.slots.row_count_address.offset,
-        ));
-        bytes.extend_from_slice(&storage_capacity_catalog_materialization_sequence(
-            ECS_ARCHETYPE_STORAGE_CAPACITY as u32,
-            catalog_table.storage.capacity.offset,
-            catalog_table.slots.capacity.offset,
-        ));
-        bytes.extend_from_slice(&storage_row_stride_catalog_materialization_sequence(
-            catalog_table.columns[0].descriptor.size.offset,
-            catalog_table.columns[1].descriptor.size.offset,
-            catalog_table.storage.row_stride.offset,
-            catalog_table.slots.row_stride.offset,
-        ));
-        for column in catalog_table.columns {
-            for (source, target) in [
-                (column.descriptor.id, column.slots.component_id),
-                (column.descriptor.size, column.slots.element_size),
-                (column.descriptor.align, column.slots.element_align),
+        for table in &storage_plan.tables {
+            bytes.extend_from_slice(&u64_immediate_store_sequence(
+                table.columns.len() as u64,
+                table.catalog.column_count.offset,
+            ));
+            bytes.extend_from_slice(&lea_stack_address_store_sequence(
+                table.storage.row_count.offset,
+                table.catalog.row_count_address.offset,
+            ));
+            for (value, slot) in [
+                (u64::from(table.capacity), table.storage.capacity),
+                (u64::from(table.capacity), table.catalog.capacity),
+                (
+                    u64::from(table.logical_row_stride),
+                    table.storage.row_stride,
+                ),
+                (
+                    u64::from(table.logical_row_stride),
+                    table.catalog.row_stride,
+                ),
             ] {
-                bytes.extend_from_slice(&load_store_stack_slot_sequence(
-                    source.offset,
-                    target.offset,
+                bytes.extend_from_slice(&u64_immediate_store_sequence(value, slot.offset));
+            }
+            for column in &table.columns {
+                for (value, slot) in [
+                    (column.schema.id, column.catalog.component_id),
+                    (u64::from(column.schema.size), column.catalog.element_size),
+                    (u64::from(column.schema.align), column.catalog.element_align),
+                ] {
+                    bytes.extend_from_slice(&u64_immediate_store_sequence(value, slot.offset));
+                }
+                bytes.extend_from_slice(&lea_stack_address_store_sequence(
+                    column.payload.offset,
+                    column.catalog.payload_base_address.offset,
                 ));
             }
-            bytes.extend_from_slice(&lea_stack_address_store_sequence(
-                column.payload_column.payload_rows[0].offset,
-                column.slots.payload_base_address.offset,
-            ));
         }
         bytes
     }
