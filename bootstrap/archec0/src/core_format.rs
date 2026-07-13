@@ -305,5 +305,6 @@ fn format_system_binary_op(op: CoreSystemBinaryOp) -> &'static str {
 fn format_spawn_field_value(value: &CoreSpawnFieldValue) -> String {
     match value {
         CoreSpawnFieldValue::F32Bits(bits) => format!("f32.bits 0x{bits:08x}"),
+        CoreSpawnFieldValue::I32(value) => format!("i32 {value}"),
     }
 }

@@ -587,15 +587,8 @@ impl<'a> StartupLowerer<'a> {
                 ))
             })?;
 
-        if declaration.type_name.name != "f32" {
-            return Err(lower_error(format!(
-                "only f32 spawn fields can be lowered to Core: {}.{}",
-                component.name, field.name
-            )));
-        }
-
-        let value = match &field.value {
-            ComponentLiteralValue::Float { text, .. } => {
+        let value = match (declaration.type_name.name.as_str(), &field.value) {
+            ("f32", ComponentLiteralValue::Float { text, .. }) => {
                 let parsed = text.parse::<f32>().map_err(|_| {
                     lower_error(format!(
                         "invalid f32 literal `{text}` for component field `{}.{}`",
@@ -603,6 +596,27 @@ impl<'a> StartupLowerer<'a> {
                     ))
                 })?;
                 CoreSpawnFieldValue::F32Bits(parsed.to_bits())
+            }
+            ("i32", ComponentLiteralValue::Integer { value, .. }) => {
+                let parsed = i32::try_from(*value).map_err(|_| {
+                    lower_error(format!(
+                        "integer literal does not fit i32 for component field `{}.{}`",
+                        component.name, field.name
+                    ))
+                })?;
+                CoreSpawnFieldValue::I32(parsed)
+            }
+            (type_name, ComponentLiteralValue::Float { .. }) => {
+                return Err(lower_error(format!(
+                    "float literal cannot initialize {type_name} component field `{}.{}`",
+                    component.name, field.name
+                )));
+            }
+            (type_name, ComponentLiteralValue::Integer { .. }) => {
+                return Err(lower_error(format!(
+                    "integer literal cannot initialize {type_name} component field `{}.{}`",
+                    component.name, field.name
+                )));
             }
         };
 
@@ -822,6 +836,41 @@ mod tests {
         };
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn lowers_typed_i32_spawn_values_to_core() {
+        let source = include_str!("../../../examples/arena_recovery.arc");
+        let tokens = lexer::lex(source).expect("arena_recovery.arc lexes");
+        let ast = parser::parse_program(&tokens).expect("arena_recovery.arc parses");
+        let actual = lower_program_to_core(&ast).expect("arena_recovery.arc lowers to Core");
+
+        let faction_values = actual.functions[0].blocks[0]
+            .instructions
+            .iter()
+            .filter_map(|instruction| match instruction {
+                CoreInstruction::Spawn { components } => components
+                    .iter()
+                    .find(|component| component.name == "Arena.Faction")
+                    .and_then(|component| component.fields.first())
+                    .map(|field| field.value.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            faction_values,
+            vec![
+                CoreSpawnFieldValue::I32(1),
+                CoreSpawnFieldValue::I32(2),
+                CoreSpawnFieldValue::I32(3),
+                CoreSpawnFieldValue::I32(4),
+                CoreSpawnFieldValue::I32(5),
+            ]
+        );
+        let formatted = crate::core_format::format_core_program(&actual);
+        assert!(formatted.contains("field id = i32 1"));
+        assert!(formatted.contains("field id = i32 5"));
+        assert!(formatted.contains("field current = f32.bits 0x41200000"));
     }
 
     #[test]

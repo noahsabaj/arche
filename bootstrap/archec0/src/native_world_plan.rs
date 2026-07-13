@@ -7,7 +7,9 @@ use crate::core::{
 };
 use crate::core_verify;
 use crate::runtime::ComponentFieldDescriptor;
-use crate::runtime_assembly::{RuntimeProgramAssembly, StartupOperation};
+use crate::runtime_assembly::{
+    verified_core_startup_instructions, RuntimeProgramAssembly, StartupOperation,
+};
 
 pub(crate) const NATIVE_STORAGE_BASE_OFFSET: u16 = 936;
 
@@ -235,20 +237,9 @@ fn verify_runtime_spawns_match_core(
     core: &CoreProgram,
     assembly: &RuntimeProgramAssembly,
 ) -> Result<(), NativeWorldPlanError> {
-    let startup_functions = core
-        .functions
+    let core_spawns = verified_core_startup_instructions(core)
+        .map_err(|error| plan_error(error.message))?
         .iter()
-        .filter(|function| function.name == "startup")
-        .collect::<Vec<_>>();
-    if startup_functions.len() != 1 {
-        return Err(plan_error(
-            "verified Core must contain exactly one `startup` function for native world planning",
-        ));
-    }
-    let core_spawns = startup_functions[0]
-        .blocks
-        .iter()
-        .flat_map(|block| block.instructions.iter())
         .filter_map(|instruction| match instruction {
             CoreInstruction::Spawn { components } => Some(components),
             _ => None,
@@ -341,6 +332,7 @@ fn encode_core_spawn_payload(
             })?;
         let bytes = match field.value {
             CoreSpawnFieldValue::F32Bits(bits) => bits.to_le_bytes(),
+            CoreSpawnFieldValue::I32(value) => value.to_le_bytes(),
         };
         let start = descriptor_field.offset as usize;
         let end = start
@@ -758,6 +750,52 @@ fn plan_error(message: impl Into<String>) -> NativeWorldPlanError {
 mod tests {
     use super::*;
     use crate::{checker, core_lower, layout, lexer, parser, runtime_assembly};
+
+    #[test]
+    fn materializes_arbitrary_startup_component_lists() {
+        let source = include_str!("../../../examples/arena_recovery.arc");
+        let tokens = lexer::lex(source).expect("arena_recovery.arc lexes");
+        let program = parser::parse_program(&tokens).expect("arena_recovery.arc parses");
+        checker::check_program(&program).expect("arena_recovery.arc checks");
+        let core = core_lower::lower_program_to_core(&program).expect("Arena Core lowers");
+        core_verify::verify_core_program(&core).expect("Arena Core verifies");
+        let assembly =
+            runtime_assembly::assemble_runtime_program_from_verified_core(&program, &core)
+                .expect("Arena runtime assembly builds from verified Core");
+
+        let faction_id = layout::stable_component_id("Arena", "Faction");
+        let faction_payloads = assembly
+            .startup_operations
+            .iter()
+            .filter_map(|operation| match operation {
+                StartupOperation::Spawn { components } => components
+                    .iter()
+                    .find(|component| component.component_id == faction_id)
+                    .map(|component| component.payload_bytes.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            faction_payloads,
+            (1i32..=5)
+                .map(|value| value.to_le_bytes().to_vec())
+                .collect::<Vec<_>>()
+        );
+
+        let source_plan =
+            derive_native_world_storage_plan(&core, &assembly, NATIVE_STORAGE_BASE_OFFSET)
+                .expect("real Arena native storage plan derives");
+        let boundary_plan =
+            derive_native_world_storage_plan_from_input(&arena_input(), NATIVE_STORAGE_BASE_OFFSET)
+                .expect("Arena planning boundary contract derives");
+        assert_eq!(source_plan, boundary_plan);
+        assert_eq!(source_plan.frame_size, 1328);
+        assert_eq!(source_plan.tables.len(), 2);
+        assert_eq!(source_plan.tables[0].capacity_steps.as_ref(), [1, 2, 4]);
+        assert_eq!(source_plan.tables[0].rows.len(), 3);
+        assert_eq!(source_plan.tables[1].capacity_steps.as_ref(), [1, 2]);
+        assert_eq!(source_plan.tables[1].rows.len(), 2);
+    }
 
     #[test]
     fn derives_native_world_storage_plan() {

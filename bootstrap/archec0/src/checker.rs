@@ -741,6 +741,20 @@ fn check_literal_value(
                 check_error(*span, format!("invalid f32 literal `{text}` for {label}"))
             })?;
         }
+        ComponentLiteralValue::Integer { value, span } => {
+            if expected != Type::I32 {
+                return Err(check_error(
+                    *span,
+                    format!(
+                        "integer literal cannot initialize {expected_name} {label}",
+                        expected_name = expected.name()
+                    ),
+                ));
+            }
+            if *value > i32::MAX as u64 {
+                return Err(check_error(*span, "integer literal does not fit i32"));
+            }
+        }
     }
     Ok(())
 }
@@ -980,6 +994,59 @@ startup {
     fn accepts_integer_and_process_status_boundaries() {
         check("world Demo startup { let max: i32 = 2147483647 exit 255 }")
             .expect("i32::MAX and exit status 255 are accepted");
+    }
+
+    #[test]
+    fn checks_typed_integer_component_and_resource_literals() {
+        let boundaries = "world Bounds
+component Values { zero: i32 max: i32 scalar: f32 }
+resource Limits { zero: i32 max: i32 scalar: f32 }
+startup {
+  resource Limits { zero: 0, max: 2147483647, scalar: 1.0 }
+  spawn { Values { zero: 0, max: 2147483647, scalar: 2.0 } }
+  exit 0
+}";
+        check(boundaries).expect("typed integer and existing f32 startup literals check");
+
+        for source in [
+            "world Bounds component Values { value: i32 } startup { spawn { Values { value: 2147483648 } } exit 0 }",
+            "world Bounds resource Limits { value: i32 } startup { resource Limits { value: 2147483648 } exit 0 }",
+        ] {
+            let literal = source.find("2147483648").expect("range fixture has literal");
+            let error = check(source).expect_err("out-of-range startup i32 must fail");
+            assert_eq!(
+                error.span,
+                Span {
+                    start: literal,
+                    end: literal + "2147483648".len(),
+                }
+            );
+            assert!(error.message.contains("does not fit i32"));
+        }
+
+        for (source, literal, expected) in [
+            (
+                "world Bounds component Values { value: f32 } startup { spawn { Values { value: 1 } } exit 0 }",
+                "1",
+                "integer literal cannot initialize f32",
+            ),
+            (
+                "world Bounds resource Limits { value: i32 } startup { resource Limits { value: 1.0 } exit 0 }",
+                "1.0",
+                "float literal cannot initialize i32",
+            ),
+        ] {
+            let literal_start = source.rfind(literal).expect("type fixture has literal");
+            let error = check(source).expect_err("typed startup literal mismatch must fail");
+            assert_eq!(
+                error.span,
+                Span {
+                    start: literal_start,
+                    end: literal_start + literal.len(),
+                }
+            );
+            assert!(error.message.contains(expected));
+        }
     }
 
     #[test]

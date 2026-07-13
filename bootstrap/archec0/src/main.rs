@@ -238,16 +238,29 @@ fn write_output(source_path: &str, output_path: &str) {
         process::exit(1);
     }
 
-    let assembly = match runtime_assembly::assemble_runtime_program_from_source(&program) {
-        Ok(assembly) => assembly,
+    let core = match core_lower::lower_program_to_core(&program) {
+        Ok(core) => core,
         Err(error) => {
-            eprintln!(
-                "archec0: could not assemble runtime metadata: {}",
-                error.message
-            );
+            eprintln!("archec0: could not lower Core: {}", error.message);
             process::exit(1);
         }
     };
+    if let Err(error) = core_verify::verify_core_program(&core) {
+        eprintln!("archec0: invalid Core: {}", error.message);
+        process::exit(1);
+    }
+
+    let assembly =
+        match runtime_assembly::assemble_runtime_program_from_verified_core(&program, &core) {
+            Ok(assembly) => assembly,
+            Err(error) => {
+                eprintln!(
+                    "archec0: could not assemble runtime metadata: {}",
+                    error.message
+                );
+                process::exit(1);
+            }
+        };
 
     let (text_payload, metadata_payload) = if assembly.requires_ecs_metadata() {
         let metadata_payload = match ecs_metadata::encode_ecs_metadata(&assembly) {

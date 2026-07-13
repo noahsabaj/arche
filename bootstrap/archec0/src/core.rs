@@ -224,6 +224,7 @@ pub struct CoreSpawnField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CoreSpawnFieldValue {
     F32Bits(u32),
+    I32(i32),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

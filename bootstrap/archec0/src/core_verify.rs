@@ -598,6 +598,7 @@ fn verify_spawn(
                 resolve_field("component", &schema.name, &schema.fields, &field.name)?;
             let value_type = match field.value {
                 CoreSpawnFieldValue::F32Bits(_) => CoreType::F32,
+                CoreSpawnFieldValue::I32(_) => CoreType::I32,
             };
             if value_type != expected_type {
                 return Err(verify_error(format!(
@@ -674,6 +675,10 @@ mod tests {
             .expect("lowered math Core verifies");
         verify_core_program(&lowered(include_str!("../../../examples/move_system.arc")))
             .expect("lowered ECS Core verifies");
+        verify_core_program(&lowered(include_str!(
+            "../../../examples/arena_recovery.arc"
+        )))
+        .expect("lowered mixed f32/i32 Arena Core verifies");
     }
 
     #[test]
@@ -813,6 +818,35 @@ mod tests {
         spawn_program.components[0].fields[0].ty = CoreType::I32;
         let error =
             verify_core_program(&spawn_program).expect_err("spawn field type mismatch must fail");
+        assert!(error.message.contains("has the wrong type"));
+
+        let mut integer_spawn_program =
+            lowered(include_str!("../../../examples/arena_recovery.arc"));
+        let faction_field = integer_spawn_program.functions[0].blocks[0]
+            .instructions
+            .iter_mut()
+            .find_map(|instruction| match instruction {
+                CoreInstruction::Spawn { components } => components
+                    .iter_mut()
+                    .find(|component| component.name == "Arena.Faction")
+                    .and_then(|component| component.fields.first_mut()),
+                _ => None,
+            })
+            .expect("Arena contains an i32 faction spawn field");
+        faction_field.value = CoreSpawnFieldValue::F32Bits(1.0f32.to_bits());
+        let error = verify_core_program(&integer_spawn_program)
+            .expect_err("f32 Core value for i32 spawn field must fail");
+        assert!(error.message.contains("has the wrong type"));
+
+        let mut float_spawn_program = lowered(include_str!("../../../examples/spawn_position.arc"));
+        let CoreInstruction::Spawn { components } =
+            &mut float_spawn_program.functions[0].blocks[0].instructions[0]
+        else {
+            panic!("spawn_position contains a startup spawn");
+        };
+        components[0].fields[0].value = CoreSpawnFieldValue::I32(1);
+        let error = verify_core_program(&float_spawn_program)
+            .expect_err("i32 Core value for f32 spawn field must fail");
         assert!(error.message.contains("has the wrong type"));
     }
 

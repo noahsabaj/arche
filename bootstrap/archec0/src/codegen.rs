@@ -5,8 +5,8 @@ use crate::core::{
 use crate::core_lower;
 use crate::core_verify;
 use crate::native_world_plan::{
-    derive_native_world_storage_plan, NativeCatalogColumnSlots, NativeSlot, NativeWorldStoragePlan,
-    NATIVE_STORAGE_BASE_OFFSET,
+    derive_native_world_storage_plan, NativeCatalogColumnSlots, NativeColumnStoragePlan,
+    NativeSlot, NativeTableStoragePlan, NativeWorldStoragePlan, NATIVE_STORAGE_BASE_OFFSET,
 };
 use crate::parser::{BinaryOperator, Expression, Program, Statement};
 use crate::runtime_assembly;
@@ -1466,6 +1466,7 @@ const ECS_RUN_SCHEDULE_DISPATCH_FAILURE_EXIT_CODE: u8 = 21;
 const ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE: u8 = 47;
 const ECS_STARTUP_SECTION_DIRECTORY_OFFSET: usize = 16 + 5 * 16;
 const ECS_SECTION_OFFSET_FIELD_OFFSET: usize = 4;
+const ECS_SECTION_BYTE_LEN_FIELD_OFFSET: usize = 8;
 const ECS_SECTION_RECORD_COUNT_FIELD_OFFSET: usize = 12;
 const ECS_STARTUP_OP_RESOURCE_PAYLOAD: u32 = 1;
 const ECS_STARTUP_OP_SPAWN: u32 = 2;
@@ -1572,18 +1573,6 @@ const ECS_POSITION_PAYLOAD_STORAGE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
 const ECS_VELOCITY_PAYLOAD_STORAGE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
     .startup_state
     .spawn_payload_rows[0]
-    .velocity_payload
-    .offset;
-#[cfg(test)]
-const ECS_SECOND_POSITION_PAYLOAD_STORAGE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
-    .startup_state
-    .spawn_payload_rows[1]
-    .position_payload
-    .offset;
-#[cfg(test)]
-const ECS_SECOND_VELOCITY_PAYLOAD_STORAGE_SLOT: u16 = NATIVE_ECS_EXECUTION_STATE_LAYOUT
-    .startup_state
-    .spawn_payload_rows[1]
     .velocity_payload
     .offset;
 #[cfg(test)]
@@ -2660,6 +2649,7 @@ struct EcsStartupPayloads {
     resource_payload_len_offset: i32,
     resource_payload_offset: i32,
     resource_payload: [u8; 4],
+    resource_payload_bytes: Vec<u8>,
     spawn_operation_kind_offset: i32,
     spawn_component_count_offset: i32,
     spawn_component_count: u32,
@@ -2679,21 +2669,24 @@ struct EcsStartupPayloads {
     run_schedule_id: u64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ParsedResourcePayloadOperation {
     operation_kind_offset: i32,
     resource_id_offset: i32,
     resource_id: u64,
+    resource_name: String,
     payload_len_offset: i32,
     payload_offset: i32,
-    payload: [u8; 4],
+    payload: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ParsedSpawnOperation {
+    startup_operation_index: u32,
     operation_kind_offset: i32,
     component_count_offset: i32,
     component_count: u32,
+    components: Vec<ParsedSpawnComponent>,
     position_component_id_offset: i32,
     position_component_id: u64,
     position_payload_len_offset: i32,
@@ -2706,11 +2699,22 @@ struct ParsedSpawnOperation {
     velocity_payload: [u8; 8],
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ParsedSpawnComponent {
+    component_id_offset: i32,
+    component_id: u64,
+    component_name: String,
+    payload_len_offset: i32,
+    payload_offset: i32,
+    payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct ParsedRunScheduleOperation {
     operation_kind_offset: i32,
     schedule_id_offset: i32,
     schedule_id: u64,
+    schedule_name: String,
 }
 
 #[allow(dead_code)]
@@ -2793,14 +2797,12 @@ pub fn ecs_metadata_decoder_text_payload(
     }
 
     let core = lower_verified_core(program)?;
-    let assembly =
-        runtime_assembly::assemble_runtime_program_from_source(program).map_err(|error| {
-            CodegenError {
-                message: format!(
-                    "could not assemble native world storage input: {}",
-                    error.message
-                ),
-            }
+    let assembly = runtime_assembly::assemble_runtime_program_from_verified_core(program, &core)
+        .map_err(|error| CodegenError {
+            message: format!(
+                "could not assemble verified native world storage input: {}",
+                error.message
+            ),
         })?;
     let storage_plan =
         derive_native_world_storage_plan(&core, &assembly, NATIVE_STORAGE_BASE_OFFSET).map_err(
@@ -2822,7 +2824,7 @@ pub fn ecs_metadata_decoder_text_payload(
         query_loop_observable,
         &storage_plan,
         storage_compatibility,
-    );
+    )?;
     Ok(runtime_wrapped_payload(
         &startup_body,
         storage_plan.frame_size,
@@ -3112,17 +3114,6 @@ fn startup_spawn_slots(row_index: usize) -> Result<NativeSpawnStartupOperationSl
         .ok_or_else(metadata_startup_payload_error)
 }
 
-fn startup_payload_storage_slots(
-    row_index: usize,
-) -> Result<NativeSpawnPayloadStorageSlots, CodegenError> {
-    NATIVE_ECS_EXECUTION_STATE_LAYOUT
-        .startup_state
-        .spawn_payload_rows
-        .get(row_index)
-        .copied()
-        .ok_or_else(metadata_startup_payload_error)
-}
-
 #[cfg(test)]
 fn archetype_storage_row_slots(
     row_index: usize,
@@ -3220,24 +3211,69 @@ fn startup_payloads(metadata_payload: &[u8]) -> Result<EcsStartupPayloads, Codeg
         metadata_payload,
         ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_OFFSET_FIELD_OFFSET,
     )? as usize;
+    let startup_section_byte_len = read_metadata_u32(
+        metadata_payload,
+        ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_BYTE_LEN_FIELD_OFFSET,
+    )? as usize;
     let startup_record_count = read_metadata_u32(
         metadata_payload,
         ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_RECORD_COUNT_FIELD_OFFSET,
     )?;
-
-    if !matches!(startup_record_count, 3 | 4) {
+    let startup_section_end = startup_section_offset
+        .checked_add(startup_section_byte_len)
+        .ok_or_else(metadata_startup_payload_error)?;
+    checked_metadata_range(
+        metadata_payload,
+        startup_section_offset,
+        startup_section_byte_len,
+    )?;
+    if startup_record_count == 0 {
         return Err(metadata_startup_payload_error());
     }
 
     let mut offset = startup_section_offset;
-    let resource_payload = parse_resource_payload_operation(metadata_payload, &mut offset)?;
-    let spawn_count = startup_record_count as usize - 2;
-    let mut spawn_operations = Vec::with_capacity(spawn_count);
-    for _ in 0..spawn_count {
-        spawn_operations.push(parse_spawn_operation(metadata_payload, &mut offset)?);
+    let mut resource_payload = None;
+    let mut spawn_operations = Vec::new();
+    let mut run_schedule = None;
+    for operation_index in 0..startup_record_count {
+        let operation_kind = read_metadata_u32(metadata_payload, offset)?;
+        match operation_kind {
+            ECS_STARTUP_OP_RESOURCE_PAYLOAD => {
+                if resource_payload.is_some() {
+                    return Err(metadata_startup_payload_error());
+                }
+                resource_payload = Some(parse_resource_payload_operation(
+                    metadata_payload,
+                    &mut offset,
+                )?);
+            }
+            ECS_STARTUP_OP_SPAWN => spawn_operations.push(parse_spawn_operation(
+                metadata_payload,
+                &mut offset,
+                operation_index,
+            )?),
+            ECS_STARTUP_OP_RUN_SCHEDULE => {
+                if run_schedule.is_some() {
+                    return Err(metadata_startup_payload_error());
+                }
+                run_schedule = Some(parse_run_schedule_operation(metadata_payload, &mut offset)?);
+            }
+            _ => return Err(metadata_startup_payload_error()),
+        }
     }
-    let spawn_operation = spawn_operations[0];
-    let run_schedule = parse_run_schedule_operation(metadata_payload, &mut offset)?;
+    if offset != startup_section_end || spawn_operations.is_empty() {
+        return Err(metadata_startup_payload_error());
+    }
+    let resource_payload = resource_payload.ok_or_else(metadata_startup_payload_error)?;
+    let run_schedule = run_schedule.ok_or_else(metadata_startup_payload_error)?;
+    let spawn_operation = spawn_operations
+        .first()
+        .ok_or_else(metadata_startup_payload_error)?;
+    let resource_payload_compatibility = resource_payload
+        .payload
+        .as_slice()
+        .try_into()
+        .unwrap_or([0; 4]);
 
     Ok(EcsStartupPayloads {
         startup_record_count,
@@ -3246,7 +3282,8 @@ fn startup_payloads(metadata_payload: &[u8]) -> Result<EcsStartupPayloads, Codeg
         resource_id: resource_payload.resource_id,
         resource_payload_len_offset: resource_payload.payload_len_offset,
         resource_payload_offset: resource_payload.payload_offset,
-        resource_payload: resource_payload.payload,
+        resource_payload: resource_payload_compatibility,
+        resource_payload_bytes: resource_payload.payload,
         spawn_operation_kind_offset: spawn_operation.operation_kind_offset,
         spawn_component_count_offset: spawn_operation.component_count_offset,
         spawn_component_count: spawn_operation.component_count,
@@ -3289,13 +3326,14 @@ fn parse_resource_payload_operation(
     )?;
     let resource_id = read_metadata_u64(metadata_payload, *offset)?;
     *offset += 8;
-    skip_metadata_string(metadata_payload, offset)?;
+    let resource_name = read_metadata_string(metadata_payload, offset)?;
 
     let payload = parse_payload_offset_and_bytes(metadata_payload, offset)?;
     Ok(ParsedResourcePayloadOperation {
         operation_kind_offset,
         resource_id_offset,
         resource_id,
+        resource_name,
         payload_len_offset: payload.0,
         payload_offset: payload.1,
         payload: payload.2,
@@ -3305,6 +3343,7 @@ fn parse_resource_payload_operation(
 fn parse_spawn_operation(
     metadata_payload: &[u8],
     offset: &mut usize,
+    startup_operation_index: u32,
 ) -> Result<ParsedSpawnOperation, CodegenError> {
     let operation_kind_offset = metadata_i32_offset(
         *offset,
@@ -3324,34 +3363,43 @@ fn parse_spawn_operation(
     let component_count = read_metadata_u32(metadata_payload, *offset)?;
     *offset += 4;
 
-    if component_count != 2 {
+    if component_count == 0 {
         return Err(metadata_startup_payload_error());
     }
 
-    let position_payload = parse_spawn_component_payload(metadata_payload, offset)?;
-    let velocity_payload = parse_spawn_component_payload(metadata_payload, offset)?;
+    // Do not reserve from an untrusted metadata count before the records have
+    // been range-checked. A corrupt count must fail decoding, not request an
+    // attacker-sized allocation.
+    let mut components = Vec::new();
+    for _ in 0..component_count {
+        components.push(parse_spawn_component_payload(metadata_payload, offset)?);
+    }
+    let position_payload = legacy_spawn_component(&components, DEMO_POSITION_COMPONENT_ID);
+    let velocity_payload = legacy_spawn_component(&components, DEMO_VELOCITY_COMPONENT_ID);
 
     Ok(ParsedSpawnOperation {
+        startup_operation_index,
         operation_kind_offset,
         component_count_offset,
         component_count,
-        position_component_id_offset: position_payload.0,
-        position_component_id: position_payload.1,
-        position_payload_len_offset: position_payload.2,
-        position_payload_offset: position_payload.3,
-        position_payload: position_payload.4,
-        velocity_component_id_offset: velocity_payload.0,
-        velocity_component_id: velocity_payload.1,
-        velocity_payload_len_offset: velocity_payload.2,
-        velocity_payload_offset: velocity_payload.3,
-        velocity_payload: velocity_payload.4,
+        components,
+        position_component_id_offset: position_payload.component_id_offset,
+        position_component_id: position_payload.component_id,
+        position_payload_len_offset: position_payload.payload_len_offset,
+        position_payload_offset: position_payload.payload_offset,
+        position_payload: position_payload.payload,
+        velocity_component_id_offset: velocity_payload.component_id_offset,
+        velocity_component_id: velocity_payload.component_id,
+        velocity_payload_len_offset: velocity_payload.payload_len_offset,
+        velocity_payload_offset: velocity_payload.payload_offset,
+        velocity_payload: velocity_payload.payload,
     })
 }
 
 fn parse_spawn_component_payload(
     metadata_payload: &[u8],
     offset: &mut usize,
-) -> Result<(i32, u64, i32, i32, [u8; 8]), CodegenError> {
+) -> Result<ParsedSpawnComponent, CodegenError> {
     checked_metadata_range(metadata_payload, *offset, 8)?;
     let component_id_offset = metadata_i32_offset(
         *offset,
@@ -3359,15 +3407,51 @@ fn parse_spawn_component_payload(
     )?;
     let component_id = read_metadata_u64(metadata_payload, *offset)?;
     *offset += 8;
-    skip_metadata_string(metadata_payload, offset)?;
+    let component_name = read_metadata_string(metadata_payload, offset)?;
     let payload = parse_payload_offset_and_bytes(metadata_payload, offset)?;
-    Ok((
+    Ok(ParsedSpawnComponent {
         component_id_offset,
         component_id,
-        payload.0,
-        payload.1,
-        payload.2,
-    ))
+        component_name,
+        payload_len_offset: payload.0,
+        payload_offset: payload.1,
+        payload: payload.2,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct LegacySpawnComponent {
+    component_id_offset: i32,
+    component_id: u64,
+    payload_len_offset: i32,
+    payload_offset: i32,
+    payload: [u8; 8],
+}
+
+fn legacy_spawn_component(
+    components: &[ParsedSpawnComponent],
+    component_id: u64,
+) -> LegacySpawnComponent {
+    let Some(component) = components
+        .iter()
+        .find(|component| component.component_id == component_id)
+    else {
+        return LegacySpawnComponent {
+            component_id_offset: 0,
+            component_id: 0,
+            payload_len_offset: 0,
+            payload_offset: 0,
+            payload: [0; 8],
+        };
+    };
+    let payload = component.payload.as_slice().try_into().unwrap_or([0; 8]);
+    LegacySpawnComponent {
+        component_id_offset: component.component_id_offset,
+        component_id: component.component_id,
+        payload_len_offset: component.payload_len_offset,
+        payload_offset: component.payload_offset,
+        payload,
+    }
 }
 
 fn parse_run_schedule_operation(
@@ -3400,9 +3484,6 @@ fn parse_run_schedule_operation(
     *offset += 8;
 
     let schedule_name = read_metadata_string(metadata_payload, offset)?;
-    if schedule_id != DEMO_MAIN_SCHEDULE_ID || schedule_name != "Demo.Main" {
-        return Err(metadata_startup_payload_error());
-    }
 
     Ok(ParsedRunScheduleOperation {
         operation_kind_offset,
@@ -3411,23 +3492,20 @@ fn parse_run_schedule_operation(
             "ECS metadata startup run schedule offset must fit in signed 32-bit displacement",
         )?,
         schedule_id,
+        schedule_name,
     })
 }
 
-fn parse_payload_offset_and_bytes<const N: usize>(
+fn parse_payload_offset_and_bytes(
     metadata_payload: &[u8],
     offset: &mut usize,
-) -> Result<(i32, i32, [u8; N]), CodegenError> {
+) -> Result<(i32, i32, Vec<u8>), CodegenError> {
     let payload_len_offset = metadata_i32_offset(
         *offset,
         "ECS metadata startup payload length offset must fit in signed 32-bit displacement",
     )?;
     let payload_len = read_metadata_u32(metadata_payload, *offset)? as usize;
     *offset += 4;
-
-    if payload_len != N {
-        return Err(metadata_startup_payload_error());
-    }
 
     checked_metadata_range(metadata_payload, *offset, payload_len)?;
     let payload_offset = *offset;
@@ -3440,8 +3518,7 @@ fn parse_payload_offset_and_bytes<const N: usize>(
         });
     }
 
-    let mut payload = [0; N];
-    payload.copy_from_slice(&metadata_payload[payload_offset..*offset]);
+    let payload = metadata_payload[payload_offset..*offset].to_vec();
 
     Ok((payload_len_offset, payload_offset as i32, payload))
 }
@@ -3468,14 +3545,6 @@ fn read_metadata_u64(metadata_payload: &[u8], offset: usize) -> Result<u64, Code
         metadata_payload[offset + 6],
         metadata_payload[offset + 7],
     ]))
-}
-
-fn skip_metadata_string(metadata_payload: &[u8], offset: &mut usize) -> Result<(), CodegenError> {
-    let byte_len = read_metadata_u32(metadata_payload, *offset)? as usize;
-    *offset += 4;
-    checked_metadata_range(metadata_payload, *offset, byte_len)?;
-    *offset += byte_len;
-    Ok(())
 }
 
 fn read_metadata_string(
@@ -3524,7 +3593,7 @@ fn ecs_metadata_decoder_body(
     query_loop_observable: NativeMoveQueryLoopObservable,
     storage_plan: &NativeWorldStoragePlan,
     storage_compatibility: NativeStorageCompatibilityModel,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, CodegenError> {
     let mut bytes = Vec::new();
     let mut jump_to_metadata_failure_offsets = Vec::new();
     let mut jump_to_startup_state_failure_offsets = Vec::new();
@@ -3577,6 +3646,7 @@ fn ecs_metadata_decoder_body(
     emit_native_startup_operation_table_iteration(
         &mut bytes,
         &startup_payloads,
+        storage_plan,
         &query_loop_observable,
         storage_compatibility,
         &mut jump_to_startup_state_failure_offsets,
@@ -3584,7 +3654,7 @@ fn ecs_metadata_decoder_body(
         &mut jump_to_query_loop_field_math_failure_offsets,
         &mut jump_to_query_loop_position_store_failure_offsets,
         &mut jump_to_run_schedule_dispatch_failure_offsets,
-    );
+    )?;
 
     move_edi_exit_code(&mut bytes, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE);
 
@@ -3709,7 +3779,7 @@ fn ecs_metadata_decoder_body(
         (bytes.len() + runtime_destroy_suffix(storage_plan.frame_size).len() - 7) as i32;
     patch_i32(&mut bytes, 3, metadata_displacement);
 
-    bytes
+    Ok(bytes)
 }
 
 fn compare_stack_slot_to_u64(
@@ -3794,6 +3864,7 @@ fn emit_startup_operation_dispatch(
 fn emit_native_startup_operation_table_iteration(
     bytes: &mut Vec<u8>,
     startup_payloads: &EcsStartupPayloads,
+    storage_plan: &NativeWorldStoragePlan,
     query_loop_observable: &NativeMoveQueryLoopObservable,
     storage_compatibility: NativeStorageCompatibilityModel,
     startup_state_failure_offsets: &mut Vec<usize>,
@@ -3801,7 +3872,7 @@ fn emit_native_startup_operation_table_iteration(
     field_math_failure_offsets: &mut Vec<usize>,
     position_store_failure_offsets: &mut Vec<usize>,
     dispatch_failure_offsets: &mut Vec<usize>,
-) {
+) -> Result<(), CodegenError> {
     bytes.extend_from_slice(&[0x8b, 0x46, ECS_STARTUP_RECORD_COUNT_OFFSET]); // mov eax, dword ptr [rsi + offset]
     store_rax_to_stack_slot(bytes, ECS_STARTUP_OPERATION_COUNT_SLOT);
 
@@ -3824,11 +3895,12 @@ fn emit_native_startup_operation_table_iteration(
                 let spawn_row_index = (row.dispatch_row.dispatch_count_after_row - 1) as usize;
                 emit_spawn_startup_operation_handler(
                     bytes,
+                    startup_payloads,
+                    storage_plan,
                     spawn_row_index,
                     row.dispatch_row.dispatch_count_after_row,
-                    storage_compatibility,
                     startup_state_failure_offsets,
-                )
+                )?
             }
             NativeStartupOperationHandler::RunSchedule => {
                 emit_run_schedule_startup_operation_handler(
@@ -3845,6 +3917,8 @@ fn emit_native_startup_operation_table_iteration(
             }
         }
     }
+
+    Ok(())
 }
 
 fn emit_startup_operation_dispatch_row(
@@ -3878,129 +3952,273 @@ fn emit_resource_payload_startup_operation_handler(
 
 fn emit_spawn_startup_operation_handler(
     bytes: &mut Vec<u8>,
-    spawn_row_index: usize,
+    startup_payloads: &EcsStartupPayloads,
+    storage_plan: &NativeWorldStoragePlan,
+    spawn_ordinal: usize,
     row_count_after_spawn: u64,
-    storage_compatibility: NativeStorageCompatibilityModel,
     jump_offsets: &mut Vec<usize>,
-) {
-    let spawn_slots =
-        startup_spawn_slots(spawn_row_index).expect("startup iteration row matches spawn table");
-    let payload_slots = startup_payload_storage_slots(spawn_row_index)
-        .expect("startup iteration row matches spawn payload storage");
-    let catalog_table = storage_compatibility.catalog_table;
-
-    compare_stack_slots_equal(
-        bytes,
-        spawn_slots.component_count.offset,
-        catalog_table.slots.column_count.offset,
-        jump_offsets,
-    );
-    compare_stack_slot_to_u64(
-        bytes,
-        catalog_table.slots.column_count.offset,
-        catalog_table.columns.len() as u64,
-        jump_offsets,
-    );
-    compare_stack_slot_to_u64(
-        bytes,
-        ECS_SPAWN_ROW_COUNT_SLOT,
-        spawn_row_index as u64,
-        jump_offsets,
-    );
-    compare_qword_at_stack_address_to_u64(
-        bytes,
-        catalog_table.slots.row_count_address.offset,
-        spawn_row_index as u64,
-        jump_offsets,
-    );
-    compare_stack_slot_to_u64(
-        bytes,
-        catalog_table.slots.capacity.offset,
-        storage_compatibility.capacity,
-        jump_offsets,
-    );
-    for (startup_table_slot, catalog_slot) in
-        startup_spawn_catalog_relations(spawn_slots, catalog_table)
+) -> Result<(), CodegenError> {
+    let spawn = startup_payloads
+        .spawn_operations
+        .get(spawn_ordinal)
+        .ok_or_else(metadata_startup_payload_error)?;
+    let (table, table_row_index) = planned_spawn_table_row(storage_plan, spawn_ordinal)?;
+    let planned_row = &table.rows[table_row_index];
+    if planned_row.startup_operation_index != spawn.startup_operation_index
+        || spawn.components.len() != table.columns.len()
+        || usize::try_from(spawn.component_count).ok() != Some(spawn.components.len())
     {
-        compare_stack_slots_equal(bytes, startup_table_slot, catalog_slot, jump_offsets);
+        return Err(native_planned_spawn_error(
+            "parsed startup spawn does not match its planned table row",
+        ));
     }
-    for column in catalog_table.columns {
+    for (component_index, component) in spawn.components.iter().enumerate() {
+        if spawn.components[component_index + 1..]
+            .iter()
+            .any(|candidate| candidate.component_id == component.component_id)
+        {
+            return Err(native_planned_spawn_error(
+                "parsed startup spawn contains a duplicate component id",
+            ));
+        }
+        if !table
+            .columns
+            .iter()
+            .any(|column| column.schema.id == component.component_id)
+        {
+            return Err(native_planned_spawn_error(
+                "parsed startup spawn component is absent from its planned table",
+            ));
+        }
+    }
+
+    compare_metadata_dword_to_u32(
+        bytes,
+        spawn.operation_kind_offset,
+        ECS_STARTUP_OP_SPAWN,
+        jump_offsets,
+    );
+    compare_metadata_dword_to_u32(
+        bytes,
+        spawn.component_count_offset,
+        table.columns.len() as u32,
+        jump_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        table.catalog.column_count.offset,
+        table.columns.len() as u64,
+        jump_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        table.storage.row_count.offset,
+        table_row_index as u64,
+        jump_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        table.storage.capacity.offset,
+        u64::from(table.capacity),
+        jump_offsets,
+    );
+    compare_stack_slot_to_u64(
+        bytes,
+        table.catalog.capacity.offset,
+        u64::from(table.capacity),
+        jump_offsets,
+    );
+
+    for column in &table.columns {
+        let component = planned_spawn_component(spawn, column)?;
+        compare_metadata_qword_to_u64(
+            bytes,
+            component.component_id_offset,
+            column.schema.id,
+            jump_offsets,
+        );
+        compare_metadata_dword_to_u32(
+            bytes,
+            component.payload_len_offset,
+            column.schema.size,
+            jump_offsets,
+        );
         compare_stack_slot_to_u64(
             bytes,
-            column.slots.element_size.offset,
-            u64::from(NATIVE_ECS_QWORD_BYTE_LEN),
+            column.catalog.component_id.offset,
+            column.schema.id,
+            jump_offsets,
+        );
+        compare_stack_slot_to_u64(
+            bytes,
+            column.catalog.element_size.offset,
+            u64::from(column.schema.size),
+            jump_offsets,
+        );
+        compare_stack_slot_to_u64(
+            bytes,
+            column.catalog.element_align.offset,
+            u64::from(column.schema.align),
             jump_offsets,
         );
     }
 
-    load_metadata_qword_via_offset_slot(
-        bytes,
-        spawn_slots.position_payload_offset.offset,
-        payload_slots.position_payload.offset,
-    );
-    load_metadata_qword_via_offset_slot(
-        bytes,
-        spawn_slots.velocity_payload_offset.offset,
-        payload_slots.velocity_payload.offset,
-    );
-    emit_catalog_payload_store(
-        bytes,
-        catalog_table.columns[0],
-        spawn_row_index,
-        payload_slots.position_payload.offset,
-    );
-    emit_catalog_payload_store(
-        bytes,
-        catalog_table.columns[1],
-        spawn_row_index,
-        payload_slots.velocity_payload.offset,
-    );
-
-    load_stack_slot_to_rax(bytes, catalog_table.slots.row_count_address.offset);
-    bytes.push(0xba); // mov edx, committed native archetype storage row count
-    bytes.extend_from_slice(&(row_count_after_spawn as u32).to_le_bytes());
-    bytes.extend_from_slice(&[0x48, 0x89, 0x10]); // mov qword ptr [rax], rdx
-    bytes.push(0xb8); // mov eax, committed materialized spawn row count
-    bytes.extend_from_slice(&(row_count_after_spawn as u32).to_le_bytes());
-    store_rax_to_stack_slot(bytes, ECS_SPAWN_ROW_COUNT_SLOT);
-}
-
-fn startup_spawn_catalog_relations(
-    spawn_slots: NativeSpawnStartupOperationSlots,
-    catalog_table: NativeStorageCatalogTableRow,
-) -> [(u16, u16); 4] {
-    [
-        (
-            spawn_slots.position_component_id.offset,
-            catalog_table.columns[0].slots.component_id.offset,
-        ),
-        (
-            spawn_slots.position_payload_len.offset,
-            catalog_table.columns[0].slots.element_size.offset,
-        ),
-        (
-            spawn_slots.velocity_component_id.offset,
-            catalog_table.columns[1].slots.component_id.offset,
-        ),
-        (
-            spawn_slots.velocity_payload_len.offset,
-            catalog_table.columns[1].slots.element_size.offset,
-        ),
-    ]
-}
-
-fn emit_catalog_payload_store(
-    bytes: &mut Vec<u8>,
-    column: NativeStorageCatalogColumnRow,
-    row_index: usize,
-    payload_slot: u16,
-) {
-    load_stack_slot_to_rax(bytes, column.slots.payload_base_address.offset);
-    for _ in 0..row_index {
-        add_stack_slot_to_rax(bytes, column.slots.element_size.offset);
+    for column in &table.columns {
+        let component = planned_spawn_component(spawn, column)?;
+        emit_metadata_payload_copy_to_planned_column(bytes, component, column, table_row_index)?;
     }
-    load_stack_slot_to_rdx(bytes, payload_slot);
+
+    load_stack_slot_to_rax(bytes, table.catalog.row_count_address.offset);
+    bytes.extend_from_slice(&[0x48, 0xba]); // mov rdx, committed native table row count
+    bytes.extend_from_slice(&(table_row_index as u64 + 1).to_le_bytes());
     bytes.extend_from_slice(&[0x48, 0x89, 0x10]); // mov qword ptr [rax], rdx
+    emit_u64_to_stack_slot(bytes, row_count_after_spawn, ECS_SPAWN_ROW_COUNT_SLOT);
+
+    Ok(())
+}
+
+fn planned_spawn_table_row(
+    storage_plan: &NativeWorldStoragePlan,
+    spawn_ordinal: usize,
+) -> Result<(&NativeTableStoragePlan, usize), CodegenError> {
+    let spawn_ordinal = u32::try_from(spawn_ordinal)
+        .map_err(|_| native_planned_spawn_error("native spawn ordinal exceeds u32"))?;
+    let mut matching_row = None;
+    for table in &storage_plan.tables {
+        for (row_index, row) in table.rows.iter().enumerate() {
+            if row.spawn_ordinal == spawn_ordinal {
+                if matching_row.is_some() {
+                    return Err(native_planned_spawn_error(
+                        "native storage plan contains duplicate spawn ordinals",
+                    ));
+                }
+                matching_row = Some((table, row_index));
+            }
+        }
+    }
+    matching_row.ok_or_else(|| {
+        native_planned_spawn_error("parsed startup spawn is absent from native storage plan")
+    })
+}
+
+fn planned_spawn_component<'a>(
+    spawn: &'a ParsedSpawnOperation,
+    column: &NativeColumnStoragePlan,
+) -> Result<&'a ParsedSpawnComponent, CodegenError> {
+    let mut matches = spawn
+        .components
+        .iter()
+        .filter(|component| component.component_id == column.schema.id);
+    let component = matches.next().ok_or_else(|| {
+        native_planned_spawn_error("planned column is absent from parsed startup spawn")
+    })?;
+    if matches.next().is_some()
+        || component.component_name != column.schema.name
+        || component.payload.len() != column.schema.size as usize
+    {
+        return Err(native_planned_spawn_error(
+            "parsed startup component does not match its planned column schema",
+        ));
+    }
+    Ok(component)
+}
+
+fn emit_metadata_payload_copy_to_planned_column(
+    bytes: &mut Vec<u8>,
+    component: &ParsedSpawnComponent,
+    column: &NativeColumnStoragePlan,
+    table_row_index: usize,
+) -> Result<(), CodegenError> {
+    let row_byte_offset = table_row_index
+        .checked_mul(column.schema.size as usize)
+        .ok_or_else(|| native_planned_spawn_error("native column row offset overflow"))?;
+    let row_byte_offset = i32::try_from(row_byte_offset)
+        .map_err(|_| native_planned_spawn_error("native column row offset exceeds i32"))?;
+    load_stack_slot_to_rdx(bytes, column.catalog.payload_base_address.offset);
+
+    let mut copied = 0usize;
+    while component.payload.len() - copied >= 8 {
+        emit_metadata_to_rdx_copy(bytes, component.payload_offset, row_byte_offset, copied, 8)?;
+        copied += 8;
+    }
+    if component.payload.len() - copied >= 4 {
+        emit_metadata_to_rdx_copy(bytes, component.payload_offset, row_byte_offset, copied, 4)?;
+        copied += 4;
+    }
+    while copied < component.payload.len() {
+        emit_metadata_to_rdx_copy(bytes, component.payload_offset, row_byte_offset, copied, 1)?;
+        copied += 1;
+    }
+    Ok(())
+}
+
+fn emit_metadata_to_rdx_copy(
+    bytes: &mut Vec<u8>,
+    source_payload_offset: i32,
+    destination_row_offset: i32,
+    copied: usize,
+    byte_len: usize,
+) -> Result<(), CodegenError> {
+    let copied = i32::try_from(copied)
+        .map_err(|_| native_planned_spawn_error("native payload copy offset exceeds i32"))?;
+    let source_offset = source_payload_offset
+        .checked_add(copied)
+        .ok_or_else(|| native_planned_spawn_error("metadata payload copy offset overflow"))?;
+    let destination_offset = destination_row_offset
+        .checked_add(copied)
+        .ok_or_else(|| native_planned_spawn_error("native payload destination offset overflow"))?;
+    match byte_len {
+        8 => {
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
+            bytes.extend_from_slice(&source_offset.to_le_bytes());
+            bytes.extend_from_slice(&[0x48, 0x89, 0x82]); // mov qword ptr [rdx + offset], rax
+            bytes.extend_from_slice(&destination_offset.to_le_bytes());
+        }
+        4 => {
+            bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
+            bytes.extend_from_slice(&source_offset.to_le_bytes());
+            bytes.extend_from_slice(&[0x89, 0x82]); // mov dword ptr [rdx + offset], eax
+            bytes.extend_from_slice(&destination_offset.to_le_bytes());
+        }
+        1 => {
+            bytes.extend_from_slice(&[0x8a, 0x86]); // mov al, byte ptr [rsi + offset]
+            bytes.extend_from_slice(&source_offset.to_le_bytes());
+            bytes.extend_from_slice(&[0x88, 0x82]); // mov byte ptr [rdx + offset], al
+            bytes.extend_from_slice(&destination_offset.to_le_bytes());
+        }
+        _ => {
+            return Err(native_planned_spawn_error(
+                "unsupported native payload copy width",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn native_planned_spawn_error(message: impl Into<String>) -> CodegenError {
+    CodegenError {
+        message: message.into(),
+    }
+}
+
+#[cfg(test)]
+fn emit_native_planned_spawn_materializations(
+    bytes: &mut Vec<u8>,
+    startup_payloads: &EcsStartupPayloads,
+    storage_plan: &NativeWorldStoragePlan,
+    jump_offsets: &mut Vec<usize>,
+) -> Result<(), CodegenError> {
+    for spawn_ordinal in 0..startup_payloads.spawn_operations.len() {
+        emit_spawn_startup_operation_handler(
+            bytes,
+            startup_payloads,
+            storage_plan,
+            spawn_ordinal,
+            spawn_ordinal as u64 + 1,
+            jump_offsets,
+        )?;
+    }
+    Ok(())
 }
 
 fn compare_catalog_payload_to_u64(
@@ -4136,20 +4354,6 @@ fn emit_startup_operation_state_validations(
         startup_state_failure_offsets,
     );
     for (row_index, spawn) in startup_payloads.spawn_operations.iter().enumerate() {
-        let payload_slots = startup_payload_storage_slots(row_index)
-            .expect("startup payload parser bounds match native payload slots");
-        compare_stack_slot_to_u64(
-            bytes,
-            payload_slots.position_payload.offset,
-            u64::from_le_bytes(spawn.position_payload),
-            startup_state_failure_offsets,
-        );
-        compare_stack_slot_to_u64(
-            bytes,
-            payload_slots.velocity_payload.offset,
-            u64::from_le_bytes(spawn.velocity_payload),
-            startup_state_failure_offsets,
-        );
         compare_catalog_payload_to_u64(
             bytes,
             catalog_table.columns[0],
@@ -4521,12 +4725,6 @@ fn load_metadata_dword_via_offset_slot(bytes: &mut Vec<u8>, offset_slot: u16, ta
     load_stack_slot_to_rax(bytes, offset_slot);
     bytes.extend_from_slice(&[0x8b, 0x04, 0x06]); // mov eax, dword ptr [rsi + rax]
     store_eax_to_stack_dword_slot(bytes, target_slot);
-}
-
-fn load_metadata_qword_via_offset_slot(bytes: &mut Vec<u8>, offset_slot: u16, target_slot: u16) {
-    load_stack_slot_to_rax(bytes, offset_slot);
-    bytes.extend_from_slice(&[0x48, 0x8b, 0x04, 0x06]); // mov rax, qword ptr [rsi + rax]
-    store_rax_to_stack_slot(bytes, target_slot);
 }
 
 fn emit_native_query_plan_builder(
@@ -5119,8 +5317,7 @@ fn metadata_decoder_error() -> CodegenError {
 
 fn metadata_startup_payload_error() -> CodegenError {
     CodegenError {
-        message: "ECS metadata decoder executable requires a 4-byte resource payload, one or two two-component spawn operations, and `run Demo.Main`"
-            .to_string(),
+        message: "ECS metadata startup section is malformed".to_string(),
     }
 }
 
@@ -7689,6 +7886,7 @@ mod tests {
             resource_payload_len_offset: 602,
             resource_payload_offset: 606,
             resource_payload: [0x00, 0x00, 0x80, 0x3f],
+            resource_payload_bytes: vec![0x00, 0x00, 0x80, 0x3f],
             spawn_operation_kind_offset: 610,
             spawn_component_count_offset: 614,
             spawn_component_count: 2,
@@ -7703,9 +7901,11 @@ mod tests {
             velocity_payload_offset: 684,
             velocity_payload: [0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40],
             spawn_operations: vec![ParsedSpawnOperation {
+                startup_operation_index: 1,
                 operation_kind_offset: 610,
                 component_count_offset: 614,
                 component_count: 2,
+                components: Vec::new(),
                 position_component_id_offset: 618,
                 position_component_id: DEMO_POSITION_COMPONENT_ID,
                 position_payload_len_offset: 643,
@@ -8466,6 +8666,182 @@ mod tests {
     }
 
     #[test]
+    fn materializes_arbitrary_startup_component_lists() {
+        let source = include_str!("../../../examples/arena_recovery.arc");
+        let tokens = lexer::lex(source).expect("arena_recovery.arc lexes");
+        let program = parser::parse_program(&tokens).expect("arena_recovery.arc parses");
+        crate::checker::check_program(&program).expect("arena_recovery.arc checks");
+        let core = core_lower::lower_program_to_core(&program).expect("Arena Core lowers");
+        core_verify::verify_core_program(&core).expect("Arena Core verifies");
+        let assembly =
+            runtime_assembly::assemble_runtime_program_from_verified_core(&program, &core)
+                .expect("Arena runtime assembly builds from verified Core");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("Arena ECS metadata encodes");
+        let startup = startup_payloads(&metadata).expect("Arena startup metadata parses");
+        let storage_plan =
+            derive_native_world_storage_plan(&core, &assembly, NATIVE_STORAGE_BASE_OFFSET)
+                .expect("Arena native storage plan derives");
+
+        assert_eq!(startup.startup_record_count, 7);
+        assert_eq!(startup.resource_payload_bytes, 0.5f32.to_le_bytes());
+        assert_eq!(startup.spawn_operations.len(), 5);
+        assert_eq!(
+            startup
+                .spawn_operations
+                .iter()
+                .map(|spawn| spawn.components.len())
+                .collect::<Vec<_>>(),
+            [3, 3, 3, 2, 2]
+        );
+        assert_eq!(storage_plan.frame_size, 1328);
+        assert_eq!(storage_plan.tables.len(), 2);
+
+        let faction_id = crate::layout::stable_component_id("Arena", "Faction").0;
+        let faction_payloads = startup
+            .spawn_operations
+            .iter()
+            .map(|spawn| {
+                spawn
+                    .components
+                    .iter()
+                    .find(|component| component.component_id == faction_id)
+                    .expect("every Arena spawn has Faction")
+                    .payload
+                    .clone()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            faction_payloads,
+            (1i32..=5)
+                .map(|value| value.to_le_bytes().to_vec())
+                .collect::<Vec<_>>()
+        );
+
+        let mut emitted = Vec::new();
+        emit_native_storage_catalog_materialization(&mut emitted, &storage_plan);
+        let catalog_len = emitted.len();
+        let mut all_jump_offsets = Vec::new();
+        emit_native_planned_spawn_materializations(
+            &mut emitted,
+            &startup,
+            &storage_plan,
+            &mut all_jump_offsets,
+        )
+        .expect("all Arena startup spawns emit");
+        assert!(!all_jump_offsets.is_empty());
+
+        for spawn_ordinal in 0..startup.spawn_operations.len() {
+            let spawn = &startup.spawn_operations[spawn_ordinal];
+            let (table, table_row_index) = planned_spawn_table_row(&storage_plan, spawn_ordinal)
+                .expect("Arena spawn maps to one planned table row");
+            assert_eq!(
+                table.rows[table_row_index].startup_operation_index,
+                spawn.startup_operation_index
+            );
+
+            let mut row_bytes = Vec::new();
+            let mut row_jump_offsets = Vec::new();
+            emit_spawn_startup_operation_handler(
+                &mut row_bytes,
+                &startup,
+                &storage_plan,
+                spawn_ordinal,
+                spawn_ordinal as u64 + 1,
+                &mut row_jump_offsets,
+            )
+            .expect("Arena planned spawn row emits");
+
+            let first_column = &table.columns[0];
+            let first_component = planned_spawn_component(spawn, first_column)
+                .expect("first planned column maps by component id");
+            let first_copy = metadata_to_rdx_copy_sequence(
+                first_component.payload_offset,
+                (table_row_index as u32 * first_column.schema.size) as i32,
+                0,
+                first_component.payload.len().min(8),
+            );
+            let first_copy_index = find_subsequence_from(&row_bytes, &first_copy, 0)
+                .expect("planned row contains its first opaque payload copy");
+            assert!(
+                row_jump_offsets
+                    .iter()
+                    .all(|jump_offset| jump_offset + 6 <= first_copy_index),
+                "every fallible validation must precede the first planned payload write"
+            );
+
+            let mut final_copy_end = first_copy_index + first_copy.len();
+            for column in &table.columns {
+                let component = planned_spawn_component(spawn, column)
+                    .expect("planned column maps by descriptor id");
+                for validation in [
+                    metadata_qword_compare_prefix(component.component_id_offset, column.schema.id),
+                    metadata_dword_compare_prefix(component.payload_len_offset, column.schema.size),
+                ] {
+                    let validation_index = find_subsequence_from(&row_bytes, &validation, 0)
+                        .expect("component id and payload size are validated");
+                    assert!(validation_index < first_copy_index);
+                }
+
+                let row_offset = (table_row_index as u32 * column.schema.size) as i32;
+                let mut copied = 0usize;
+                for width in opaque_copy_widths(component.payload.len()) {
+                    let copy = metadata_to_rdx_copy_sequence(
+                        component.payload_offset,
+                        row_offset,
+                        copied,
+                        width,
+                    );
+                    let copy_index = find_subsequence_from(&row_bytes, &copy, first_copy_index)
+                        .expect("opaque component payload chunk is copied exactly");
+                    final_copy_end = final_copy_end.max(copy_index + copy.len());
+                    copied += width;
+                }
+                assert_eq!(copied, component.payload.len());
+            }
+
+            let table_commit = planned_table_row_count_commit_sequence(
+                table.catalog.row_count_address.offset,
+                table_row_index as u64 + 1,
+            );
+            let table_commit_index =
+                find_subsequence_from(&row_bytes, &table_commit, final_copy_end)
+                    .expect("table row count commits after every component payload");
+            let world_commit =
+                u64_immediate_store_sequence(spawn_ordinal as u64 + 1, ECS_SPAWN_ROW_COUNT_SLOT);
+            let world_commit_index =
+                find_subsequence_from(&row_bytes, &world_commit, table_commit_index)
+                    .expect("global spawn count commits after the table row");
+            assert!(
+                final_copy_end <= table_commit_index && table_commit_index < world_commit_index
+            );
+        }
+
+        assert!(emitted.len() > catalog_len);
+        assert_eq!(storage_plan.tables[0].capacity_steps.as_ref(), [1, 2, 4]);
+        assert_eq!(storage_plan.tables[1].capacity_steps.as_ref(), [1, 2]);
+    }
+
+    #[test]
+    fn rejects_unbounded_corrupt_startup_component_count() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let mut metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+        let parsed = startup_payloads(&metadata).expect("valid startup payloads parse");
+        let component_count_offset = parsed.spawn_component_count_offset as usize;
+        metadata[component_count_offset..component_count_offset + 4]
+            .copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let error = startup_payloads(&metadata)
+            .expect_err("corrupt component count must fail without count-sized preallocation");
+        assert_eq!(error, metadata_startup_payload_error());
+    }
+
+    #[test]
     fn materializes_spawn_rows_through_storage_catalog() {
         for (fixture_name, source, expected_row_count) in [
             (
@@ -8485,8 +8861,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
             let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
                 .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
-            let storage_compatibility = storage_compatibility_for_program(&program);
-            let catalog_table = storage_compatibility.catalog_table;
+            let storage_plan = storage_plan_for_program(&program);
             let metadata = ecs_metadata::encode_ecs_metadata(&assembly)
                 .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
             let startup_payloads = startup_payloads(&metadata)
@@ -8497,162 +8872,91 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{fixture_name}: {error:?}"));
 
             for row_index in 0..expected_row_count {
-                let spawn_slots = startup_spawn_slots(row_index).expect("bounded spawn row exists");
-                let payload_slots = startup_payload_storage_slots(row_index)
-                    .expect("bounded payload staging row exists");
-                let physical_slots =
-                    archetype_storage_row_slots(row_index).expect("bounded physical row exists");
-                let committed_count = (row_index + 1) as u32;
+                let spawn = &startup_payloads.spawn_operations[row_index];
+                let (table, table_row_index) = planned_spawn_table_row(&storage_plan, row_index)
+                    .expect("spawn maps to one planned table row");
+                let committed_count = (row_index + 1) as u64;
 
                 let mut handler = Vec::new();
                 let mut jump_offsets = Vec::new();
                 emit_spawn_startup_operation_handler(
                     &mut handler,
+                    &startup_payloads,
+                    &storage_plan,
                     row_index,
-                    u64::from(committed_count),
-                    storage_compatibility,
-                    &mut jump_offsets,
-                );
-
-                for sequence in [
-                    compare_stack_slots_equal_sequence(
-                        spawn_slots.component_count.offset,
-                        catalog_table.slots.column_count.offset,
-                    ),
-                    compare_stack_slot_sequence(
-                        catalog_table.slots.column_count.offset,
-                        catalog_table.columns.len() as u64,
-                    ),
-                    compare_stack_slot_sequence(ECS_SPAWN_ROW_COUNT_SLOT, row_index as u64),
-                    compare_qword_at_stack_address_sequence(
-                        catalog_table.slots.row_count_address.offset,
-                        row_index as u64,
-                    ),
-                    compare_stack_slot_sequence(
-                        catalog_table.slots.capacity.offset,
-                        storage_compatibility.capacity,
-                    ),
-                    compare_stack_slot_sequence(
-                        catalog_table.columns[0].slots.element_size.offset,
-                        u64::from(NATIVE_ECS_QWORD_BYTE_LEN),
-                    ),
-                    compare_stack_slot_sequence(
-                        catalog_table.columns[1].slots.element_size.offset,
-                        u64::from(NATIVE_ECS_QWORD_BYTE_LEN),
-                    ),
-                ] {
-                    assert!(
-                        contains_subsequence(&handler, &sequence),
-                        "{fixture_name} row {row_index} should validate catalog bounds/count state"
-                    );
-                }
-                for (startup_slot, catalog_slot) in
-                    startup_spawn_catalog_relations(spawn_slots, catalog_table)
-                {
-                    assert!(
-                        contains_subsequence(
-                            &handler,
-                            &compare_stack_slots_equal_sequence(startup_slot, catalog_slot),
-                        ),
-                        "{fixture_name} row {row_index} should validate startup field {startup_slot} against catalog field {catalog_slot}"
-                    );
-                }
-
-                let position_stage = metadata_qword_via_offset_slot_to_qword_store_sequence(
-                    spawn_slots.position_payload_offset.offset,
-                    payload_slots.position_payload.offset,
-                );
-                let velocity_stage = metadata_qword_via_offset_slot_to_qword_store_sequence(
-                    spawn_slots.velocity_payload_offset.offset,
-                    payload_slots.velocity_payload.offset,
-                );
-                let position_store = catalog_payload_store_sequence(
-                    catalog_table.columns[0],
-                    row_index,
-                    payload_slots.position_payload.offset,
-                );
-                let velocity_store = catalog_payload_store_sequence(
-                    catalog_table.columns[1],
-                    row_index,
-                    payload_slots.velocity_payload.offset,
-                );
-                let count_commit = catalog_row_count_commit_sequence(
-                    catalog_table.slots.row_count_address.offset,
                     committed_count,
-                    ECS_SPAWN_ROW_COUNT_SLOT,
+                    &mut jump_offsets,
+                )
+                .expect("planned spawn handler emits");
+
+                let first_column = &table.columns[0];
+                let first_component = planned_spawn_component(spawn, first_column)
+                    .expect("first planned column maps by component id");
+                let first_width = opaque_copy_widths(first_component.payload.len())[0];
+                let first_copy = metadata_to_rdx_copy_sequence(
+                    first_component.payload_offset,
+                    (table_row_index as u32 * first_column.schema.size) as i32,
+                    0,
+                    first_width,
                 );
-                let commit_tail = [
-                    position_store.as_slice(),
-                    velocity_store.as_slice(),
-                    count_commit.as_slice(),
-                ]
-                .concat();
-
-                let position_stage_index = find_subsequence_from(&handler, &position_stage, 0)
-                    .expect("Position payload should stage");
-                let velocity_stage_index = find_subsequence_from(
-                    &handler,
-                    &velocity_stage,
-                    position_stage_index + position_stage.len(),
-                )
-                .expect("Velocity payload should stage after Position");
-                let position_store_index = find_subsequence_from(
-                    &handler,
-                    &position_store,
-                    velocity_stage_index + velocity_stage.len(),
-                )
-                .expect("Position payload should store through its catalog base");
-                let velocity_store_index = find_subsequence_from(
-                    &handler,
-                    &velocity_store,
-                    position_store_index + position_store.len(),
-                )
-                .expect("Velocity payload should store through its catalog base");
-                let count_commit_index = find_subsequence_from(
-                    &handler,
-                    &count_commit,
-                    velocity_store_index + velocity_store.len(),
-                )
-                .expect("row count should commit after both payload stores");
-
+                let first_copy_index = find_subsequence_from(&handler, &first_copy, 0)
+                    .expect("planned payload copy is emitted");
                 assert!(jump_offsets
                     .iter()
-                    .all(|offset| *offset < position_stage_index));
-                assert!(
-                    handler.ends_with(&commit_tail),
-                    "{fixture_name} row {row_index} should end with one contiguous dual-write/count-publication tail"
-                );
-                assert!(
-                    !handler[position_store_index..count_commit_index]
-                        .windows(2)
-                        .any(|window| window == [0x0f, 0x85]),
-                    "{fixture_name} row {row_index} should not branch between storage writes and count commit"
-                );
-                assert!(
-                    contains_subsequence(&text, &commit_tail),
-                    "{fixture_name} row {row_index} should embed the isolated contiguous commit tail"
-                );
+                    .all(|offset| offset + 6 <= first_copy_index));
 
-                assert!(
-                    !contains_subsequence(
-                        &handler,
-                        &load_store_stack_slot_sequence(
-                            payload_slots.position_payload.offset,
-                            physical_slots.position_payload.offset,
+                let mut final_copy_end = first_copy_index + first_copy.len();
+                for column in &table.columns {
+                    let component = planned_spawn_component(spawn, column)
+                        .expect("planned column maps by component id");
+                    for validation in [
+                        metadata_qword_compare_prefix(
+                            component.component_id_offset,
+                            column.schema.id,
                         ),
-                    ),
-                    "{fixture_name} row {row_index} must not copy staged Position directly to a physical slot"
-                );
-                assert!(
-                    !contains_subsequence(
-                        &handler,
-                        &load_store_stack_slot_sequence(
-                            payload_slots.velocity_payload.offset,
-                            physical_slots.velocity_payload.offset,
+                        metadata_dword_compare_prefix(
+                            component.payload_len_offset,
+                            column.schema.size,
                         ),
-                    ),
-                    "{fixture_name} row {row_index} must not copy staged Velocity directly to a physical slot"
+                    ] {
+                        let validation_index = find_subsequence_from(&handler, &validation, 0)
+                            .expect("component metadata is validated");
+                        assert!(validation_index < first_copy_index);
+                    }
+
+                    let mut copied = 0usize;
+                    let row_offset = (table_row_index as u32 * column.schema.size) as i32;
+                    for width in opaque_copy_widths(component.payload.len()) {
+                        let copy = metadata_to_rdx_copy_sequence(
+                            component.payload_offset,
+                            row_offset,
+                            copied,
+                            width,
+                        );
+                        let copy_index = find_subsequence_from(&handler, &copy, first_copy_index)
+                            .expect("opaque payload chunk is copied through the planned base");
+                        final_copy_end = final_copy_end.max(copy_index + copy.len());
+                        copied += width;
+                    }
+                    assert_eq!(copied, component.payload.len());
+                }
+
+                let table_commit = planned_table_row_count_commit_sequence(
+                    table.catalog.row_count_address.offset,
+                    table_row_index as u64 + 1,
                 );
+                let table_commit_index =
+                    find_subsequence_from(&handler, &table_commit, final_copy_end)
+                        .expect("table row count commits after all component writes");
+                let world_commit =
+                    u64_immediate_store_sequence(committed_count, ECS_SPAWN_ROW_COUNT_SLOT);
+                let world_commit_index =
+                    find_subsequence_from(&handler, &world_commit, table_commit_index)
+                        .expect("world spawn count commits after the table row");
+                assert!(final_copy_end <= table_commit_index);
+                assert!(table_commit_index < world_commit_index);
+                assert!(contains_subsequence(&text, &table_commit));
+                assert!(contains_subsequence(&text, &world_commit));
             }
 
             assert!(
@@ -8674,6 +8978,23 @@ mod tests {
             .expect("move_system.arc assembles");
         let metadata =
             ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+        let startup = startup_payloads(&metadata).expect("startup payloads parse");
+        let storage_plan = storage_plan_for_program(&program);
+        let spawn = &startup.spawn_operations[0];
+        let (table, table_row_index) =
+            planned_spawn_table_row(&storage_plan, 0).expect("spawn maps to its planned table row");
+        let first_component = planned_spawn_component(spawn, &table.columns[0])
+            .expect("first planned component maps by id");
+        let first_copy = metadata_to_rdx_copy_sequence(
+            first_component.payload_offset,
+            (table_row_index as u32 * table.columns[0].schema.size) as i32,
+            0,
+            opaque_copy_widths(first_component.payload.len())[0],
+        );
+        let table_commit = planned_table_row_count_commit_sequence(
+            table.catalog.row_count_address.offset,
+            table_row_index as u64 + 1,
+        );
 
         assert_eq!(
             ECS_STARTUP_OPERATION_DISPATCH_ROWS,
@@ -8721,15 +9042,9 @@ mod tests {
                         ECS_STARTUP_TABLE_SPAWN_KIND_SLOT,
                         ECS_STARTUP_OP_SPAWN as u64,
                     ),
-                    metadata_qword_via_offset_slot_to_qword_store_sequence(
-                        ECS_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT,
-                        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
-                    ),
-                    metadata_qword_via_offset_slot_to_qword_store_sequence(
-                        ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT,
-                        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
-                    ),
-                    mov_eax_one_store_sequence(ECS_SPAWN_ROW_COUNT_SLOT),
+                    first_copy,
+                    table_commit,
+                    u64_immediate_store_sequence(1, ECS_SPAWN_ROW_COUNT_SLOT),
                     compare_stack_slot_sequence(
                         ECS_STARTUP_TABLE_RUN_SCHEDULE_KIND_SLOT,
                         ECS_STARTUP_OP_RUN_SCHEDULE as u64,
@@ -8846,13 +9161,15 @@ mod tests {
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        assert!(contains_subsequence(
+        assert!(contains_ordered_subsequences(
             &text,
-            &catalog_row_count_commit_sequence(
-                catalog_table.slots.row_count_address.offset,
-                1,
-                ECS_SPAWN_ROW_COUNT_SLOT,
-            ),
+            &[
+                planned_table_row_count_commit_sequence(
+                    planned_table.catalog.row_count_address.offset,
+                    1,
+                ),
+                u64_immediate_store_sequence(1, ECS_SPAWN_ROW_COUNT_SLOT),
+            ],
         ));
         assert!(
             contains_subsequence(
@@ -8874,32 +9191,22 @@ mod tests {
             ),
             "generated startup should materialize descriptor-planned catalog row stride"
         );
-        assert!(
-            contains_ordered_subsequences(
-                &text,
-                &[
-                    metadata_qword_via_offset_slot_to_qword_store_sequence(
-                        ECS_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT,
-                        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
-                    ),
-                    metadata_qword_via_offset_slot_to_qword_store_sequence(
-                        ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT,
-                        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
-                    ),
-                    catalog_payload_store_sequence(
-                        catalog_table.columns[0],
-                        0,
-                        ECS_POSITION_PAYLOAD_STORAGE_SLOT,
-                    ),
-                    catalog_payload_store_sequence(
-                        catalog_table.columns[1],
-                        0,
-                        ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
-                    ),
-                ],
-            ),
-            "generated startup should stage both payloads and write them through catalog columns"
-        );
+        let spawn = &startup_payloads.spawn_operations[0];
+        let mut copy_search_start = 0usize;
+        for column in &planned_table.columns {
+            let component = planned_spawn_component(spawn, column)
+                .expect("planned component maps by stable id");
+            let mut copied = 0usize;
+            for width in opaque_copy_widths(component.payload.len()) {
+                let copy =
+                    metadata_to_rdx_copy_sequence(component.payload_offset, 0, copied, width);
+                let copy_index = find_subsequence_from(&text, &copy, copy_search_start)
+                    .expect("generated startup copies exact payload bytes through catalog base");
+                copy_search_start = copy_index + copy.len();
+                copied += width;
+            }
+            assert_eq!(copied, component.payload.len());
+        }
         assert!(
             contains_subsequence(
                 &text,
@@ -9027,6 +9334,7 @@ mod tests {
         let metadata =
             ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
         let startup_payloads = startup_payloads(&metadata).expect("startup payloads parse");
+        let storage_plan = storage_plan_for_program(&program);
 
         assert_eq!(NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size, 1088);
         assert_eq!(startup_payloads.resource_operation_kind_offset, 577);
@@ -9189,26 +9497,30 @@ mod tests {
             ),
             "generated text should load resource payload through the startup table"
         );
-        assert!(
-            contains_subsequence(
-                &text,
-                &metadata_qword_via_offset_slot_to_qword_store_sequence(
-                    ECS_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT,
-                    ECS_POSITION_PAYLOAD_STORAGE_SLOT,
-                ),
-            ),
-            "generated text should load Position payload through the startup table"
-        );
-        assert!(
-            contains_subsequence(
-                &text,
-                &metadata_qword_via_offset_slot_to_qword_store_sequence(
-                    ECS_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT,
-                    ECS_VELOCITY_PAYLOAD_STORAGE_SLOT,
-                ),
-            ),
-            "generated text should load Velocity payload through the startup table"
-        );
+        let spawn = &startup_payloads.spawn_operations[0];
+        let (table, row_index) = planned_spawn_table_row(&storage_plan, 0)
+            .expect("startup spawn maps to planned storage");
+        for column in &table.columns {
+            let component = planned_spawn_component(spawn, column)
+                .expect("startup component maps by stable id");
+            let mut copied = 0usize;
+            for width in opaque_copy_widths(component.payload.len()) {
+                assert!(
+                    contains_subsequence(
+                        &text,
+                        &metadata_to_rdx_copy_sequence(
+                            component.payload_offset,
+                            (row_index as u32 * column.schema.size) as i32,
+                            copied,
+                            width,
+                        ),
+                    ),
+                    "generated text should copy {} payload bytes through its planned catalog column",
+                    component.component_name
+                );
+                copied += width;
+            }
+        }
         assert!(
             contains_subsequence(
                 &text,
@@ -9766,28 +10078,28 @@ mod tests {
             }
 
             assert!(!contains_subsequence(
-                &text,
+                &isolated_builder,
                 &load_store_stack_slot_sequence(
                     ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
                     ECS_QUERY_PLAN_MATCHED_ROW_COUNT_SLOT,
                 ),
             ));
             assert!(!contains_subsequence(
-                &text,
+                &isolated_builder,
                 &compare_stack_slot_sequence(
                     ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT,
                     expected_rows as u64,
                 ),
             ));
             assert!(!contains_subsequence(
-                &text,
+                &isolated_builder,
                 &compare_stack_slot_sequence(
                     ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT,
                     ECS_ARCHETYPE_STORAGE_CAPACITY,
                 ),
             ));
             assert!(!contains_subsequence(
-                &text,
+                &isolated_builder,
                 &compare_stack_slot_sequence(
                     ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT,
                     ECS_ARCHETYPE_STORAGE_ROW_STRIDE,
@@ -10127,6 +10439,7 @@ mod tests {
         let metadata =
             ecs_metadata::encode_ecs_metadata(&assembly).expect("two-row metadata encodes");
         let startup_payloads = startup_payloads(&metadata).expect("two-row startup payloads parse");
+        let storage_plan = storage_plan_for_program(&program);
         let observable = native_move_query_loop_observable(&program, &startup_payloads)
             .expect("two-row native query-loop observable is defined");
 
@@ -10135,12 +10448,12 @@ mod tests {
         assert_eq!(startup_payloads.run_schedule_operation_kind_offset, 774);
         assert_eq!(startup_payloads.run_schedule_id_offset, 778);
 
-        let first_spawn = startup_payloads.spawn_operations[0];
+        let first_spawn = &startup_payloads.spawn_operations[0];
         assert_eq!(first_spawn.operation_kind_offset, 610);
         assert_eq!(first_spawn.position_payload_offset, 647);
         assert_eq!(first_spawn.velocity_payload_offset, 684);
 
-        let second_spawn = startup_payloads.spawn_operations[1];
+        let second_spawn = &startup_payloads.spawn_operations[1];
         assert_eq!(second_spawn.operation_kind_offset, 692);
         assert_eq!(second_spawn.component_count_offset, 696);
         assert_eq!(second_spawn.position_component_id_offset, 700);
@@ -10243,23 +10556,28 @@ mod tests {
                 ECS_SECOND_STARTUP_TABLE_VELOCITY_PAYLOAD_LEN_SLOT,
             ),
         ));
+        let (second_table, second_table_row_index) =
+            planned_spawn_table_row(&storage_plan, 1).expect("second spawn is planned");
+        for column in &second_table.columns {
+            let component = planned_spawn_component(second_spawn, column)
+                .expect("second spawn component maps by stable id");
+            let mut copied = 0usize;
+            for width in opaque_copy_widths(component.payload.len()) {
+                assert!(contains_subsequence(
+                    &text,
+                    &metadata_to_rdx_copy_sequence(
+                        component.payload_offset,
+                        (second_table_row_index as u32 * column.schema.size) as i32,
+                        copied,
+                        width,
+                    ),
+                ));
+                copied += width;
+            }
+        }
         assert!(contains_subsequence(
             &text,
-            &metadata_qword_via_offset_slot_to_qword_store_sequence(
-                ECS_SECOND_STARTUP_TABLE_POSITION_PAYLOAD_OFFSET_SLOT,
-                ECS_SECOND_POSITION_PAYLOAD_STORAGE_SLOT,
-            ),
-        ));
-        assert!(contains_subsequence(
-            &text,
-            &metadata_qword_via_offset_slot_to_qword_store_sequence(
-                ECS_SECOND_STARTUP_TABLE_VELOCITY_PAYLOAD_OFFSET_SLOT,
-                ECS_SECOND_VELOCITY_PAYLOAD_STORAGE_SLOT,
-            ),
-        ));
-        assert!(contains_subsequence(
-            &text,
-            &mov_eax_immediate_store_sequence(2, ECS_SPAWN_ROW_COUNT_SLOT),
+            &u64_immediate_store_sequence(2, ECS_SPAWN_ROW_COUNT_SLOT),
         ));
         assert!(contains_subsequence(
             &text,
@@ -10877,11 +11195,13 @@ mod tests {
             .expect("move_system.arc assembles");
         let metadata =
             ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+        let startup = startup_payloads(&metadata).expect("startup payloads parse");
+        let storage_plan = storage_plan_for_program(&program);
 
         let text = ecs_metadata_decoder_text_payload(&program, &metadata)
             .expect("move_system ECS decoder text emits");
 
-        assert_eq!(storage_plan_for_program(&program).frame_size, 1072);
+        assert_eq!(storage_plan.frame_size, 1072);
         for (startup_table_slot, descriptor_slot) in ECS_RESOURCE_STARTUP_DESCRIPTOR_RELATIONS {
             assert!(
                 contains_subsequence(
@@ -10894,20 +11214,24 @@ mod tests {
             );
         }
         let storage_compatibility = storage_compatibility_for_program(&program);
-        let catalog_table = storage_compatibility.catalog_table;
-        let first_spawn = NATIVE_ECS_TABLE_MODEL.startup_operations.spawn_rows[0];
-        for (startup_table_slot, catalog_slot) in
-            startup_spawn_catalog_relations(first_spawn, catalog_table)
-        {
-            assert!(
-                contains_subsequence(
-                    &text,
-                    &compare_stack_slots_equal_sequence(startup_table_slot, catalog_slot),
-                ),
-                "spawn startup table slot {} should be checked against catalog slot {}",
-                startup_table_slot,
-                catalog_slot
-            );
+        let spawn = &startup.spawn_operations[0];
+        let (table, _) =
+            planned_spawn_table_row(&storage_plan, 0).expect("spawn maps to its planned table");
+        for column in &table.columns {
+            let component =
+                planned_spawn_component(spawn, column).expect("spawn component maps by stable id");
+            assert!(contains_subsequence(
+                &text,
+                &metadata_qword_compare_prefix(component.component_id_offset, column.schema.id),
+            ));
+            assert!(contains_subsequence(
+                &text,
+                &metadata_dword_compare_prefix(component.payload_len_offset, column.schema.size,),
+            ));
+            assert!(contains_subsequence(
+                &text,
+                &compare_stack_slot_sequence(column.catalog.component_id.offset, column.schema.id,),
+            ));
         }
         let schedule_build_row = ECS_COMPILED_SCHEDULE_BUILD_ROWS[0];
         for (source_slot, target_slot) in [
@@ -11153,6 +11477,83 @@ mod tests {
 
     fn u64_immediate_store_sequence(value: u64, stack_slot: u16) -> Vec<u8> {
         mov_rax_immediate_store_sequence(value, stack_slot)
+    }
+
+    fn metadata_qword_compare_prefix(metadata_offset: i32, expected: u64) -> Vec<u8> {
+        let mut bytes = vec![0x48, 0xb8];
+        bytes.extend_from_slice(&expected.to_le_bytes());
+        bytes.extend_from_slice(&[0x48, 0x39, 0x86]);
+        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+        bytes
+    }
+
+    fn metadata_dword_compare_prefix(metadata_offset: i32, expected: u32) -> Vec<u8> {
+        let mut bytes = vec![0xb8];
+        bytes.extend_from_slice(&expected.to_le_bytes());
+        bytes.extend_from_slice(&[0x39, 0x86]);
+        bytes.extend_from_slice(&metadata_offset.to_le_bytes());
+        bytes
+    }
+
+    fn metadata_to_rdx_copy_sequence(
+        source_payload_offset: i32,
+        destination_row_offset: i32,
+        copied: usize,
+        byte_len: usize,
+    ) -> Vec<u8> {
+        let copied = i32::try_from(copied).expect("test copy offset fits i32");
+        let source_offset = source_payload_offset + copied;
+        let destination_offset = destination_row_offset + copied;
+        let mut bytes = Vec::new();
+        match byte_len {
+            8 => {
+                bytes.extend_from_slice(&[0x48, 0x8b, 0x86]);
+                bytes.extend_from_slice(&source_offset.to_le_bytes());
+                bytes.extend_from_slice(&[0x48, 0x89, 0x82]);
+                bytes.extend_from_slice(&destination_offset.to_le_bytes());
+            }
+            4 => {
+                bytes.extend_from_slice(&[0x8b, 0x86]);
+                bytes.extend_from_slice(&source_offset.to_le_bytes());
+                bytes.extend_from_slice(&[0x89, 0x82]);
+                bytes.extend_from_slice(&destination_offset.to_le_bytes());
+            }
+            1 => {
+                bytes.extend_from_slice(&[0x8a, 0x86]);
+                bytes.extend_from_slice(&source_offset.to_le_bytes());
+                bytes.extend_from_slice(&[0x88, 0x82]);
+                bytes.extend_from_slice(&destination_offset.to_le_bytes());
+            }
+            _ => panic!("unsupported test copy width"),
+        }
+        bytes
+    }
+
+    fn opaque_copy_widths(byte_len: usize) -> Vec<usize> {
+        let mut remaining = byte_len;
+        let mut widths = Vec::new();
+        while remaining >= 8 {
+            widths.push(8);
+            remaining -= 8;
+        }
+        if remaining >= 4 {
+            widths.push(4);
+            remaining -= 4;
+        }
+        widths.extend(std::iter::repeat_n(1, remaining));
+        widths
+    }
+
+    fn planned_table_row_count_commit_sequence(
+        row_count_address_slot: u16,
+        committed_count: u64,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_load_stack_slot_to_rax(&mut bytes, row_count_address_slot);
+        bytes.extend_from_slice(&[0x48, 0xba]);
+        bytes.extend_from_slice(&committed_count.to_le_bytes());
+        bytes.extend_from_slice(&[0x48, 0x89, 0x10]);
+        bytes
     }
 
     fn storage_plan_for_program(program: &Program) -> NativeWorldStoragePlan {
@@ -11418,38 +11819,6 @@ mod tests {
         bytes
     }
 
-    fn catalog_payload_store_sequence(
-        column: NativeStorageCatalogColumnRow,
-        row_index: usize,
-        payload_slot: u16,
-    ) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        append_load_stack_slot_to_rax(&mut bytes, column.slots.payload_base_address.offset);
-        for _ in 0..row_index {
-            append_add_stack_slot_to_rax(&mut bytes, column.slots.element_size.offset);
-        }
-        append_load_stack_slot_to_rdx(&mut bytes, payload_slot);
-        bytes.extend_from_slice(&[0x48, 0x89, 0x10]);
-        bytes
-    }
-
-    fn catalog_row_count_commit_sequence(
-        row_count_address_slot: u16,
-        committed_count: u32,
-        logical_count_slot: u16,
-    ) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        append_load_stack_slot_to_rax(&mut bytes, row_count_address_slot);
-        bytes.push(0xba);
-        bytes.extend_from_slice(&committed_count.to_le_bytes());
-        bytes.extend_from_slice(&[0x48, 0x89, 0x10]);
-        bytes.extend_from_slice(&mov_eax_immediate_store_sequence(
-            committed_count,
-            logical_count_slot,
-        ));
-        bytes
-    }
-
     fn compare_qword_at_stack_address_sequence(address_slot: u16, expected: u64) -> Vec<u8> {
         let mut bytes = Vec::new();
         append_load_stack_slot_to_rax(&mut bytes, address_slot);
@@ -11467,17 +11836,6 @@ mod tests {
         append_load_stack_slot_to_rax(&mut bytes, offset_slot);
         bytes.extend_from_slice(&[0x8b, 0x04, 0x06]); // mov eax, dword ptr [rsi + rax]
         append_eax_dword_store(&mut bytes, target_slot);
-        bytes
-    }
-
-    fn metadata_qword_via_offset_slot_to_qword_store_sequence(
-        offset_slot: u16,
-        target_slot: u16,
-    ) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        append_load_stack_slot_to_rax(&mut bytes, offset_slot);
-        bytes.extend_from_slice(&[0x48, 0x8b, 0x04, 0x06]); // mov rax, qword ptr [rsi + rax]
-        append_rax_qword_store(&mut bytes, target_slot);
         bytes
     }
 
@@ -11610,17 +11968,6 @@ mod tests {
             bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, offset as u8]);
         } else {
             bytes.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]);
-            bytes.extend_from_slice(&(offset as u32).to_le_bytes());
-        }
-    }
-
-    fn append_load_stack_slot_to_rdx(bytes: &mut Vec<u8>, offset: u16) {
-        if offset == 0 {
-            bytes.extend_from_slice(&[0x48, 0x8b, 0x14, 0x24]);
-        } else if offset <= 127 {
-            bytes.extend_from_slice(&[0x48, 0x8b, 0x54, 0x24, offset as u8]);
-        } else {
-            bytes.extend_from_slice(&[0x48, 0x8b, 0x94, 0x24]);
             bytes.extend_from_slice(&(offset as u32).to_le_bytes());
         }
     }
