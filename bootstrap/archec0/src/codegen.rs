@@ -4,6 +4,9 @@ use crate::core::{
 };
 use crate::core_lower;
 use crate::core_verify;
+use crate::native_query_plan::{
+    derive_native_query_binding_plan, NativeBoundQuery, NativeQueryRowCase, NativeQueryScanBlock,
+};
 use crate::native_world_plan::{
     derive_native_world_storage_plan, NativeCatalogColumnSlots, NativeColumnStoragePlan,
     NativeSlot, NativeTableStoragePlan, NativeWorldStoragePlan, NATIVE_STORAGE_BASE_OFFSET,
@@ -2817,7 +2820,7 @@ pub fn ecs_metadata_decoder_text_payload(
     let query_loop_observable =
         native_move_query_loop_observable_from_core(&core, &startup_payloads)?;
     let storage_compatibility =
-        native_storage_compatibility_model(&storage_plan, &query_loop_observable)?;
+        native_storage_compatibility_model(&core, &storage_plan, &query_loop_observable)?;
     let startup_body = ecs_metadata_decoder_body(
         &metadata_payload[..ECS_METADATA_ENVELOPE_SIZE],
         startup_payloads,
@@ -4741,6 +4744,112 @@ fn emit_native_query_plan_builder(
     );
 }
 
+// M25-005 will supply the verified-Core row-body callback. M25-004 establishes and proves the
+// executable scan boundary independently of the remaining multiply-add specialization.
+#[allow(dead_code)]
+fn emit_native_bound_query_scan<F>(
+    bytes: &mut Vec<u8>,
+    query: &NativeBoundQuery,
+    planned_term_address_slots: &[u16],
+    mut emit_row_body: F,
+) -> Result<(), CodegenError>
+where
+    F: FnMut(
+        &mut Vec<u8>,
+        &NativeQueryScanBlock,
+        &NativeQueryRowCase,
+        &[u16],
+    ) -> Result<(), CodegenError>,
+{
+    if planned_term_address_slots.len() != query.terms.len() {
+        return Err(native_bound_query_scan_error(
+            "planned address slot count does not match query term count",
+        ));
+    }
+
+    for block in &query.scan_blocks {
+        if block.columns.len() != query.terms.len()
+            || block.row_cases.len() != block.capacity as usize
+        {
+            return Err(native_bound_query_scan_error(
+                "bound query scan block does not match its terms or capacity",
+            ));
+        }
+
+        for row_case in &block.row_cases {
+            if row_case.row_index >= block.capacity
+                || row_case.guard.row_index != row_case.row_index
+                || row_case.guard.catalog_row_count_address_slot
+                    != block.catalog_row_count_address_slot
+                || row_case.planned_terms.len() != block.columns.len()
+            {
+                return Err(native_bound_query_scan_error(
+                    "bound query row case is inconsistent with its scan block",
+                ));
+            }
+
+            load_stack_slot_to_rax(bytes, block.catalog_row_count_address_slot.offset);
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x00]); // mov rax, qword ptr [rax]
+            bytes.extend_from_slice(&[0x48, 0xba]); // mov rdx, row index
+            bytes.extend_from_slice(&u64::from(row_case.row_index).to_le_bytes());
+            bytes.extend_from_slice(&[0x48, 0x39, 0xd0]); // cmp rax, rdx
+            let skip_row_offset = bytes.len();
+            bytes.extend_from_slice(&[0x0f, 0x86, 0x00, 0x00, 0x00, 0x00]); // jbe skip row
+
+            for ((planned_term, column), address_slot) in row_case
+                .planned_terms
+                .iter()
+                .zip(&block.columns)
+                .zip(planned_term_address_slots)
+            {
+                let byte_offset = row_case
+                    .row_index
+                    .checked_mul(column.element_size)
+                    .ok_or_else(|| {
+                        native_bound_query_scan_error(
+                            "bound query planned term address offset overflows u32",
+                        )
+                    })?;
+                if planned_term.component_id != column.component_id
+                    || planned_term.access != column.access
+                    || planned_term.row_index != row_case.row_index
+                    || planned_term.element_size != column.element_size
+                    || planned_term.byte_offset != byte_offset
+                    || planned_term.payload_base_address_slot != column.catalog.payload_base_address
+                {
+                    return Err(native_bound_query_scan_error(
+                        "bound query planned term address is inconsistent with its column",
+                    ));
+                }
+
+                load_stack_slot_to_rax(bytes, planned_term.payload_base_address_slot.offset);
+                bytes.extend_from_slice(&[0x48, 0xba]); // mov rdx, checked byte offset
+                bytes.extend_from_slice(&u64::from(byte_offset).to_le_bytes());
+                bytes.extend_from_slice(&[0x48, 0x01, 0xd0]); // add rax, rdx
+                store_rax_to_stack_slot(bytes, *address_slot);
+            }
+
+            emit_row_body(bytes, block, row_case, planned_term_address_slots)?;
+            let skip_row_target = bytes.len();
+            patch_rel32(
+                bytes,
+                skip_row_offset + 2,
+                skip_row_target,
+                skip_row_offset + 6,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(dead_code)]
+fn native_bound_query_scan_error(detail: &str) -> CodegenError {
+    CodegenError {
+        message: format!("cannot emit native bound query scan: {detail}"),
+    }
+}
+
 fn emit_native_query_plan_build_row(
     bytes: &mut Vec<u8>,
     row: NativeQueryPlanBuildRow,
@@ -5329,30 +5438,48 @@ fn native_move_query_loop_observable_error() -> CodegenError {
 }
 
 fn native_storage_compatibility_model(
+    core: &CoreProgram,
     plan: &NativeWorldStoragePlan,
     query_loop_observable: &NativeMoveQueryLoopObservable,
 ) -> Result<NativeStorageCompatibilityModel, CodegenError> {
-    let [table] = plan.tables.as_slice() else {
+    let query_bindings =
+        derive_native_query_binding_plan(core, plan).map_err(|error| CodegenError {
+            message: format!(
+                "could not derive native query binding plan: {}",
+                error.message
+            ),
+        })?;
+    let query = query_bindings
+        .queries
+        .iter()
+        .find(|query| {
+            query.system_name == query_loop_observable.system_name
+                && query.query_param == query_loop_observable.query_param
+        })
+        .ok_or_else(native_storage_compatibility_error)?;
+    let [scan_block] = query.scan_blocks.as_slice() else {
         return Err(native_storage_compatibility_error());
     };
-    if table.columns.len() != 2 {
+    let [position_column, velocity_column] = query.terms.as_slice() else {
         return Err(native_storage_compatibility_error());
-    }
-    let position_column = table
-        .columns
-        .iter()
-        .find(|column| column.schema.id == query_loop_observable.position_component_id)
+    };
+    let [position_binding, velocity_binding] = scan_block.columns.as_slice() else {
+        return Err(native_storage_compatibility_error());
+    };
+    let table = plan
+        .tables
+        .get(scan_block.table_index)
         .ok_or_else(native_storage_compatibility_error)?;
-    let velocity_column = table
-        .columns
-        .iter()
-        .find(|column| column.schema.id == query_loop_observable.velocity_component_id)
-        .ok_or_else(native_storage_compatibility_error)?;
-    if table.rows.is_empty()
+    if table.columns.len() != 2
+        || table.rows.is_empty()
         || table.rows.len() > 2
-        || position_column.schema.id == velocity_column.schema.id
-        || position_column.schema.size != u32::from(NATIVE_ECS_QWORD_BYTE_LEN)
-        || velocity_column.schema.size != u32::from(NATIVE_ECS_QWORD_BYTE_LEN)
+        || position_column.component_id != query_loop_observable.position_component_id
+        || velocity_column.component_id != query_loop_observable.velocity_component_id
+        || position_binding.component_id != position_column.component_id
+        || velocity_binding.component_id != velocity_column.component_id
+        || position_binding.component_id == velocity_binding.component_id
+        || position_binding.element_size != u32::from(NATIVE_ECS_QWORD_BYTE_LEN)
+        || velocity_binding.element_size != u32::from(NATIVE_ECS_QWORD_BYTE_LEN)
     {
         return Err(native_storage_compatibility_error());
     }
@@ -5361,19 +5488,19 @@ fn native_storage_compatibility_model(
     let catalog_table = NativeStorageCatalogTableRow {
         slots: NativeStorageCatalogTableRowSlots {
             column_count: native_ecs_slot(table.catalog.column_count),
-            row_count_address: native_ecs_slot(table.catalog.row_count_address),
+            row_count_address: native_ecs_slot(scan_block.catalog_row_count_address_slot),
             capacity: native_ecs_slot(table.catalog.capacity),
             row_stride: native_ecs_slot(table.catalog.row_stride),
         },
         storage: fixed_catalog.storage,
         columns: [
             NativeStorageCatalogColumnRow {
-                slots: native_storage_catalog_column_slots(position_column.catalog),
+                slots: native_storage_catalog_column_slots(position_binding.catalog),
                 descriptor: fixed_catalog.columns[0].descriptor,
                 payload_column: fixed_catalog.columns[0].payload_column,
             },
             NativeStorageCatalogColumnRow {
-                slots: native_storage_catalog_column_slots(velocity_column.catalog),
+                slots: native_storage_catalog_column_slots(velocity_binding.catalog),
                 descriptor: fixed_catalog.columns[1].descriptor,
                 payload_column: fixed_catalog.columns[1].payload_column,
             },
@@ -5382,7 +5509,7 @@ fn native_storage_compatibility_model(
 
     Ok(NativeStorageCompatibilityModel {
         catalog_table,
-        capacity: u64::from(table.capacity),
+        capacity: u64::from(scan_block.capacity),
         row_stride: u64::from(table.logical_row_stride),
     })
 }
@@ -8502,6 +8629,187 @@ mod tests {
     }
 
     #[test]
+    fn emits_capacity_guarded_query_scan_blocks() {
+        let source = include_str!("../../../examples/arena_recovery.arc");
+        let tokens = lexer::lex(source).expect("Arena fixture lexes");
+        let program = parser::parse_program(&tokens).expect("Arena fixture parses");
+        let core = lower_verified_core(&program).expect("Arena Core verifies");
+        let storage = storage_plan_for_program(&program);
+        let binding_plan = derive_native_query_binding_plan(&core, &storage)
+            .expect("Arena query binding plan derives");
+        let [query] = binding_plan.queries.as_slice() else {
+            panic!("Arena has one query loop");
+        };
+        let [block] = query.scan_blocks.as_slice() else {
+            panic!("Arena query excludes the partial table");
+        };
+        assert_eq!(storage.tables[block.table_index].rows.len(), 3);
+        assert_eq!(block.capacity, 4);
+        assert_eq!(block.row_cases.len(), 4);
+
+        let planned_address_slots = ECS_QUERY_PLAN_TABLE_ITERATION_ROWS[0]
+            .build_row
+            .terms
+            .map(|term| term.planned_payload_address_slot);
+        let mut emitted_rows = Vec::new();
+        let mut bytes = Vec::new();
+        emit_native_bound_query_scan(
+            &mut bytes,
+            query,
+            &planned_address_slots,
+            |bytes, emitted_block, row_case, address_slots| {
+                emitted_rows.push((
+                    emitted_block.table_index,
+                    row_case.row_index,
+                    row_case
+                        .planned_terms
+                        .iter()
+                        .map(|term| term.byte_offset)
+                        .collect::<Vec<_>>(),
+                    address_slots.to_vec(),
+                ));
+                bytes.extend_from_slice(&[0xcc, row_case.row_index as u8]);
+                Ok(())
+            },
+        )
+        .expect("generic Arena query scan emits");
+
+        assert_eq!(
+            emitted_rows,
+            vec![
+                (
+                    block.table_index,
+                    0,
+                    vec![0, 0],
+                    planned_address_slots.to_vec()
+                ),
+                (
+                    block.table_index,
+                    1,
+                    vec![8, 12],
+                    planned_address_slots.to_vec()
+                ),
+                (
+                    block.table_index,
+                    2,
+                    vec![16, 24],
+                    planned_address_slots.to_vec()
+                ),
+                (
+                    block.table_index,
+                    3,
+                    vec![24, 36],
+                    planned_address_slots.to_vec()
+                ),
+            ]
+        );
+
+        let mut authoritative_row_count_load = Vec::new();
+        load_stack_slot_to_rax(
+            &mut authoritative_row_count_load,
+            block.catalog_row_count_address_slot.offset,
+        );
+        authoritative_row_count_load.extend_from_slice(&[0x48, 0x8b, 0x00]);
+        assert_eq!(
+            count_subsequence(&bytes, &authoritative_row_count_load),
+            4,
+            "every capacity-derived case dereferences the catalog row-count address"
+        );
+        assert_eq!(
+            count_subsequence(&bytes, &[0x0f, 0x86]),
+            4,
+            "every capacity-derived case has an unsigned live-row guard"
+        );
+        for (jump_offset, window) in bytes.windows(6).enumerate() {
+            if window[..2] != [0x0f, 0x86] {
+                continue;
+            }
+            let displacement = i32::from_le_bytes(window[2..6].try_into().unwrap());
+            assert!(displacement > 0, "row skip must be patched forward");
+            let target = (jump_offset + 6) as i64 + i64::from(displacement);
+            assert!(target <= bytes.len() as i64);
+        }
+
+        for (planned_term, address_slot) in block.row_cases[3]
+            .planned_terms
+            .iter()
+            .zip(planned_address_slots)
+        {
+            let mut expected_address_plan = Vec::new();
+            load_stack_slot_to_rax(
+                &mut expected_address_plan,
+                planned_term.payload_base_address_slot.offset,
+            );
+            expected_address_plan.extend_from_slice(&[0x48, 0xba]);
+            expected_address_plan
+                .extend_from_slice(&u64::from(planned_term.byte_offset).to_le_bytes());
+            expected_address_plan.extend_from_slice(&[0x48, 0x01, 0xd0]);
+            store_rax_to_stack_slot(&mut expected_address_plan, address_slot);
+            assert!(
+                contains_subsequence(&bytes, &expected_address_plan),
+                "planned term address must be catalog base plus checked row byte offset"
+            );
+        }
+
+        let multi_match_source = source
+            .replacen(
+                "resource Tick",
+                "component Tag {\n    id: i32\n}\n\nresource Tick",
+                1,
+            )
+            .replacen(
+                "        Faction { id: 1 }",
+                "        Faction { id: 1 }\n        Tag { id: 11 }",
+                1,
+            );
+        let multi_match_tokens = lexer::lex(&multi_match_source).expect("extended Arena lexes");
+        let multi_match_program =
+            parser::parse_program(&multi_match_tokens).expect("extended Arena parses");
+        let multi_match_core =
+            lower_verified_core(&multi_match_program).expect("extended Arena Core verifies");
+        let multi_match_storage = storage_plan_for_program(&multi_match_program);
+        let multi_match_plan =
+            derive_native_query_binding_plan(&multi_match_core, &multi_match_storage)
+                .expect("extended Arena query binding plan derives");
+        let [multi_match_query] = multi_match_plan.queries.as_slice() else {
+            panic!("extended Arena has one query loop");
+        };
+        assert_eq!(multi_match_query.scan_blocks.len(), 2);
+        let expected_row_cases = multi_match_query
+            .scan_blocks
+            .iter()
+            .map(|block| block.capacity as usize)
+            .sum::<usize>();
+        let mut emitted_table_cases = Vec::new();
+        let mut multi_match_bytes = Vec::new();
+        emit_native_bound_query_scan(
+            &mut multi_match_bytes,
+            multi_match_query,
+            &planned_address_slots,
+            |_, block, row_case, _| {
+                emitted_table_cases.push((block.table_index, row_case.row_index));
+                Ok(())
+            },
+        )
+        .expect("all matching Arena tables emit scan blocks");
+        assert_eq!(emitted_table_cases.len(), expected_row_cases);
+        assert_eq!(
+            emitted_table_cases
+                .iter()
+                .map(|(table_index, _)| *table_index)
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            2,
+            "the emitter visits every matching table"
+        );
+        assert_eq!(
+            count_subsequence(&multi_match_bytes, &[0x0f, 0x86]),
+            expected_row_cases,
+            "each capacity case in every matching table is live-row guarded"
+        );
+    }
+
+    #[test]
     fn emits_descriptor_sized_native_tables_and_columns() {
         let source = include_str!("../../../examples/move_system_two_rows.arc");
         let tokens = lexer::lex(source).expect("two-row movement fixture lexes");
@@ -8523,10 +8831,11 @@ mod tests {
         let startup = startup_payloads(&metadata).expect("two-row startup payloads parse");
         let observable = native_move_query_loop_observable(&program, &startup)
             .expect("two-row query observable exists");
+        let core = lower_verified_core(&program).expect("two-row Core verifies");
         let mut reordered_role_plan = demo_plan.clone();
         reordered_role_plan.tables[0].columns.reverse();
         let role_compatibility =
-            native_storage_compatibility_model(&reordered_role_plan, &observable)
+            native_storage_compatibility_model(&core, &reordered_role_plan, &observable)
                 .expect("query component ids select catalog roles independently of plan order");
         let position_column = reordered_role_plan.tables[0]
             .columns
@@ -11565,6 +11874,7 @@ mod tests {
     }
 
     fn storage_compatibility_for_program(program: &Program) -> NativeStorageCompatibilityModel {
+        let core = lower_verified_core(program).expect("fixture Core verifies");
         let assembly = runtime_assembly::assemble_runtime_program_from_source(program)
             .expect("fixture assembles for storage compatibility");
         let metadata = ecs_metadata::encode_ecs_metadata(&assembly)
@@ -11573,7 +11883,7 @@ mod tests {
             .expect("fixture startup payloads parse for storage compatibility");
         let observable = native_move_query_loop_observable(program, &startup)
             .expect("fixture query observable exists for storage compatibility");
-        native_storage_compatibility_model(&storage_plan_for_program(program), &observable)
+        native_storage_compatibility_model(&core, &storage_plan_for_program(program), &observable)
             .expect("fixture fits the bounded native execution compatibility model")
     }
 
