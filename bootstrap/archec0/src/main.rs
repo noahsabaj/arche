@@ -9,11 +9,14 @@ mod core_verify;
 mod diagnostics;
 mod ecs_metadata;
 mod elf64;
+mod execution_shape;
 mod layout;
 mod lexer;
 mod machine;
 mod native_query_plan;
 mod native_world_plan;
+#[cfg(test)]
+mod observation;
 mod output;
 mod parser;
 mod runtime;
@@ -271,14 +274,18 @@ fn write_output(source_path: &str, output_path: &str) {
                 process::exit(1);
             }
         };
-        let text_payload =
-            match codegen::ecs_metadata_decoder_text_payload(&program, &metadata_payload) {
-                Ok(text_payload) => text_payload,
-                Err(error) => {
-                    eprintln!("archec0: {}", error.message);
-                    process::exit(1);
-                }
-            };
+        let text_payload = match codegen::verified_ecs_metadata_decoder_text_payload(
+            &core,
+            &assembly,
+            &metadata_payload,
+            codegen::NativeEmissionMode::Published,
+        ) {
+            Ok(text_payload) => text_payload,
+            Err(error) => {
+                eprintln!("archec0: {}", error.message);
+                process::exit(1);
+            }
+        };
 
         (text_payload, metadata_payload)
     } else {

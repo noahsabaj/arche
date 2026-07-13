@@ -1,21 +1,35 @@
+use crate::core::{CoreProgram, CoreQueryAccess};
+#[cfg(test)]
 use crate::core::{
-    CoreProgram, CoreQueryAccess, CoreScheduleItem, CoreSystemBinaryOp, CoreSystemExpression,
-    CoreSystemParamKind, CoreSystemPlace, CoreSystemStatement,
+    CoreScheduleItem, CoreSystemBinaryOp, CoreSystemExpression, CoreSystemParamKind,
+    CoreSystemPlace, CoreSystemStatement,
 };
+#[cfg(test)]
 use crate::core_lower;
 use crate::core_verify;
+use crate::ecs_metadata;
+use crate::execution_shape::{self, VerifiedCoreExecutionShape};
 use crate::native_query_plan::{
-    derive_native_query_binding_plan, NativeBoundQuery, NativeQueryRowCase, NativeQueryScanBlock,
+    derive_native_query_binding_plan, NativeBoundQuery, NativeQueryBindingPlan, NativeQueryRowCase,
+    NativeQueryScanBlock,
 };
 use crate::native_world_plan::{
-    derive_native_world_storage_plan, NativeCatalogColumnSlots, NativeColumnStoragePlan,
-    NativeSlot, NativeTableStoragePlan, NativeWorldStoragePlan, NATIVE_STORAGE_BASE_OFFSET,
+    derive_native_world_storage_plan, NativeByteRange, NativeColumnStoragePlan,
+    NativeTableStoragePlan, NativeWorldStoragePlan, NATIVE_STORAGE_BASE_OFFSET,
 };
+#[cfg(test)]
+use crate::native_world_plan::{NativeCatalogColumnSlots, NativeSlot};
 use crate::parser::{BinaryOperator, Expression, Program, Statement};
 use crate::runtime_assembly;
 
 const NATIVE_ECS_QWORD_BYTE_LEN: u16 = 8;
 const NATIVE_ECS_DWORD_BYTE_LEN: u16 = 4;
+const NATIVE_BARE_EXECUTION_FRAME_SIZE: u16 = 1088;
+
+#[cfg(test)]
+#[rustfmt::skip]
+macro_rules! legacy_native_model {
+() => {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct NativeEcsSlot {
@@ -1454,10 +1468,55 @@ const NATIVE_ECS_TABLE_ITERATION_CURSORS: NativeEcsTableIterationCursorModel =
         },
     };
 
+};
+}
+
+#[cfg(test)]
+legacy_native_model!();
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodegenError {
     pub message: String,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NativeEmissionMode {
+    Published,
+    #[cfg(test)]
+    ObservedTest,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VerifiedNativeExecutionLayout {
+    frame_size: u16,
+    resources: Vec<VerifiedNativeResourceStorage>,
+    planned_term_address_slots: [u16; 2],
+    #[cfg(test)]
+    observed_payload_address_slot: u16,
+    #[cfg(test)]
+    observed_hex_slot: u16,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct VerifiedNativeResourceStorage {
+    id: u64,
+    payload: NativeByteRange,
+}
+
+const VERIFIED_NATIVE_FAILURE_EXIT_CODE: u8 = 1;
+const VERIFIED_NATIVE_SUCCESS_EXIT_CODE: u8 = 47;
+const ECS_STARTUP_SECTION_DIRECTORY_OFFSET: usize = 16 + 5 * 16;
+const ECS_SECTION_OFFSET_FIELD_OFFSET: usize = 4;
+const ECS_SECTION_BYTE_LEN_FIELD_OFFSET: usize = 8;
+const ECS_SECTION_RECORD_COUNT_FIELD_OFFSET: usize = 12;
+const ECS_STARTUP_OP_RESOURCE_PAYLOAD: u32 = 1;
+const ECS_STARTUP_OP_SPAWN: u32 = 2;
+const ECS_STARTUP_OP_RUN_SCHEDULE: u32 = 3;
+
+#[cfg(test)]
+#[rustfmt::skip]
+macro_rules! legacy_native_constants {
+() => {
 
 const ECS_METADATA_ENVELOPE_SIZE: usize = 112;
 const ECS_METADATA_FAILURE_EXIT_CODE: u8 = 16;
@@ -1467,13 +1526,6 @@ const ECS_QUERY_LOOP_FIELD_MATH_FAILURE_EXIT_CODE: u8 = 19;
 const ECS_QUERY_LOOP_POSITION_STORE_FAILURE_EXIT_CODE: u8 = 20;
 const ECS_RUN_SCHEDULE_DISPATCH_FAILURE_EXIT_CODE: u8 = 21;
 const ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE: u8 = 47;
-const ECS_STARTUP_SECTION_DIRECTORY_OFFSET: usize = 16 + 5 * 16;
-const ECS_SECTION_OFFSET_FIELD_OFFSET: usize = 4;
-const ECS_SECTION_BYTE_LEN_FIELD_OFFSET: usize = 8;
-const ECS_SECTION_RECORD_COUNT_FIELD_OFFSET: usize = 12;
-const ECS_STARTUP_OP_RESOURCE_PAYLOAD: u32 = 1;
-const ECS_STARTUP_OP_SPAWN: u32 = 2;
-const ECS_STARTUP_OP_RUN_SCHEDULE: u32 = 3;
 const ECS_STARTUP_RECORD_COUNT_OFFSET: u8 =
     (ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_RECORD_COUNT_FIELD_OFFSET) as u8;
 const ECS_EXPECTED_DESCRIPTOR_COUNTS: [u64; 5] = [2, 1, 1, 1, 1];
@@ -2643,6 +2695,12 @@ const DEMO_MOVE_SYSTEM_ID: u64 = 0x723b6b52df270ed5;
 const DEMO_MOVERS_QUERY_ID: u64 = 0xf4004232b85cef9f;
 const DEMO_MAIN_SCHEDULE_ID: u64 = 0xed3d905325519b05;
 
+};
+}
+
+#[cfg(test)]
+legacy_native_constants!();
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct EcsStartupPayloads {
     startup_record_count: u32,
@@ -2651,20 +2709,34 @@ struct EcsStartupPayloads {
     resource_id: u64,
     resource_payload_len_offset: i32,
     resource_payload_offset: i32,
+    #[cfg(test)]
     resource_payload: [u8; 4],
     resource_payload_bytes: Vec<u8>,
+    #[cfg(test)]
     spawn_operation_kind_offset: i32,
+    #[cfg(test)]
     spawn_component_count_offset: i32,
+    #[cfg(test)]
     spawn_component_count: u32,
+    #[cfg(test)]
     position_component_id_offset: i32,
+    #[cfg(test)]
     position_component_id: u64,
+    #[cfg(test)]
     position_payload_len_offset: i32,
+    #[cfg(test)]
     position_payload_offset: i32,
+    #[cfg(test)]
     position_payload: [u8; 8],
+    #[cfg(test)]
     velocity_component_id_offset: i32,
+    #[cfg(test)]
     velocity_component_id: u64,
+    #[cfg(test)]
     velocity_payload_len_offset: i32,
+    #[cfg(test)]
     velocity_payload_offset: i32,
+    #[cfg(test)]
     velocity_payload: [u8; 8],
     spawn_operations: Vec<ParsedSpawnOperation>,
     run_schedule_operation_kind_offset: i32,
@@ -2690,15 +2762,25 @@ struct ParsedSpawnOperation {
     component_count_offset: i32,
     component_count: u32,
     components: Vec<ParsedSpawnComponent>,
+    #[cfg(test)]
     position_component_id_offset: i32,
+    #[cfg(test)]
     position_component_id: u64,
+    #[cfg(test)]
     position_payload_len_offset: i32,
+    #[cfg(test)]
     position_payload_offset: i32,
+    #[cfg(test)]
     position_payload: [u8; 8],
+    #[cfg(test)]
     velocity_component_id_offset: i32,
+    #[cfg(test)]
     velocity_component_id: u64,
+    #[cfg(test)]
     velocity_payload_len_offset: i32,
+    #[cfg(test)]
     velocity_payload_offset: i32,
+    #[cfg(test)]
     velocity_payload: [u8; 8],
 }
 
@@ -2781,10 +2863,477 @@ pub fn startup_text_payload(program: &Program) -> Result<Vec<u8>, CodegenError> 
 
     Ok(runtime_wrapped_payload(
         &startup_body,
-        NATIVE_ECS_EXECUTION_STATE_LAYOUT.frame_size,
+        NATIVE_BARE_EXECUTION_FRAME_SIZE,
     ))
 }
 
+fn derive_verified_native_execution_layout(
+    storage_plan: &NativeWorldStoragePlan,
+    assembly: &runtime_assembly::RuntimeProgramAssembly,
+    mode: NativeEmissionMode,
+) -> Result<VerifiedNativeExecutionLayout, CodegenError> {
+    let mut cursor = u64::from(storage_plan.frame_size);
+    let mut descriptors = assembly.resource_descriptors.iter().collect::<Vec<_>>();
+    descriptors.sort_by_key(|descriptor| descriptor.id.0);
+    let mut resources = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        if descriptor.size == 0
+            || descriptor.align == 0
+            || !descriptor.align.is_power_of_two()
+            || descriptor.size % descriptor.align != 0
+        {
+            return Err(verified_native_codegen_error(format!(
+                "resource descriptor `{}` has an invalid native layout",
+                descriptor.name
+            )));
+        }
+        let payload = reserve_verified_native_range(
+            &mut cursor,
+            descriptor.size,
+            descriptor.align,
+            "resource payload",
+        )?;
+        resources.push(VerifiedNativeResourceStorage {
+            id: descriptor.id.0,
+            payload,
+        });
+    }
+
+    let planned_term_address_slots = [
+        reserve_verified_native_range(&mut cursor, 8, 8, "query target address")?.offset,
+        reserve_verified_native_range(&mut cursor, 8, 8, "query source address")?.offset,
+    ];
+    #[cfg(test)]
+    let (observed_payload_address_slot, observed_hex_slot) = if mode
+        == NativeEmissionMode::ObservedTest
+    {
+        (
+            reserve_verified_native_range(&mut cursor, 8, 8, "observer payload address")?.offset,
+            reserve_verified_native_range(&mut cursor, 2, 1, "observer hexadecimal scratch")?
+                .offset,
+        )
+    } else {
+        (0, 0)
+    };
+    #[cfg(not(test))]
+    let _ = mode;
+    cursor = checked_align_up_native(cursor, 16, "verified native frame")?;
+    let frame_size = u16::try_from(cursor).map_err(|_| {
+        verified_native_codegen_error("verified native execution frame exceeds bounded u16 storage")
+    })?;
+
+    Ok(VerifiedNativeExecutionLayout {
+        frame_size,
+        resources,
+        planned_term_address_slots,
+        #[cfg(test)]
+        observed_payload_address_slot,
+        #[cfg(test)]
+        observed_hex_slot,
+    })
+}
+
+fn reserve_verified_native_range(
+    cursor: &mut u64,
+    byte_len: u32,
+    align: u32,
+    label: &str,
+) -> Result<NativeByteRange, CodegenError> {
+    let offset = checked_align_up_native(*cursor, u64::from(align), label)?;
+    let end = offset
+        .checked_add(u64::from(byte_len))
+        .ok_or_else(|| verified_native_codegen_error(format!("{label} range overflows u64")))?;
+    let offset = u16::try_from(offset)
+        .map_err(|_| verified_native_codegen_error(format!("{label} offset exceeds u16")))?;
+    let byte_len = u16::try_from(byte_len)
+        .map_err(|_| verified_native_codegen_error(format!("{label} length exceeds u16")))?;
+    *cursor = end;
+    Ok(NativeByteRange { offset, byte_len })
+}
+
+fn checked_align_up_native(value: u64, align: u64, label: &str) -> Result<u64, CodegenError> {
+    if align == 0 || !align.is_power_of_two() {
+        return Err(verified_native_codegen_error(format!(
+            "{label} alignment must be a nonzero power of two"
+        )));
+    }
+    value
+        .checked_add(align - 1)
+        .map(|aligned| aligned & !(align - 1))
+        .ok_or_else(|| verified_native_codegen_error(format!("{label} alignment overflows u64")))
+}
+
+fn verified_native_codegen_error(message: impl Into<String>) -> CodegenError {
+    CodegenError {
+        message: message.into(),
+    }
+}
+
+pub(crate) fn verified_ecs_metadata_decoder_text_payload(
+    core: &CoreProgram,
+    assembly: &runtime_assembly::RuntimeProgramAssembly,
+    metadata_payload: &[u8],
+    mode: NativeEmissionMode,
+) -> Result<Vec<u8>, CodegenError> {
+    i32::try_from(metadata_payload.len()).map_err(|_| {
+        verified_native_codegen_error(
+            "verified native metadata length must fit in signed 32-bit displacements",
+        )
+    })?;
+    core_verify::verify_core_program(core).map_err(|error| {
+        verified_native_codegen_error(format!(
+            "cannot emit native execution from invalid Core: {}",
+            error.message
+        ))
+    })?;
+    let expected_metadata = ecs_metadata::encode_ecs_metadata(assembly).map_err(|error| {
+        verified_native_codegen_error(format!(
+            "cannot encode verified native metadata: {}",
+            error.message
+        ))
+    })?;
+    if expected_metadata != metadata_payload {
+        return Err(verified_native_codegen_error(
+            "verified native metadata payload does not match runtime assembly",
+        ));
+    }
+
+    let shape =
+        execution_shape::derive_verified_core_execution_shape(core, assembly).map_err(|error| {
+            verified_native_codegen_error(format!(
+                "cannot derive verified native execution shape: {}",
+                error.message
+            ))
+        })?;
+    let storage_plan = derive_native_world_storage_plan(core, assembly, NATIVE_STORAGE_BASE_OFFSET)
+        .map_err(|error| {
+            verified_native_codegen_error(format!(
+                "cannot derive verified native world storage: {}",
+                error.message
+            ))
+        })?;
+    let query_plan = derive_native_query_binding_plan(core, &storage_plan).map_err(|error| {
+        verified_native_codegen_error(format!(
+            "cannot derive verified native query binding plan: {}",
+            error.message
+        ))
+    })?;
+    let bound_query = select_verified_bound_query(&shape, &query_plan)?;
+    let startup_payloads = verified_startup_payloads(metadata_payload)?;
+    let layout = derive_verified_native_execution_layout(&storage_plan, assembly, mode)?;
+    let body = emit_verified_native_execution_body(
+        metadata_payload,
+        assembly,
+        &startup_payloads,
+        &shape,
+        &storage_plan,
+        bound_query,
+        &layout,
+        mode,
+    )?;
+    Ok(runtime_wrapped_payload(&body, layout.frame_size))
+}
+
+fn select_verified_bound_query<'a>(
+    shape: &VerifiedCoreExecutionShape,
+    query_plan: &'a NativeQueryBindingPlan,
+) -> Result<&'a NativeBoundQuery, CodegenError> {
+    let mut matches = query_plan.queries.iter().filter(|query| {
+        query.query_id == shape.query.id.0
+            && query.system_id == shape.system.id.0
+            && query.query_param == shape.query.param_name
+    });
+    let query = matches.next().ok_or_else(|| {
+        verified_native_codegen_error("verified execution query is absent from native bindings")
+    })?;
+    if matches.next().is_some() || query.terms.len() != 2 {
+        return Err(verified_native_codegen_error(
+            "verified execution requires exactly one two-term native query binding",
+        ));
+    }
+
+    let target_term = query
+        .terms
+        .iter()
+        .find(|term| term.component_id == shape.query.target.id.0)
+        .ok_or_else(|| {
+            verified_native_codegen_error("query target is not bound by component id")
+        })?;
+    let source_term = query
+        .terms
+        .iter()
+        .find(|term| term.component_id == shape.query.source.id.0)
+        .ok_or_else(|| {
+            verified_native_codegen_error("query source is not bound by component id")
+        })?;
+    if target_term.binding_name != shape.query.target.binding_name
+        || target_term.access != CoreQueryAccess::Mut
+        || source_term.binding_name != shape.query.source.binding_name
+        || source_term.access != CoreQueryAccess::Read
+        || target_term.component_id == source_term.component_id
+    {
+        return Err(verified_native_codegen_error(
+            "verified execution query access or binding identity does not match native bindings",
+        ));
+    }
+    for block in &query.scan_blocks {
+        let target = block
+            .columns
+            .iter()
+            .find(|column| column.component_id == shape.query.target.id.0)
+            .ok_or_else(|| verified_native_codegen_error("matched table lacks query target"))?;
+        let source = block
+            .columns
+            .iter()
+            .find(|column| column.component_id == shape.query.source.id.0)
+            .ok_or_else(|| verified_native_codegen_error("matched table lacks query source"))?;
+        if target.element_size != shape.query.target.size
+            || target.element_align != shape.query.target.align
+            || source.element_size != shape.query.source.size
+            || source.element_align != shape.query.source.align
+        {
+            return Err(verified_native_codegen_error(
+                "matched native query columns do not match verified descriptor layouts",
+            ));
+        }
+    }
+    Ok(query)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_verified_native_execution_body(
+    metadata_payload: &[u8],
+    assembly: &runtime_assembly::RuntimeProgramAssembly,
+    startup_payloads: &EcsStartupPayloads,
+    shape: &VerifiedCoreExecutionShape,
+    storage_plan: &NativeWorldStoragePlan,
+    bound_query: &NativeBoundQuery,
+    layout: &VerifiedNativeExecutionLayout,
+    mode: NativeEmissionMode,
+) -> Result<Vec<u8>, CodegenError> {
+    #[cfg(not(test))]
+    let _ = mode;
+    let mut bytes = Vec::new();
+    let mut failure_offsets = Vec::new();
+    #[cfg(test)]
+    let mut unconditional_failure_offsets = Vec::new();
+    bytes.extend_from_slice(&[0x48, 0x8d, 0x35, 0x00, 0x00, 0x00, 0x00]); // lea rsi, metadata
+    compare_metadata_ascii_bytes(&mut bytes, 0, metadata_payload, &mut failure_offsets);
+    emit_native_storage_catalog_materialization(&mut bytes, storage_plan);
+
+    if usize::try_from(startup_payloads.startup_record_count).ok()
+        != Some(assembly.startup_operations.len())
+    {
+        return Err(verified_native_codegen_error(
+            "parsed startup operation count does not match runtime assembly",
+        ));
+    }
+    let resource_storage = layout
+        .resources
+        .iter()
+        .find(|storage| storage.id == shape.resource.id.0)
+        .ok_or_else(|| {
+            verified_native_codegen_error("verified read resource has no native storage")
+        })?;
+    if u32::from(resource_storage.payload.byte_len) != shape.resource.size {
+        return Err(verified_native_codegen_error(
+            "verified read resource size does not match native storage",
+        ));
+    }
+
+    let mut spawn_ordinal = 0usize;
+    let mut resource_initialized = false;
+    let mut schedule_run_count = 0usize;
+    for (operation_index, operation) in assembly.startup_operations.iter().enumerate() {
+        match operation {
+            runtime_assembly::StartupOperation::ResourcePayload {
+                resource_id,
+                resource_name,
+                payload_bytes,
+            } => {
+                if resource_initialized
+                    || resource_id.0 != shape.resource.id.0
+                    || resource_name != &shape.resource.name
+                    || payload_bytes.len() != shape.resource.size as usize
+                {
+                    return Err(verified_native_codegen_error(
+                        "startup resource operation does not match verified execution shape",
+                    ));
+                }
+                emit_verified_resource_payload_materialization(
+                    &mut bytes,
+                    startup_payloads,
+                    resource_storage,
+                    &mut failure_offsets,
+                )?;
+                resource_initialized = true;
+            }
+            runtime_assembly::StartupOperation::Spawn { .. } => {
+                emit_spawn_startup_operation_handler(
+                    &mut bytes,
+                    startup_payloads,
+                    storage_plan,
+                    spawn_ordinal,
+                    spawn_ordinal as u64 + 1,
+                    &mut failure_offsets,
+                )?;
+                spawn_ordinal += 1;
+            }
+            runtime_assembly::StartupOperation::RunSchedule {
+                schedule_id,
+                schedule_name,
+            } => {
+                if !resource_initialized
+                    || operation_index != shape.schedule.startup_operation_index
+                    || schedule_id.0 != shape.schedule.id.0
+                    || schedule_name != &shape.schedule.name
+                    || schedule_run_count != 0
+                    || startup_payloads.run_schedule_id != shape.schedule.id.0
+                {
+                    return Err(verified_native_codegen_error(
+                        "startup schedule operation does not match verified execution shape",
+                    ));
+                }
+                compare_metadata_dword_to_u32(
+                    &mut bytes,
+                    startup_payloads.run_schedule_operation_kind_offset,
+                    ECS_STARTUP_OP_RUN_SCHEDULE,
+                    &mut failure_offsets,
+                );
+                compare_metadata_qword_to_u64(
+                    &mut bytes,
+                    startup_payloads.run_schedule_id_offset,
+                    shape.schedule.id.0,
+                    &mut failure_offsets,
+                );
+                emit_verified_shape_query_execution(
+                    &mut bytes,
+                    shape,
+                    bound_query,
+                    resource_storage,
+                    layout,
+                )?;
+                schedule_run_count += 1;
+            }
+        }
+    }
+    if spawn_ordinal != startup_payloads.spawn_operations.len()
+        || !resource_initialized
+        || schedule_run_count != 1
+    {
+        return Err(verified_native_codegen_error(
+            "verified startup iteration did not materialize every required operation",
+        ));
+    }
+
+    #[cfg(test)]
+    if mode == NativeEmissionMode::ObservedTest {
+        emit_verified_native_observation(
+            &mut bytes,
+            storage_plan,
+            layout,
+            &mut failure_offsets,
+            &mut unconditional_failure_offsets,
+        )?;
+    }
+    move_edi_exit_code(&mut bytes, VERIFIED_NATIVE_SUCCESS_EXIT_CODE);
+    let jump_to_done_offset = bytes.len();
+    bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]);
+    let failure_offset = bytes.len();
+    move_edi_exit_code(&mut bytes, VERIFIED_NATIVE_FAILURE_EXIT_CODE);
+    let done_offset = bytes.len();
+    for jump_offset in failure_offsets {
+        patch_rel32(&mut bytes, jump_offset + 2, failure_offset, jump_offset + 6);
+    }
+    #[cfg(test)]
+    for jump_offset in unconditional_failure_offsets {
+        patch_rel32(&mut bytes, jump_offset + 1, failure_offset, jump_offset + 5);
+    }
+    patch_rel32(
+        &mut bytes,
+        jump_to_done_offset + 1,
+        done_offset,
+        jump_to_done_offset + 5,
+    );
+
+    let suffix_len = runtime_destroy_suffix(layout.frame_size).len();
+    let metadata_displacement = bytes
+        .len()
+        .checked_add(suffix_len)
+        .and_then(|offset| offset.checked_sub(7))
+        .and_then(|offset| i32::try_from(offset).ok())
+        .ok_or_else(|| verified_native_codegen_error("metadata displacement exceeds i32"))?;
+    patch_i32(&mut bytes, 3, metadata_displacement);
+    Ok(bytes)
+}
+
+fn emit_verified_shape_query_execution(
+    bytes: &mut Vec<u8>,
+    shape: &VerifiedCoreExecutionShape,
+    bound_query: &NativeBoundQuery,
+    resource_storage: &VerifiedNativeResourceStorage,
+    layout: &VerifiedNativeExecutionLayout,
+) -> Result<(), CodegenError> {
+    let target_term_index = bound_query
+        .terms
+        .iter()
+        .position(|term| term.component_id == shape.query.target.id.0)
+        .ok_or_else(|| verified_native_codegen_error("verified target query term is missing"))?;
+    let source_term_index = bound_query
+        .terms
+        .iter()
+        .position(|term| term.component_id == shape.query.source.id.0)
+        .ok_or_else(|| verified_native_codegen_error("verified source query term is missing"))?;
+    let target_address_slot = layout.planned_term_address_slots[target_term_index];
+    let source_address_slot = layout.planned_term_address_slots[source_term_index];
+
+    for lane in &shape.lanes {
+        verify_f32_field_range(lane.target_field_offset, shape.query.target.size, "target")?;
+        verify_f32_field_range(lane.source_field_offset, shape.query.source.size, "source")?;
+        verify_f32_field_range(lane.resource_field_offset, shape.resource.size, "resource")?;
+    }
+
+    emit_native_bound_query_scan(
+        bytes,
+        bound_query,
+        &layout.planned_term_address_slots,
+        |bytes, _, _, _| {
+            for lane in &shape.lanes {
+                let resource_field_slot = u32::from(resource_storage.payload.offset)
+                    .checked_add(lane.resource_field_offset)
+                    .and_then(|slot| u16::try_from(slot).ok())
+                    .ok_or_else(|| {
+                        verified_native_codegen_error(
+                            "verified resource field stack offset exceeds u16",
+                        )
+                    })?;
+                emit_verified_f32_multiply_add_lane(
+                    bytes,
+                    target_address_slot,
+                    source_address_slot,
+                    resource_field_slot,
+                    lane.target_field_offset,
+                    lane.source_field_offset,
+                );
+            }
+            Ok(())
+        },
+    )
+}
+
+fn verify_f32_field_range(offset: u32, owner_size: u32, role: &str) -> Result<(), CodegenError> {
+    if offset
+        .checked_add(u32::from(NATIVE_ECS_DWORD_BYTE_LEN))
+        .is_none_or(|end| end > owner_size)
+    {
+        return Err(verified_native_codegen_error(format!(
+            "verified {role} f32 field exceeds its descriptor payload"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 pub fn ecs_metadata_decoder_text_payload(
     program: &Program,
     metadata_payload: &[u8],
@@ -2834,6 +3383,7 @@ pub fn ecs_metadata_decoder_text_payload(
     ))
 }
 
+#[cfg(test)]
 fn lower_verified_core(program: &Program) -> Result<CoreProgram, CodegenError> {
     let core = core_lower::lower_program_to_core(program).map_err(|error| CodegenError {
         message: format!(
@@ -2860,6 +3410,7 @@ fn native_move_query_loop_observable(
     native_move_query_loop_observable_from_core(&core, startup_payloads)
 }
 
+#[cfg(test)]
 fn native_move_query_loop_observable_from_core(
     core: &CoreProgram,
     startup_payloads: &EcsStartupPayloads,
@@ -2974,6 +3525,7 @@ fn native_move_query_loop_observable_from_core(
     })
 }
 
+#[cfg(test)]
 fn require_move_add_assign(
     statement: &CoreSystemStatement,
     position_field: &str,
@@ -3004,6 +3556,7 @@ fn require_move_add_assign(
     })
 }
 
+#[cfg(test)]
 fn require_velocity_delta_expression(
     expression: &CoreSystemExpression,
     velocity_field: &str,
@@ -3052,6 +3605,7 @@ fn require_velocity_delta_expression(
     Ok(())
 }
 
+#[cfg(test)]
 fn native_move_query_loop_rows(
     startup_payloads: &EcsStartupPayloads,
 ) -> Result<Vec<NativeMoveQueryLoopRowObservable>, CodegenError> {
@@ -3076,6 +3630,7 @@ fn native_move_query_loop_rows(
         .collect()
 }
 
+#[cfg(test)]
 fn target_position_payload(
     position_payload: &[u8; 8],
     velocity_payload: &[u8; 8],
@@ -3093,6 +3648,7 @@ fn target_position_payload(
     payload
 }
 
+#[cfg(test)]
 fn field_product_payload(velocity_payload: &[u8; 8], resource_payload: &[u8; 4]) -> [u8; 8] {
     let velocity_x = f32_from_le_bytes(&velocity_payload[0..4]);
     let velocity_y = f32_from_le_bytes(&velocity_payload[4..8]);
@@ -3104,10 +3660,12 @@ fn field_product_payload(velocity_payload: &[u8; 8], resource_payload: &[u8; 4])
     payload
 }
 
+#[cfg(test)]
 fn f32_from_le_bytes(bytes: &[u8]) -> f32 {
     f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
+#[cfg(test)]
 fn startup_spawn_slots(row_index: usize) -> Result<NativeSpawnStartupOperationSlots, CodegenError> {
     NATIVE_ECS_TABLE_MODEL
         .startup_operations
@@ -3141,6 +3699,7 @@ fn archetype_storage_row_slots(
     })
 }
 
+#[cfg(test)]
 fn startup_operation_iteration_rows(
     startup_payloads: &EcsStartupPayloads,
 ) -> &'static [NativeStartupOperationTableIterationRow] {
@@ -3151,6 +3710,7 @@ fn startup_operation_iteration_rows(
     }
 }
 
+#[cfg(test)]
 fn startup_operation_table_expected(startup_payloads: &EcsStartupPayloads) -> Vec<(u16, u64)> {
     let mut expected = vec![
         (
@@ -3193,6 +3753,7 @@ fn startup_operation_table_expected(startup_payloads: &EcsStartupPayloads) -> Ve
     expected
 }
 
+#[cfg(test)]
 fn require_metadata_decoder_exit(program: &Program) -> Result<(), CodegenError> {
     let startup = program.startup.as_ref().ok_or_else(unsupported_shape)?;
     let Some(Statement::Exit(exit)) = startup.statements.last() else {
@@ -3209,7 +3770,44 @@ fn require_metadata_decoder_exit(program: &Program) -> Result<(), CodegenError> 
     Ok(())
 }
 
+#[cfg(test)]
 fn startup_payloads(metadata_payload: &[u8]) -> Result<EcsStartupPayloads, CodegenError> {
+    let mut payloads = verified_startup_payloads(metadata_payload)?;
+    for spawn in &mut payloads.spawn_operations {
+        let position = legacy_spawn_component(&spawn.components, DEMO_POSITION_COMPONENT_ID);
+        let velocity = legacy_spawn_component(&spawn.components, DEMO_VELOCITY_COMPONENT_ID);
+        spawn.position_component_id_offset = position.component_id_offset;
+        spawn.position_component_id = position.component_id;
+        spawn.position_payload_len_offset = position.payload_len_offset;
+        spawn.position_payload_offset = position.payload_offset;
+        spawn.position_payload = position.payload;
+        spawn.velocity_component_id_offset = velocity.component_id_offset;
+        spawn.velocity_component_id = velocity.component_id;
+        spawn.velocity_payload_len_offset = velocity.payload_len_offset;
+        spawn.velocity_payload_offset = velocity.payload_offset;
+        spawn.velocity_payload = velocity.payload;
+    }
+    let first_spawn = payloads
+        .spawn_operations
+        .first()
+        .expect("verified startup parsing requires at least one spawn");
+    payloads.spawn_operation_kind_offset = first_spawn.operation_kind_offset;
+    payloads.spawn_component_count_offset = first_spawn.component_count_offset;
+    payloads.spawn_component_count = first_spawn.component_count;
+    payloads.position_component_id_offset = first_spawn.position_component_id_offset;
+    payloads.position_component_id = first_spawn.position_component_id;
+    payloads.position_payload_len_offset = first_spawn.position_payload_len_offset;
+    payloads.position_payload_offset = first_spawn.position_payload_offset;
+    payloads.position_payload = first_spawn.position_payload;
+    payloads.velocity_component_id_offset = first_spawn.velocity_component_id_offset;
+    payloads.velocity_component_id = first_spawn.velocity_component_id;
+    payloads.velocity_payload_len_offset = first_spawn.velocity_payload_len_offset;
+    payloads.velocity_payload_offset = first_spawn.velocity_payload_offset;
+    payloads.velocity_payload = first_spawn.velocity_payload;
+    Ok(payloads)
+}
+
+fn verified_startup_payloads(metadata_payload: &[u8]) -> Result<EcsStartupPayloads, CodegenError> {
     let startup_section_offset = read_metadata_u32(
         metadata_payload,
         ECS_STARTUP_SECTION_DIRECTORY_OFFSET + ECS_SECTION_OFFSET_FIELD_OFFSET,
@@ -3269,9 +3867,7 @@ fn startup_payloads(metadata_payload: &[u8]) -> Result<EcsStartupPayloads, Codeg
     }
     let resource_payload = resource_payload.ok_or_else(metadata_startup_payload_error)?;
     let run_schedule = run_schedule.ok_or_else(metadata_startup_payload_error)?;
-    let spawn_operation = spawn_operations
-        .first()
-        .ok_or_else(metadata_startup_payload_error)?;
+    #[cfg(test)]
     let resource_payload_compatibility = resource_payload
         .payload
         .as_slice()
@@ -3285,21 +3881,35 @@ fn startup_payloads(metadata_payload: &[u8]) -> Result<EcsStartupPayloads, Codeg
         resource_id: resource_payload.resource_id,
         resource_payload_len_offset: resource_payload.payload_len_offset,
         resource_payload_offset: resource_payload.payload_offset,
+        #[cfg(test)]
         resource_payload: resource_payload_compatibility,
         resource_payload_bytes: resource_payload.payload,
-        spawn_operation_kind_offset: spawn_operation.operation_kind_offset,
-        spawn_component_count_offset: spawn_operation.component_count_offset,
-        spawn_component_count: spawn_operation.component_count,
-        position_component_id_offset: spawn_operation.position_component_id_offset,
-        position_component_id: spawn_operation.position_component_id,
-        position_payload_len_offset: spawn_operation.position_payload_len_offset,
-        position_payload_offset: spawn_operation.position_payload_offset,
-        position_payload: spawn_operation.position_payload,
-        velocity_component_id_offset: spawn_operation.velocity_component_id_offset,
-        velocity_component_id: spawn_operation.velocity_component_id,
-        velocity_payload_len_offset: spawn_operation.velocity_payload_len_offset,
-        velocity_payload_offset: spawn_operation.velocity_payload_offset,
-        velocity_payload: spawn_operation.velocity_payload,
+        #[cfg(test)]
+        spawn_operation_kind_offset: 0,
+        #[cfg(test)]
+        spawn_component_count_offset: 0,
+        #[cfg(test)]
+        spawn_component_count: 0,
+        #[cfg(test)]
+        position_component_id_offset: 0,
+        #[cfg(test)]
+        position_component_id: 0,
+        #[cfg(test)]
+        position_payload_len_offset: 0,
+        #[cfg(test)]
+        position_payload_offset: 0,
+        #[cfg(test)]
+        position_payload: [0; 8],
+        #[cfg(test)]
+        velocity_component_id_offset: 0,
+        #[cfg(test)]
+        velocity_component_id: 0,
+        #[cfg(test)]
+        velocity_payload_len_offset: 0,
+        #[cfg(test)]
+        velocity_payload_offset: 0,
+        #[cfg(test)]
+        velocity_payload: [0; 8],
         spawn_operations,
         run_schedule_operation_kind_offset: run_schedule.operation_kind_offset,
         run_schedule_id_offset: run_schedule.schedule_id_offset,
@@ -3377,8 +3987,6 @@ fn parse_spawn_operation(
     for _ in 0..component_count {
         components.push(parse_spawn_component_payload(metadata_payload, offset)?);
     }
-    let position_payload = legacy_spawn_component(&components, DEMO_POSITION_COMPONENT_ID);
-    let velocity_payload = legacy_spawn_component(&components, DEMO_VELOCITY_COMPONENT_ID);
 
     Ok(ParsedSpawnOperation {
         startup_operation_index,
@@ -3386,16 +3994,26 @@ fn parse_spawn_operation(
         component_count_offset,
         component_count,
         components,
-        position_component_id_offset: position_payload.component_id_offset,
-        position_component_id: position_payload.component_id,
-        position_payload_len_offset: position_payload.payload_len_offset,
-        position_payload_offset: position_payload.payload_offset,
-        position_payload: position_payload.payload,
-        velocity_component_id_offset: velocity_payload.component_id_offset,
-        velocity_component_id: velocity_payload.component_id,
-        velocity_payload_len_offset: velocity_payload.payload_len_offset,
-        velocity_payload_offset: velocity_payload.payload_offset,
-        velocity_payload: velocity_payload.payload,
+        #[cfg(test)]
+        position_component_id_offset: 0,
+        #[cfg(test)]
+        position_component_id: 0,
+        #[cfg(test)]
+        position_payload_len_offset: 0,
+        #[cfg(test)]
+        position_payload_offset: 0,
+        #[cfg(test)]
+        position_payload: [0; 8],
+        #[cfg(test)]
+        velocity_component_id_offset: 0,
+        #[cfg(test)]
+        velocity_component_id: 0,
+        #[cfg(test)]
+        velocity_payload_len_offset: 0,
+        #[cfg(test)]
+        velocity_payload_offset: 0,
+        #[cfg(test)]
+        velocity_payload: [0; 8],
     })
 }
 
@@ -3422,6 +4040,7 @@ fn parse_spawn_component_payload(
     })
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct LegacySpawnComponent {
     component_id_offset: i32,
@@ -3431,6 +4050,7 @@ struct LegacySpawnComponent {
     payload: [u8; 8],
 }
 
+#[cfg(test)]
 fn legacy_spawn_component(
     components: &[ParsedSpawnComponent],
     component_id: u64,
@@ -3439,13 +4059,7 @@ fn legacy_spawn_component(
         .iter()
         .find(|component| component.component_id == component_id)
     else {
-        return LegacySpawnComponent {
-            component_id_offset: 0,
-            component_id: 0,
-            payload_len_offset: 0,
-            payload_offset: 0,
-            payload: [0; 8],
-        };
+        return empty_legacy_spawn_component();
     };
     let payload = component.payload.as_slice().try_into().unwrap_or([0; 8]);
     LegacySpawnComponent {
@@ -3454,6 +4068,17 @@ fn legacy_spawn_component(
         payload_len_offset: component.payload_len_offset,
         payload_offset: component.payload_offset,
         payload,
+    }
+}
+
+#[cfg(test)]
+fn empty_legacy_spawn_component() -> LegacySpawnComponent {
+    LegacySpawnComponent {
+        component_id_offset: 0,
+        component_id: 0,
+        payload_len_offset: 0,
+        payload_offset: 0,
+        payload: [0; 8],
     }
 }
 
@@ -3590,6 +4215,7 @@ fn metadata_i32_offset(offset: usize, message: &str) -> Result<i32, CodegenError
     Ok(offset as i32)
 }
 
+#[cfg(test)]
 fn ecs_metadata_decoder_body(
     envelope: &[u8],
     startup_payloads: EcsStartupPayloads,
@@ -3807,6 +4433,7 @@ fn compare_stack_slot_to_u64(
     jump_offsets.push(jump_offset);
 }
 
+#[cfg(test)]
 fn compare_stack_slots_equal(
     bytes: &mut Vec<u8>,
     left_slot: u16,
@@ -3828,6 +4455,7 @@ fn compare_stack_slots_equal(
     jump_offsets.push(jump_offset);
 }
 
+#[cfg(test)]
 fn compare_qword_at_stack_address_to_u64(
     bytes: &mut Vec<u8>,
     address_slot: u16,
@@ -3845,6 +4473,7 @@ fn compare_qword_at_stack_address_to_u64(
     jump_offsets.push(jump_offset);
 }
 
+#[cfg(test)]
 fn emit_startup_operation_dispatch(
     bytes: &mut Vec<u8>,
     operation_kind_slot: u16,
@@ -3864,6 +4493,7 @@ fn emit_startup_operation_dispatch(
     store_rax_to_stack_slot(bytes, dispatch_count_slot);
 }
 
+#[cfg(test)]
 fn emit_native_startup_operation_table_iteration(
     bytes: &mut Vec<u8>,
     startup_payloads: &EcsStartupPayloads,
@@ -3924,6 +4554,7 @@ fn emit_native_startup_operation_table_iteration(
     Ok(())
 }
 
+#[cfg(test)]
 fn emit_startup_operation_dispatch_row(
     bytes: &mut Vec<u8>,
     row: NativeStartupOperationDispatchRow,
@@ -3939,6 +4570,7 @@ fn emit_startup_operation_dispatch_row(
     );
 }
 
+#[cfg(test)]
 fn emit_resource_payload_startup_operation_handler(
     bytes: &mut Vec<u8>,
     jump_offsets: &mut Vec<usize>,
@@ -3951,6 +4583,76 @@ fn emit_resource_payload_startup_operation_handler(
         ECS_STARTUP_TABLE_RESOURCE_PAYLOAD_OFFSET_SLOT,
         ECS_RESOURCE_PAYLOAD_STORAGE_SLOT,
     );
+}
+
+fn emit_verified_resource_payload_materialization(
+    bytes: &mut Vec<u8>,
+    startup_payloads: &EcsStartupPayloads,
+    resource_storage: &VerifiedNativeResourceStorage,
+    failure_offsets: &mut Vec<usize>,
+) -> Result<(), CodegenError> {
+    if startup_payloads.resource_id != resource_storage.id
+        || startup_payloads.resource_payload_bytes.len()
+            != usize::from(resource_storage.payload.byte_len)
+    {
+        return Err(verified_native_codegen_error(
+            "verified resource startup payload does not match its native storage",
+        ));
+    }
+    compare_metadata_dword_to_u32(
+        bytes,
+        startup_payloads.resource_operation_kind_offset,
+        ECS_STARTUP_OP_RESOURCE_PAYLOAD,
+        failure_offsets,
+    );
+    compare_metadata_qword_to_u64(
+        bytes,
+        startup_payloads.resource_id_offset,
+        resource_storage.id,
+        failure_offsets,
+    );
+    compare_metadata_dword_to_u32(
+        bytes,
+        startup_payloads.resource_payload_len_offset,
+        u32::from(resource_storage.payload.byte_len),
+        failure_offsets,
+    );
+
+    emit_lea_stack_address_to_rax(bytes, resource_storage.payload.offset);
+    bytes.extend_from_slice(&[0x48, 0x89, 0xc2]); // mov rdx, rax
+    let payload_len = startup_payloads.resource_payload_bytes.len();
+    let mut copied = 0usize;
+    while payload_len - copied >= 8 {
+        emit_metadata_to_rdx_copy(
+            bytes,
+            startup_payloads.resource_payload_offset,
+            0,
+            copied,
+            8,
+        )?;
+        copied += 8;
+    }
+    if payload_len - copied >= 4 {
+        emit_metadata_to_rdx_copy(
+            bytes,
+            startup_payloads.resource_payload_offset,
+            0,
+            copied,
+            4,
+        )?;
+        copied += 4;
+    }
+    while copied < payload_len {
+        emit_metadata_to_rdx_copy(
+            bytes,
+            startup_payloads.resource_payload_offset,
+            0,
+            copied,
+            1,
+        )?;
+        copied += 1;
+    }
+    Ok(())
 }
 
 fn emit_spawn_startup_operation_handler(
@@ -4075,7 +4777,10 @@ fn emit_spawn_startup_operation_handler(
     bytes.extend_from_slice(&[0x48, 0xba]); // mov rdx, committed native table row count
     bytes.extend_from_slice(&(table_row_index as u64 + 1).to_le_bytes());
     bytes.extend_from_slice(&[0x48, 0x89, 0x10]); // mov qword ptr [rax], rdx
+    #[cfg(test)]
     emit_u64_to_stack_slot(bytes, row_count_after_spawn, ECS_SPAWN_ROW_COUNT_SLOT);
+    #[cfg(not(test))]
+    let _ = row_count_after_spawn;
 
     Ok(())
 }
@@ -4224,6 +4929,7 @@ fn emit_native_planned_spawn_materializations(
     Ok(())
 }
 
+#[cfg(test)]
 fn compare_catalog_payload_to_u64(
     bytes: &mut Vec<u8>,
     column: NativeStorageCatalogColumnRow,
@@ -4245,6 +4951,7 @@ fn compare_catalog_payload_to_u64(
     jump_offsets.push(jump_offset);
 }
 
+#[cfg(test)]
 fn emit_run_schedule_startup_operation_handler(
     bytes: &mut Vec<u8>,
     startup_payloads: &EcsStartupPayloads,
@@ -4275,6 +4982,7 @@ fn emit_run_schedule_startup_operation_handler(
     );
 }
 
+#[cfg(test)]
 fn emit_startup_operation_state_validations(
     bytes: &mut Vec<u8>,
     startup_payloads: &EcsStartupPayloads,
@@ -4400,6 +5108,7 @@ fn emit_startup_operation_state_validations(
     );
 }
 
+#[cfg(test)]
 fn emit_native_descriptor_table_row_iteration(bytes: &mut Vec<u8>, jump_offsets: &mut Vec<usize>) {
     for row in ECS_DESCRIPTOR_TABLE_ITERATION_ROWS {
         compare_stack_slot_to_u64(
@@ -4439,18 +5148,21 @@ fn emit_native_descriptor_table_row_iteration(bytes: &mut Vec<u8>, jump_offsets:
     }
 }
 
+#[cfg(test)]
 fn emit_descriptor_qword_load(bytes: &mut Vec<u8>, metadata_offset: i32, stack_slot: u16) {
     bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
     bytes.extend_from_slice(&metadata_offset.to_le_bytes());
     store_rax_to_stack_slot(bytes, stack_slot);
 }
 
+#[cfg(test)]
 fn emit_descriptor_dword_load(bytes: &mut Vec<u8>, metadata_offset: i32, stack_slot: u16) {
     bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
     bytes.extend_from_slice(&metadata_offset.to_le_bytes());
     store_rax_to_stack_slot(bytes, stack_slot);
 }
 
+#[cfg(test)]
 fn emit_descriptor_name_table_decodes(bytes: &mut Vec<u8>, jump_offsets: &mut Vec<usize>) {
     for reference in ECS_DESCRIPTOR_NAME_REFERENCES {
         bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, descriptor name byte offset
@@ -4569,6 +5281,7 @@ fn compare_metadata_byte_to_u8(
     jump_offsets.push(jump_offset);
 }
 
+#[cfg(test)]
 fn emit_startup_operation_table_decodes(
     bytes: &mut Vec<u8>,
     startup_payloads: &EcsStartupPayloads,
@@ -4706,30 +5419,35 @@ fn emit_u64_to_stack_slot(bytes: &mut Vec<u8>, value: u64, stack_slot: u16) {
     store_rax_to_stack_slot(bytes, stack_slot);
 }
 
+#[cfg(test)]
 fn emit_startup_table_qword_load(bytes: &mut Vec<u8>, metadata_offset: i32, stack_slot: u16) {
     bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
     bytes.extend_from_slice(&metadata_offset.to_le_bytes());
     store_rax_to_stack_slot(bytes, stack_slot);
 }
 
+#[cfg(test)]
 fn emit_startup_table_dword_load(bytes: &mut Vec<u8>, metadata_offset: i32, stack_slot: u16) {
     bytes.extend_from_slice(&[0x8b, 0x86]); // mov eax, dword ptr [rsi + offset]
     bytes.extend_from_slice(&metadata_offset.to_le_bytes());
     store_rax_to_stack_slot(bytes, stack_slot);
 }
 
+#[cfg(test)]
 fn emit_startup_table_payload_offset(bytes: &mut Vec<u8>, payload_offset: u64, stack_slot: u16) {
     bytes.extend_from_slice(&[0x48, 0xb8]); // mov rax, payload offset
     bytes.extend_from_slice(&payload_offset.to_le_bytes());
     store_rax_to_stack_slot(bytes, stack_slot);
 }
 
+#[cfg(test)]
 fn load_metadata_dword_via_offset_slot(bytes: &mut Vec<u8>, offset_slot: u16, target_slot: u16) {
     load_stack_slot_to_rax(bytes, offset_slot);
     bytes.extend_from_slice(&[0x8b, 0x04, 0x06]); // mov eax, dword ptr [rsi + rax]
     store_eax_to_stack_dword_slot(bytes, target_slot);
 }
 
+#[cfg(test)]
 fn emit_native_query_plan_builder(
     bytes: &mut Vec<u8>,
     row: NativeQueryPlanTableIterationRow,
@@ -4850,6 +5568,275 @@ fn native_bound_query_scan_error(detail: &str) -> CodegenError {
     }
 }
 
+#[cfg(test)]
+fn emit_verified_native_observation(
+    bytes: &mut Vec<u8>,
+    storage_plan: &NativeWorldStoragePlan,
+    layout: &VerifiedNativeExecutionLayout,
+    failure_offsets: &mut Vec<usize>,
+    unconditional_failure_offsets: &mut Vec<usize>,
+) -> Result<(), CodegenError> {
+    emit_stdout_literal(bytes, b"ARCHEOBS1\n", failure_offsets)?;
+    for table in &storage_plan.tables {
+        if table.columns.len() != table.key.len()
+            || !table
+                .columns
+                .iter()
+                .zip(table.key.iter())
+                .all(|(column, component_id)| column.schema.id == *component_id)
+            || table.rows.len() > table.capacity as usize
+        {
+            return Err(verified_native_codegen_error(
+                "native observation table is not canonical or exceeds capacity",
+            ));
+        }
+
+        emit_observed_table_header(bytes, table, failure_offsets, unconditional_failure_offsets)?;
+        for (row_index, row) in table.rows.iter().enumerate() {
+            load_stack_slot_to_rax(bytes, table.catalog.row_count_address.offset);
+            bytes.extend_from_slice(&[0x48, 0x8b, 0x00]); // mov rax, qword ptr [rax]
+            bytes.extend_from_slice(&[0x48, 0xba]); // mov rdx, row index
+            bytes.extend_from_slice(&(row_index as u64).to_le_bytes());
+            bytes.extend_from_slice(&[0x48, 0x39, 0xd0]); // cmp rax, rdx
+            let skip_row_offset = bytes.len();
+            bytes.extend_from_slice(&[0x0f, 0x86, 0x00, 0x00, 0x00, 0x00]); // jbe skip row
+
+            emit_stdout_literal(
+                bytes,
+                format!(
+                    "R {row_index} {} {}",
+                    row.spawn_ordinal,
+                    table.columns.len()
+                )
+                .as_bytes(),
+                failure_offsets,
+            )?;
+            for column in &table.columns {
+                emit_stdout_literal(
+                    bytes,
+                    format!(" {:016X} {} ", column.schema.id, column.schema.size).as_bytes(),
+                    failure_offsets,
+                )?;
+                let row_byte_offset = row_index
+                    .checked_mul(column.schema.size as usize)
+                    .ok_or_else(|| {
+                        verified_native_codegen_error("observation row byte offset overflows usize")
+                    })?;
+                let row_byte_offset = u64::try_from(row_byte_offset).map_err(|_| {
+                    verified_native_codegen_error("observation row byte offset exceeds u64")
+                })?;
+                load_stack_slot_to_rax(bytes, column.catalog.payload_base_address.offset);
+                bytes.extend_from_slice(&[0x48, 0xba]); // mov rdx, row byte offset
+                bytes.extend_from_slice(&row_byte_offset.to_le_bytes());
+                bytes.extend_from_slice(&[0x48, 0x01, 0xd0]); // add rax, rdx
+                store_rax_to_stack_slot(bytes, layout.observed_payload_address_slot);
+
+                for byte_offset in 0..column.schema.size {
+                    emit_observed_payload_hex_byte(
+                        bytes,
+                        layout.observed_payload_address_slot,
+                        byte_offset,
+                        layout.observed_hex_slot,
+                        failure_offsets,
+                    )?;
+                }
+            }
+            emit_stdout_literal(bytes, b"\n", failure_offsets)?;
+
+            let skip_row_target = bytes.len();
+            patch_rel32(
+                bytes,
+                skip_row_offset + 2,
+                skip_row_target,
+                skip_row_offset + 6,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn emit_observed_table_header(
+    bytes: &mut Vec<u8>,
+    table: &NativeTableStoragePlan,
+    failure_offsets: &mut Vec<usize>,
+    unconditional_failure_offsets: &mut Vec<usize>,
+) -> Result<(), CodegenError> {
+    let mut prefix = format!("T {}", table.key.len());
+    for component_id in table.key.iter() {
+        prefix.push_str(&format!(" {component_id:016X}"));
+    }
+
+    load_stack_slot_to_rax(bytes, table.catalog.row_count_address.offset);
+    bytes.extend_from_slice(&[0x48, 0x8b, 0x00]); // mov rax, qword ptr [rax]
+    let mut jump_to_done_offsets = Vec::new();
+    for live_row_count in 0..=table.rows.len() {
+        bytes.extend_from_slice(&[0x48, 0xba]); // mov rdx, candidate live count
+        bytes.extend_from_slice(&(live_row_count as u64).to_le_bytes());
+        bytes.extend_from_slice(&[0x48, 0x39, 0xd0]); // cmp rax, rdx
+        let jump_to_next_offset = bytes.len();
+        bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne next
+
+        emit_stdout_literal(
+            bytes,
+            format!("{prefix} {live_row_count} {}\n", table.capacity).as_bytes(),
+            failure_offsets,
+        )?;
+        let jump_to_done_offset = bytes.len();
+        bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp header done
+        jump_to_done_offsets.push(jump_to_done_offset);
+
+        let next_offset = bytes.len();
+        patch_rel32(
+            bytes,
+            jump_to_next_offset + 2,
+            next_offset,
+            jump_to_next_offset + 6,
+        );
+    }
+
+    let jump_to_failure_offset = bytes.len();
+    bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]); // jmp failure
+    unconditional_failure_offsets.push(jump_to_failure_offset);
+    let done_offset = bytes.len();
+    for jump_offset in jump_to_done_offsets {
+        patch_rel32(bytes, jump_offset + 1, done_offset, jump_offset + 5);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn emit_observed_payload_hex_byte(
+    bytes: &mut Vec<u8>,
+    payload_address_slot: u16,
+    byte_offset: u32,
+    hex_slot: u16,
+    failure_offsets: &mut Vec<usize>,
+) -> Result<(), CodegenError> {
+    let low_hex_slot = hex_slot.checked_add(1).ok_or_else(|| {
+        verified_native_codegen_error("observer hexadecimal scratch offset overflows u16")
+    })?;
+    load_stack_slot_to_rax(bytes, payload_address_slot);
+    emit_movzx_eax_from_rax_byte(bytes, byte_offset);
+    bytes.extend_from_slice(&[0x89, 0xc1]); // mov ecx, eax
+    bytes.extend_from_slice(&[0xc0, 0xe8, 0x04]); // shr al, 4
+    emit_upper_hex_nibble_from_al(bytes);
+    store_al_to_stack_slot(bytes, hex_slot);
+    bytes.extend_from_slice(&[0x89, 0xc8]); // mov eax, ecx
+    bytes.extend_from_slice(&[0x24, 0x0f]); // and al, 0x0f
+    emit_upper_hex_nibble_from_al(bytes);
+    store_al_to_stack_slot(bytes, low_hex_slot);
+    emit_stdout_stack_bytes(bytes, hex_slot, 2, failure_offsets)
+}
+
+#[cfg(test)]
+fn emit_movzx_eax_from_rax_byte(bytes: &mut Vec<u8>, byte_offset: u32) {
+    if byte_offset == 0 {
+        bytes.extend_from_slice(&[0x0f, 0xb6, 0x00]); // movzx eax, byte ptr [rax]
+    } else if byte_offset <= 127 {
+        bytes.extend_from_slice(&[0x0f, 0xb6, 0x40, byte_offset as u8]);
+    } else {
+        bytes.extend_from_slice(&[0x0f, 0xb6, 0x80]);
+        bytes.extend_from_slice(&byte_offset.to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+fn emit_upper_hex_nibble_from_al(bytes: &mut Vec<u8>) {
+    bytes.extend_from_slice(&[0x24, 0x0f]); // and al, 0x0f
+    bytes.extend_from_slice(&[0x04, b'0']); // add al, '0'
+    bytes.extend_from_slice(&[0x3c, b'9']); // cmp al, '9'
+    bytes.extend_from_slice(&[0x76, 0x02]); // jbe digit
+    bytes.extend_from_slice(&[0x04, 0x07]); // add al, 'A' - '9' - 1
+}
+
+#[cfg(test)]
+fn store_al_to_stack_slot(bytes: &mut Vec<u8>, stack_slot: u16) {
+    if stack_slot == 0 {
+        bytes.extend_from_slice(&[0x88, 0x04, 0x24]);
+    } else if stack_slot <= 127 {
+        bytes.extend_from_slice(&[0x88, 0x44, 0x24, stack_slot as u8]);
+    } else {
+        bytes.extend_from_slice(&[0x88, 0x84, 0x24]);
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+    }
+}
+
+#[cfg(test)]
+fn emit_stdout_literal(
+    bytes: &mut Vec<u8>,
+    literal: &[u8],
+    failure_offsets: &mut Vec<usize>,
+) -> Result<(), CodegenError> {
+    if literal.is_empty() {
+        return Ok(());
+    }
+    let byte_len = u32::try_from(literal.len())
+        .map_err(|_| verified_native_codegen_error("observer literal length exceeds u32"))?;
+    let jump_over_literal_offset = bytes.len();
+    bytes.extend_from_slice(&[0xe9, 0x00, 0x00, 0x00, 0x00]);
+    let literal_offset = bytes.len();
+    bytes.extend_from_slice(literal);
+    let write_offset = bytes.len();
+    patch_rel32(
+        bytes,
+        jump_over_literal_offset + 1,
+        write_offset,
+        jump_over_literal_offset + 5,
+    );
+
+    bytes.extend_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00]); // mov eax, SYS_write
+    bytes.extend_from_slice(&[0xbf, 0x01, 0x00, 0x00, 0x00]); // mov edi, stdout
+    let lea_offset = bytes.len();
+    bytes.extend_from_slice(&[0x48, 0x8d, 0x35, 0x00, 0x00, 0x00, 0x00]); // lea rsi, literal
+    patch_rel32(bytes, lea_offset + 3, literal_offset, lea_offset + 7);
+    bytes.push(0xba); // mov edx, byte length
+    bytes.extend_from_slice(&byte_len.to_le_bytes());
+    bytes.extend_from_slice(&[0x0f, 0x05]); // syscall
+    emit_write_result_validation(bytes, u64::from(byte_len), failure_offsets);
+    Ok(())
+}
+
+#[cfg(test)]
+fn emit_stdout_stack_bytes(
+    bytes: &mut Vec<u8>,
+    stack_slot: u16,
+    byte_len: u32,
+    failure_offsets: &mut Vec<usize>,
+) -> Result<(), CodegenError> {
+    if byte_len == 0 {
+        return Ok(());
+    }
+    bytes.extend_from_slice(&[0xb8, 0x01, 0x00, 0x00, 0x00]); // mov eax, SYS_write
+    bytes.extend_from_slice(&[0xbf, 0x01, 0x00, 0x00, 0x00]); // mov edi, stdout
+    if stack_slot <= 127 {
+        bytes.extend_from_slice(&[0x48, 0x8d, 0x74, 0x24, stack_slot as u8]);
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x8d, 0xb4, 0x24]);
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+    }
+    bytes.push(0xba); // mov edx, byte length
+    bytes.extend_from_slice(&byte_len.to_le_bytes());
+    bytes.extend_from_slice(&[0x0f, 0x05]); // syscall
+    emit_write_result_validation(bytes, u64::from(byte_len), failure_offsets);
+    Ok(())
+}
+
+#[cfg(test)]
+fn emit_write_result_validation(
+    bytes: &mut Vec<u8>,
+    expected: u64,
+    failure_offsets: &mut Vec<usize>,
+) {
+    bytes.extend_from_slice(&[0x48, 0xba]); // mov rdx, expected byte count
+    bytes.extend_from_slice(&expected.to_le_bytes());
+    bytes.extend_from_slice(&[0x48, 0x39, 0xd0]); // cmp rax, rdx
+    let jump_offset = bytes.len();
+    bytes.extend_from_slice(&[0x0f, 0x85, 0x00, 0x00, 0x00, 0x00]); // jne failure
+    failure_offsets.push(jump_offset);
+}
+
+#[cfg(test)]
 fn emit_native_query_plan_build_row(
     bytes: &mut Vec<u8>,
     row: NativeQueryPlanBuildRow,
@@ -4894,6 +5881,7 @@ fn emit_native_query_plan_build_row(
     }
 }
 
+#[cfg(test)]
 fn emit_native_query_plan_term_row(
     bytes: &mut Vec<u8>,
     term: NativeQueryPlanTermBuildRow,
@@ -4966,6 +5954,7 @@ fn emit_native_query_plan_term_row(
     );
 }
 
+#[cfg(test)]
 fn emit_compiled_demo_main_schedule(
     bytes: &mut Vec<u8>,
     query_loop_observable: &NativeMoveQueryLoopObservable,
@@ -4992,6 +5981,7 @@ fn emit_compiled_demo_main_schedule(
     }
 }
 
+#[cfg(test)]
 fn emit_compiled_schedule_build_row(
     bytes: &mut Vec<u8>,
     row: NativeCompiledScheduleBuildRow,
@@ -5048,6 +6038,7 @@ fn emit_compiled_schedule_build_row(
     );
 }
 
+#[cfg(test)]
 fn emit_compiled_demo_move_query_loop(
     bytes: &mut Vec<u8>,
     query_loop_observable: &NativeMoveQueryLoopObservable,
@@ -5085,6 +6076,7 @@ fn emit_compiled_demo_move_query_loop(
     }
 }
 
+#[cfg(test)]
 fn emit_query_loop_payload_address_row(
     bytes: &mut Vec<u8>,
     row: &NativeMoveQueryLoopRowObservable,
@@ -5111,6 +6103,7 @@ fn emit_query_loop_payload_address_row(
     }
 }
 
+#[cfg(test)]
 fn emit_query_loop_field_multiply(bytes: &mut Vec<u8>) {
     load_stack_slot_to_rax(bytes, ECS_QUERY_PLAN_VELOCITY_PAYLOAD_ADDRESS_SLOT);
     emit_movss_xmm_from_rax(bytes, 0, 0);
@@ -5125,6 +6118,7 @@ fn emit_query_loop_field_multiply(bytes: &mut Vec<u8>) {
     emit_movss_stack_from_xmm(bytes, ECS_QUERY_LOOP_FIELD_PRODUCT_SLOT + 4, 0);
 }
 
+#[cfg(test)]
 fn emit_query_loop_position_stores(bytes: &mut Vec<u8>) {
     load_stack_slot_to_rax(bytes, ECS_QUERY_PLAN_POSITION_PAYLOAD_ADDRESS_SLOT);
     emit_movss_xmm_from_rax(bytes, 0, 0);
@@ -5139,6 +6133,51 @@ fn emit_query_loop_position_stores(bytes: &mut Vec<u8>) {
     emit_movss_rax_from_xmm(bytes, 4, 0);
 }
 
+fn emit_verified_f32_multiply_add_lane(
+    bytes: &mut Vec<u8>,
+    target_address_slot: u16,
+    source_address_slot: u16,
+    resource_field_slot: u16,
+    target_field_offset: u32,
+    source_field_offset: u32,
+) {
+    load_stack_slot_to_rax(bytes, source_address_slot);
+    emit_movss_xmm_from_rax_offset(bytes, 0, source_field_offset);
+    emit_movss_xmm_from_stack(bytes, 1, resource_field_slot);
+    emit_mulss_xmm(bytes, 0, 1);
+
+    load_stack_slot_to_rax(bytes, target_address_slot);
+    emit_movss_xmm_from_rax_offset(bytes, 1, target_field_offset);
+    emit_addss_xmm(bytes, 1, 0);
+    emit_movss_rax_offset_from_xmm(bytes, target_field_offset, 1);
+}
+
+fn emit_movss_xmm_from_rax_offset(bytes: &mut Vec<u8>, xmm_register: u8, field_offset: u32) {
+    bytes.extend_from_slice(&[0xf3, 0x0f, 0x10]);
+    if field_offset == 0 {
+        bytes.push(xmm_register << 3);
+    } else if field_offset <= 127 {
+        bytes.push(0x40 | (xmm_register << 3));
+        bytes.push(field_offset as u8);
+    } else {
+        bytes.push(0x80 | (xmm_register << 3));
+        bytes.extend_from_slice(&field_offset.to_le_bytes());
+    }
+}
+
+fn emit_movss_rax_offset_from_xmm(bytes: &mut Vec<u8>, field_offset: u32, xmm_register: u8) {
+    bytes.extend_from_slice(&[0xf3, 0x0f, 0x11]);
+    if field_offset == 0 {
+        bytes.push(xmm_register << 3);
+    } else if field_offset <= 127 {
+        bytes.push(0x40 | (xmm_register << 3));
+        bytes.push(field_offset as u8);
+    } else {
+        bytes.push(0x80 | (xmm_register << 3));
+        bytes.extend_from_slice(&field_offset.to_le_bytes());
+    }
+}
+
 fn emit_movss_xmm_from_stack(bytes: &mut Vec<u8>, xmm_register: u8, stack_slot: u16) {
     bytes.extend_from_slice(&[0xf3, 0x0f, 0x10]);
     if stack_slot <= 127 {
@@ -5151,6 +6190,7 @@ fn emit_movss_xmm_from_stack(bytes: &mut Vec<u8>, xmm_register: u8, stack_slot: 
     }
 }
 
+#[cfg(test)]
 fn emit_movss_stack_from_xmm(bytes: &mut Vec<u8>, stack_slot: u16, xmm_register: u8) {
     bytes.extend_from_slice(&[0xf3, 0x0f, 0x11]);
     if stack_slot <= 127 {
@@ -5163,12 +6203,14 @@ fn emit_movss_stack_from_xmm(bytes: &mut Vec<u8>, stack_slot: u16, xmm_register:
     }
 }
 
+#[cfg(test)]
 fn emit_movss_xmm_from_rax(bytes: &mut Vec<u8>, xmm_register: u8, field_offset: u8) {
     bytes.extend_from_slice(&[0xf3, 0x0f, 0x10]);
     bytes.push(0x40 | (xmm_register << 3));
     bytes.push(field_offset);
 }
 
+#[cfg(test)]
 fn emit_movss_rax_from_xmm(bytes: &mut Vec<u8>, field_offset: u8, xmm_register: u8) {
     bytes.extend_from_slice(&[0xf3, 0x0f, 0x11]);
     bytes.push(0x40 | (xmm_register << 3));
@@ -5200,6 +6242,7 @@ fn store_rax_to_stack_slot(bytes: &mut Vec<u8>, stack_slot: u16) {
     }
 }
 
+#[cfg(test)]
 fn store_eax_to_stack_dword_slot(bytes: &mut Vec<u8>, stack_slot: u16) {
     if stack_slot == 0 {
         bytes.extend_from_slice(&[0x89, 0x04, 0x24]); // mov dword ptr [rsp], eax
@@ -5233,6 +6276,7 @@ fn load_stack_slot_to_rdx(bytes: &mut Vec<u8>, stack_slot: u16) {
     }
 }
 
+#[cfg(test)]
 fn add_stack_slot_to_rax(bytes: &mut Vec<u8>, stack_slot: u16) {
     if stack_slot == 0 {
         bytes.extend_from_slice(&[0x48, 0x03, 0x04, 0x24]); // add rax, qword ptr [rsp]
@@ -5418,6 +6462,7 @@ fn unsupported_shape() -> CodegenError {
     }
 }
 
+#[cfg(test)]
 fn metadata_decoder_error() -> CodegenError {
     CodegenError {
         message: "ECS metadata decoder executable requires final `exit 0`".to_string(),
@@ -5430,6 +6475,7 @@ fn metadata_startup_payload_error() -> CodegenError {
     }
 }
 
+#[cfg(test)]
 fn native_move_query_loop_observable_error() -> CodegenError {
     CodegenError {
         message: "native query-loop observable requires the supported Demo.Move Core query loop"
@@ -5437,6 +6483,7 @@ fn native_move_query_loop_observable_error() -> CodegenError {
     }
 }
 
+#[cfg(test)]
 fn native_storage_compatibility_model(
     core: &CoreProgram,
     plan: &NativeWorldStoragePlan,
@@ -5514,6 +6561,7 @@ fn native_storage_compatibility_model(
     })
 }
 
+#[cfg(test)]
 fn native_ecs_slot(slot: NativeSlot) -> NativeEcsSlot {
     NativeEcsSlot {
         offset: slot.offset,
@@ -5521,6 +6569,7 @@ fn native_ecs_slot(slot: NativeSlot) -> NativeEcsSlot {
     }
 }
 
+#[cfg(test)]
 fn native_storage_catalog_column_slots(
     slots: NativeCatalogColumnSlots,
 ) -> NativeStorageCatalogColumnRowSlots {
@@ -5532,6 +6581,7 @@ fn native_storage_catalog_column_slots(
     }
 }
 
+#[cfg(test)]
 fn native_query_plan_iteration_row(
     compatibility: NativeStorageCompatibilityModel,
 ) -> NativeQueryPlanTableIterationRow {
@@ -5552,6 +6602,7 @@ fn native_query_plan_iteration_row(
     row
 }
 
+#[cfg(test)]
 fn native_storage_compatibility_error() -> CodegenError {
     CodegenError {
         message: "native startup/query compatibility requires one one-or-two-row table containing the observable's two distinct eight-byte component columns"
@@ -5570,6 +6621,516 @@ mod tests {
     };
     use crate::parser;
     use crate::runtime_assembly;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ObservedAcceptanceFixture {
+        Demo,
+        Arena,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct ParsedNativeObservation {
+        tables: Vec<ParsedNativeObservationTable>,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct ParsedNativeObservationTable {
+        key: Vec<u64>,
+        live_row_count: usize,
+        capacity: usize,
+        rows: Vec<ParsedNativeObservationRow>,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct ParsedNativeObservationRow {
+        row_index: usize,
+        spawn_ordinal: u32,
+        components: Vec<(u64, Vec<u8>)>,
+    }
+
+    #[test]
+    fn emits_verified_descriptor_generic_execution_for_both_acceptance_worlds() {
+        for (source, expected_table_count, expected_live_rows) in [
+            (
+                include_str!("../../../examples/move_system_two_rows.arc"),
+                1usize,
+                2usize,
+            ),
+            (
+                include_str!("../../../examples/arena_recovery.arc"),
+                2usize,
+                5usize,
+            ),
+        ] {
+            let (core, assembly, metadata, storage) = verified_native_fixture(source);
+            assert_eq!(storage.tables.len(), expected_table_count);
+            assert_eq!(
+                storage
+                    .tables
+                    .iter()
+                    .map(|table| table.rows.len())
+                    .sum::<usize>(),
+                expected_live_rows
+            );
+            let shape = execution_shape::derive_verified_core_execution_shape(&core, &assembly)
+                .expect("fixture execution shape derives");
+            let binding_plan = derive_native_query_binding_plan(&core, &storage)
+                .expect("fixture native query plan derives");
+            let bound_query = select_verified_bound_query(&shape, &binding_plan)
+                .expect("fixture query binds to its execution shape");
+            let capacity_cases = bound_query
+                .scan_blocks
+                .iter()
+                .map(|block| block.capacity as usize)
+                .sum::<usize>();
+            assert!(capacity_cases >= 2);
+
+            let published = verified_ecs_metadata_decoder_text_payload(
+                &core,
+                &assembly,
+                &metadata,
+                NativeEmissionMode::Published,
+            )
+            .expect("published verified native execution emits");
+            let observed = verified_ecs_metadata_decoder_text_payload(
+                &core,
+                &assembly,
+                &metadata,
+                NativeEmissionMode::ObservedTest,
+            )
+            .expect("observed verified native execution emits");
+            let layout = derive_verified_native_execution_layout(
+                &storage,
+                &assembly,
+                NativeEmissionMode::Published,
+            )
+            .expect("fixture verified native layout derives");
+            assert!(published.starts_with(&runtime_create_prefix(layout.frame_size)));
+            assert!(published.ends_with(&runtime_destroy_suffix(layout.frame_size)));
+            assert!(!contains_subsequence(&published, b"ARCHEOBS1\n"));
+            assert!(contains_subsequence(&observed, b"ARCHEOBS1\n"));
+            assert_eq!(
+                count_subsequence(&published, &[0xf3, 0x0f, 0x59]),
+                capacity_cases * shape.lanes.len(),
+                "each capacity case emits both verified f32 multiplies"
+            );
+            assert_eq!(
+                count_subsequence(&published, &[0xf3, 0x0f, 0x58]),
+                capacity_cases * shape.lanes.len(),
+                "each capacity case emits both verified f32 additions"
+            );
+            assert_eq!(
+                count_subsequence(&published, &[0x0f, 0x86]),
+                capacity_cases,
+                "published execution derives row cases from matched table capacities"
+            );
+            assert!(observed.len() > published.len());
+
+            let mut mismatched_metadata = metadata.clone();
+            *mismatched_metadata
+                .last_mut()
+                .expect("fixture metadata is nonempty") ^= 0xff;
+            assert!(verified_ecs_metadata_decoder_text_payload(
+                &core,
+                &assembly,
+                &mismatched_metadata,
+                NativeEmissionMode::Published,
+            )
+            .expect_err("host-side mismatched metadata must fail closed")
+            .message
+            .contains("does not match runtime assembly"));
+        }
+    }
+
+    #[test]
+    fn executes_observed_verified_native_fixtures_when_linux_is_available() {
+        for (source, fixture) in [
+            (
+                include_str!("../../../examples/move_system_two_rows.arc"),
+                ObservedAcceptanceFixture::Demo,
+            ),
+            (
+                include_str!("../../../examples/arena_recovery.arc"),
+                ObservedAcceptanceFixture::Arena,
+            ),
+        ] {
+            let (core, assembly, metadata, storage) = verified_native_fixture(source);
+            let shape = execution_shape::derive_verified_core_execution_shape(&core, &assembly)
+                .expect("fixture execution shape derives");
+            let reference_world =
+                runtime_assembly::execute_runtime_program_assembly_with_shape(&assembly, &shape)
+                    .expect("reference fixture executes through the verified shape");
+            let reference_observation =
+                crate::observation::serialize_world_observation(&reference_world, &storage)
+                    .expect("reference fixture observation serializes");
+
+            let observed_text = verified_ecs_metadata_decoder_text_payload(
+                &core,
+                &assembly,
+                &metadata,
+                NativeEmissionMode::ObservedTest,
+            )
+            .expect("observed native fixture emits");
+            let observed_elf =
+                crate::elf64::encode_executable_with_metadata(&observed_text, &metadata);
+            let Some(observed_output) =
+                execute_test_elf(&observed_elf).expect("observed native fixture launches")
+            else {
+                eprintln!("skipping generated ELF execution: Linux execution is unavailable");
+                return;
+            };
+            assert_eq!(observed_output.status.code(), Some(47));
+            assert_eq!(observed_output.stdout, reference_observation);
+            let parsed_observation = parse_native_observation(&observed_output.stdout);
+            assert_native_acceptance_state(&parsed_observation, fixture);
+
+            let published_text = verified_ecs_metadata_decoder_text_payload(
+                &core,
+                &assembly,
+                &metadata,
+                NativeEmissionMode::Published,
+            )
+            .expect("published native fixture emits");
+            let published_elf =
+                crate::elf64::encode_executable_with_metadata(&published_text, &metadata);
+            let published_output = execute_test_elf(&published_elf)
+                .expect("published native fixture launches")
+                .expect("Linux availability is stable during the test");
+            assert_eq!(published_output.status.code(), Some(47));
+            assert!(published_output.stdout.is_empty());
+
+            let mut corrupt_elf = observed_elf;
+            let metadata_offset = corrupt_elf.len() - metadata.len();
+            corrupt_elf[metadata_offset] ^= 0xff;
+            let corrupt_output = execute_test_elf(&corrupt_elf)
+                .expect("corrupt native fixture launches")
+                .expect("Linux availability is stable during the test");
+            assert_eq!(corrupt_output.status.code(), Some(1));
+            assert!(corrupt_output.stdout.is_empty());
+        }
+    }
+
+    fn parse_native_observation(bytes: &[u8]) -> ParsedNativeObservation {
+        assert!(
+            bytes.ends_with(b"\n"),
+            "native observation is newline-terminated"
+        );
+        let text = std::str::from_utf8(bytes).expect("native observation is UTF-8 ASCII");
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some("ARCHEOBS1"));
+
+        let mut tables: Vec<ParsedNativeObservationTable> = Vec::new();
+        for line in lines {
+            let mut fields = line.split_ascii_whitespace();
+            match fields
+                .next()
+                .expect("native observation line has a record kind")
+            {
+                "T" => {
+                    let key_count = parse_native_observation_usize(fields.next());
+                    let key = (0..key_count)
+                        .map(|_| parse_native_observation_component_id(fields.next()))
+                        .collect::<Vec<_>>();
+                    let live_row_count = parse_native_observation_usize(fields.next());
+                    let capacity = parse_native_observation_usize(fields.next());
+                    assert!(fields.next().is_none(), "table header has no extra fields");
+                    assert!(
+                        key.windows(2).all(|ids| ids[0] < ids[1]),
+                        "table key contains unique component IDs in canonical order"
+                    );
+                    assert!(
+                        live_row_count <= capacity,
+                        "table live row count does not exceed capacity"
+                    );
+                    tables.push(ParsedNativeObservationTable {
+                        key,
+                        live_row_count,
+                        capacity,
+                        rows: Vec::new(),
+                    });
+                }
+                "R" => {
+                    let row_index = parse_native_observation_usize(fields.next());
+                    let spawn_ordinal = fields
+                        .next()
+                        .expect("native row has a spawn ordinal")
+                        .parse::<u32>()
+                        .expect("native spawn ordinal is decimal u32");
+                    let component_count = parse_native_observation_usize(fields.next());
+                    let components = (0..component_count)
+                        .map(|_| {
+                            let component_id = parse_native_observation_component_id(fields.next());
+                            let byte_len = parse_native_observation_usize(fields.next());
+                            let payload = parse_native_observation_payload(
+                                fields.next().expect("native component has a payload"),
+                            );
+                            assert_eq!(
+                                payload.len(),
+                                byte_len,
+                                "native component payload length matches its record"
+                            );
+                            (component_id, payload)
+                        })
+                        .collect::<Vec<_>>();
+                    assert!(fields.next().is_none(), "row record has no extra fields");
+                    let table = tables
+                        .last_mut()
+                        .expect("native row follows a table header");
+                    assert_eq!(
+                        row_index,
+                        table.rows.len(),
+                        "native rows are emitted in contiguous table order"
+                    );
+                    assert_eq!(
+                        components
+                            .iter()
+                            .map(|(component_id, _)| *component_id)
+                            .collect::<Vec<_>>(),
+                        table.key,
+                        "native row membership exactly matches its table key"
+                    );
+                    table.rows.push(ParsedNativeObservationRow {
+                        row_index,
+                        spawn_ordinal,
+                        components,
+                    });
+                }
+                kind => panic!("unknown native observation record `{kind}`"),
+            }
+        }
+
+        for table in &tables {
+            assert_eq!(
+                table.rows.len(),
+                table.live_row_count,
+                "native table header reports its emitted live row count"
+            );
+        }
+        assert!(
+            tables
+                .windows(2)
+                .all(|tables| tables[0].key < tables[1].key),
+            "native tables are emitted in canonical key order"
+        );
+        ParsedNativeObservation { tables }
+    }
+
+    fn parse_native_observation_usize(field: Option<&str>) -> usize {
+        field
+            .expect("native observation has a decimal field")
+            .parse::<usize>()
+            .expect("native observation decimal field is valid")
+    }
+
+    fn parse_native_observation_component_id(field: Option<&str>) -> u64 {
+        let field = field.expect("native observation has a component ID");
+        assert_eq!(field.len(), 16, "component IDs use fixed-width hexadecimal");
+        assert!(
+            field
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte)),
+            "component IDs use uppercase hexadecimal"
+        );
+        u64::from_str_radix(field, 16).expect("native component ID is hexadecimal")
+    }
+
+    fn parse_native_observation_payload(field: &str) -> Vec<u8> {
+        assert_eq!(field.len() % 2, 0, "payload hexadecimal has byte pairs");
+        assert!(
+            field
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'A'..=b'F').contains(&byte)),
+            "payload uses uppercase hexadecimal"
+        );
+        field
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let pair = std::str::from_utf8(pair).expect("payload hex pair is ASCII");
+                u8::from_str_radix(pair, 16).expect("native payload byte is hexadecimal")
+            })
+            .collect()
+    }
+
+    fn assert_native_acceptance_state(
+        observation: &ParsedNativeObservation,
+        fixture: ObservedAcceptanceFixture,
+    ) {
+        match fixture {
+            ObservedAcceptanceFixture::Demo => assert_native_demo_state(observation),
+            ObservedAcceptanceFixture::Arena => assert_native_arena_state(observation),
+        }
+    }
+
+    fn assert_native_demo_state(observation: &ParsedNativeObservation) {
+        let position_id = crate::layout::stable_component_id("Demo", "Position").0;
+        let velocity_id = crate::layout::stable_component_id("Demo", "Velocity").0;
+        let table = native_observation_table(observation, &[position_id, velocity_id]);
+        assert_eq!(observation.tables.len(), 1, "Demo has one archetype");
+        assert_eq!(
+            (table.live_row_count, table.capacity),
+            (2, 2),
+            "Demo publishes two live rows in capacity two"
+        );
+        assert_eq!(
+            table
+                .rows
+                .iter()
+                .map(|row| row.spawn_ordinal)
+                .collect::<Vec<_>>(),
+            [0, 1]
+        );
+        assert_eq!(
+            table
+                .rows
+                .iter()
+                .map(|row| native_observation_f32_pair(row, position_id))
+                .collect::<Vec<_>>(),
+            [(4.0, 6.0), (11.0, 22.0)],
+            "Demo Position payloads contain the executed movement results"
+        );
+        assert_eq!(
+            table
+                .rows
+                .iter()
+                .map(|row| native_observation_f32_pair(row, velocity_id))
+                .collect::<Vec<_>>(),
+            [(3.0, 4.0), (1.0, 2.0)],
+            "Demo Velocity payloads remain unchanged"
+        );
+    }
+
+    fn assert_native_arena_state(observation: &ParsedNativeObservation) {
+        let vitality_id = crate::layout::stable_component_id("Arena", "Vitality").0;
+        let regeneration_id = crate::layout::stable_component_id("Arena", "Regeneration").0;
+        let faction_id = crate::layout::stable_component_id("Arena", "Faction").0;
+        let matching =
+            native_observation_table(observation, &[vitality_id, regeneration_id, faction_id]);
+        let excluded = native_observation_table(observation, &[vitality_id, faction_id]);
+
+        assert_eq!(
+            observation.tables.len(),
+            2,
+            "Arena has exactly two archetypes"
+        );
+        assert_eq!(
+            (matching.live_row_count, matching.capacity),
+            (3, 4),
+            "Arena query-matching table grows from capacity two to four"
+        );
+        assert_eq!(
+            (excluded.live_row_count, excluded.capacity),
+            (2, 2),
+            "Arena query-excluded table retains capacity two"
+        );
+        assert_eq!(
+            matching
+                .rows
+                .iter()
+                .map(|row| row.spawn_ordinal)
+                .collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert_eq!(
+            excluded
+                .rows
+                .iter()
+                .map(|row| row.spawn_ordinal)
+                .collect::<Vec<_>>(),
+            [3, 4]
+        );
+        assert_eq!(
+            matching
+                .rows
+                .iter()
+                .map(|row| native_observation_f32_pair(row, vitality_id))
+                .collect::<Vec<_>>(),
+            [(11.0, 102.0), (22.0, 203.0), (33.0, 304.0)],
+            "Arena matching Vitality payloads contain both executed lanes"
+        );
+        assert_eq!(
+            excluded
+                .rows
+                .iter()
+                .map(|row| native_observation_f32_pair(row, vitality_id))
+                .collect::<Vec<_>>(),
+            [(40.0, 400.0), (50.0, 500.0)],
+            "Arena excluded Vitality payloads remain unchanged"
+        );
+        assert_eq!(
+            matching
+                .rows
+                .iter()
+                .map(|row| native_observation_f32_triple(row, regeneration_id))
+                .collect::<Vec<_>>(),
+            [(2.0, 4.0, 120.0), (4.0, 6.0, 230.0), (6.0, 8.0, 340.0)],
+            "Arena Regeneration payloads remain unchanged"
+        );
+
+        let mut factions = observation
+            .tables
+            .iter()
+            .flat_map(|table| &table.rows)
+            .map(|row| (row.spawn_ordinal, native_observation_i32(row, faction_id)))
+            .collect::<Vec<_>>();
+        factions.sort_unstable_by_key(|(spawn_ordinal, _)| *spawn_ordinal);
+        assert_eq!(
+            factions,
+            [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5)],
+            "Arena Faction payloads 1 through 5 remain unchanged"
+        );
+    }
+
+    fn native_observation_table<'a>(
+        observation: &'a ParsedNativeObservation,
+        component_ids: &[u64],
+    ) -> &'a ParsedNativeObservationTable {
+        let mut key = component_ids.to_vec();
+        key.sort_unstable();
+        observation
+            .tables
+            .iter()
+            .find(|table| table.key == key)
+            .expect("native observation contains the expected archetype membership")
+    }
+
+    fn native_observation_component(row: &ParsedNativeObservationRow, component_id: u64) -> &[u8] {
+        row.components
+            .iter()
+            .find(|(id, _)| *id == component_id)
+            .map(|(_, payload)| payload.as_slice())
+            .expect("native row contains the expected component")
+    }
+
+    fn native_observation_f32_pair(
+        row: &ParsedNativeObservationRow,
+        component_id: u64,
+    ) -> (f32, f32) {
+        let payload = native_observation_component(row, component_id);
+        assert_eq!(payload.len(), 8);
+        (
+            f32::from_le_bytes(payload[0..4].try_into().expect("first lane is four bytes")),
+            f32::from_le_bytes(payload[4..8].try_into().expect("second lane is four bytes")),
+        )
+    }
+
+    fn native_observation_f32_triple(
+        row: &ParsedNativeObservationRow,
+        component_id: u64,
+    ) -> (f32, f32, f32) {
+        let payload = native_observation_component(row, component_id);
+        assert_eq!(payload.len(), 12);
+        (
+            f32::from_le_bytes(payload[0..4].try_into().expect("first lane is four bytes")),
+            f32::from_le_bytes(payload[4..8].try_into().expect("second lane is four bytes")),
+            f32::from_le_bytes(payload[8..12].try_into().expect("third lane is four bytes")),
+        )
+    }
+
+    fn native_observation_i32(row: &ParsedNativeObservationRow, component_id: u64) -> i32 {
+        let payload = native_observation_component(row, component_id);
+        i32::from_le_bytes(payload.try_into().expect("i32 payload is four bytes"))
+    }
 
     #[test]
     fn defines_native_ecs_execution_state_layout() {
@@ -11873,6 +13434,31 @@ mod tests {
             .expect("fixture has a native world storage plan")
     }
 
+    fn verified_native_fixture(
+        source: &str,
+    ) -> (
+        CoreProgram,
+        runtime_assembly::RuntimeProgramAssembly,
+        Vec<u8>,
+        NativeWorldStoragePlan,
+    ) {
+        let tokens = lexer::lex(source).expect("verified native fixture lexes");
+        let program = parser::parse_program(&tokens).expect("verified native fixture parses");
+        crate::checker::check_program(&program).expect("verified native fixture checks");
+        let core = core_lower::lower_program_to_core(&program)
+            .expect("verified native fixture lowers to Core");
+        core_verify::verify_core_program(&core).expect("verified native fixture Core verifies");
+        let assembly =
+            runtime_assembly::assemble_runtime_program_from_verified_core(&program, &core)
+                .expect("verified native fixture runtime assembly builds");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("verified native metadata encodes");
+        let storage =
+            derive_native_world_storage_plan(&core, &assembly, NATIVE_STORAGE_BASE_OFFSET)
+                .expect("verified native fixture storage plan derives");
+        (core, assembly, metadata, storage)
+    }
+
     fn storage_compatibility_for_program(program: &Program) -> NativeStorageCompatibilityModel {
         let core = lower_verified_core(program).expect("fixture Core verifies");
         let assembly = runtime_assembly::assemble_runtime_program_from_source(program)
@@ -12336,5 +13922,88 @@ mod tests {
         bytes.extend_from_slice(&[0xf3, 0x0f, 0x11]);
         bytes.push(0x40 | (xmm_register << 3));
         bytes.push(field_offset);
+    }
+
+    fn test_elf_path() -> std::path::PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock follows the Unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "archec0-verified-native-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    #[cfg(unix)]
+    fn execute_test_elf(bytes: &[u8]) -> Result<Option<std::process::Output>, String> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = test_elf_path();
+        std::fs::write(&path, bytes)
+            .map_err(|error| format!("could not write generated test ELF: {error}"))?;
+        let result = (|| {
+            let mut permissions = std::fs::metadata(&path)
+                .map_err(|error| format!("could not inspect generated test ELF: {error}"))?
+                .permissions();
+            permissions.set_mode(0o700);
+            std::fs::set_permissions(&path, permissions).map_err(|error| {
+                format!("could not make generated test ELF executable: {error}")
+            })?;
+            std::process::Command::new(&path)
+                .output()
+                .map(Some)
+                .map_err(|error| format!("could not execute generated test ELF: {error}"))
+        })();
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    #[cfg(windows)]
+    fn execute_test_elf(bytes: &[u8]) -> Result<Option<std::process::Output>, String> {
+        let availability = std::process::Command::new("wsl.exe")
+            .args(["-e", "true"])
+            .output();
+        if !availability.is_ok_and(|output| output.status.success()) {
+            return Ok(None);
+        }
+
+        let path = test_elf_path();
+        std::fs::write(&path, bytes)
+            .map_err(|error| format!("could not write generated WSL test ELF: {error}"))?;
+        let result = (|| {
+            let converted = std::process::Command::new("wsl.exe")
+                .args(["-e", "wslpath", "-a", "-u"])
+                .arg(&path)
+                .output()
+                .map_err(|error| {
+                    format!("could not convert generated ELF path for WSL: {error}")
+                })?;
+            if !converted.status.success() {
+                return Err("WSL could not convert the generated ELF path".to_string());
+            }
+            let linux_path = String::from_utf8(converted.stdout)
+                .map_err(|_| "WSL returned a non-UTF-8 generated ELF path".to_string())?;
+            let linux_path = linux_path.trim();
+            let chmod = std::process::Command::new("wsl.exe")
+                .args(["-e", "chmod", "700", linux_path])
+                .output()
+                .map_err(|error| format!("could not chmod generated WSL test ELF: {error}"))?;
+            if !chmod.status.success() {
+                return Err("WSL could not make the generated ELF executable".to_string());
+            }
+            std::process::Command::new("wsl.exe")
+                .args(["-e", linux_path])
+                .output()
+                .map(Some)
+                .map_err(|error| format!("could not execute generated WSL test ELF: {error}"))
+        })();
+        let _ = std::fs::remove_file(&path);
+        result
+    }
+
+    #[cfg(not(any(unix, windows)))]
+    fn execute_test_elf(_bytes: &[u8]) -> Result<Option<std::process::Output>, String> {
+        Ok(None)
     }
 }

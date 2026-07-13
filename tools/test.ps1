@@ -922,7 +922,7 @@ function Test-CorruptEcsMetadataMagic {
     $bytes[$metadataStart] = 0x58
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 16
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsComponentDescriptorRecord {
@@ -941,7 +941,7 @@ function Test-CorruptEcsComponentDescriptorRecord {
     $bytes[$descriptorSizeOffset] = 0x0c
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsResourceDescriptorRecord {
@@ -960,7 +960,7 @@ function Test-CorruptEcsResourceDescriptorRecord {
     $bytes[$fieldOffsetOffset] = 0x04
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsSystemDescriptorRecord {
@@ -979,7 +979,7 @@ function Test-CorruptEcsSystemDescriptorRecord {
     $bytes[$paramCountOffset] = 0x03
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsQueryDescriptorRecord {
@@ -998,7 +998,7 @@ function Test-CorruptEcsQueryDescriptorRecord {
     $bytes[$termCountOffset] = 0x03
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsScheduleDescriptorRecord {
@@ -1017,7 +1017,7 @@ function Test-CorruptEcsScheduleDescriptorRecord {
     $bytes[$scheduleItemKindOffset] = 0x09
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsPositionDescriptorName {
@@ -1036,7 +1036,7 @@ function Test-CorruptEcsPositionDescriptorName {
     $bytes[$nameByteOffset] = 0x58
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsMoversQueryDescriptorNameLength {
@@ -1055,7 +1055,7 @@ function Test-CorruptEcsMoversQueryDescriptorNameLength {
     $bytes[$nameLenOffset] = 0x11
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsMainScheduleDescriptorName {
@@ -1074,7 +1074,7 @@ function Test-CorruptEcsMainScheduleDescriptorName {
     $bytes[$nameByteOffset] = 0x58
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsStartupResourceId {
@@ -1093,7 +1093,7 @@ function Test-CorruptEcsStartupResourceId {
     $bytes[$resourceIdOffset] = 0x22
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsStartupSpawnComponentCount {
@@ -1112,7 +1112,7 @@ function Test-CorruptEcsStartupSpawnComponentCount {
     $bytes[$componentCountOffset] = 0x03
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsStartupOperationKind {
@@ -1131,7 +1131,7 @@ function Test-CorruptEcsStartupOperationKind {
     $bytes[$operationKindOffset] = 0x09
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 21
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsStartupSpawnOperationKind {
@@ -1150,7 +1150,7 @@ function Test-CorruptEcsStartupSpawnOperationKind {
     $bytes[$operationKindOffset] = 0x09
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 21
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsStartupRunOperationKind {
@@ -1169,7 +1169,7 @@ function Test-CorruptEcsStartupRunOperationKind {
     $bytes[$operationKindOffset] = 0x09
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 21
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsResourcePayload {
@@ -1188,7 +1188,7 @@ function Test-CorruptEcsResourcePayload {
     $bytes[$payloadHighByteOffset] = 0x40
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsSpawnPayload {
@@ -1207,7 +1207,7 @@ function Test-CorruptEcsSpawnPayload {
     $bytes[$payloadHighByteOffset] = 0x41
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 17
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-CorruptEcsRunSchedule {
@@ -1226,7 +1226,7 @@ function Test-CorruptEcsRunSchedule {
     $bytes[$scheduleIdOffset] = 0x06
     [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
 
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 21
+    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
 }
 
 function Test-Elf64Executable {

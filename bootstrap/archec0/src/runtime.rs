@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use crate::execution_shape::VerifiedCoreExecutionShape;
 use crate::layout::ComponentId;
 use std::alloc::{alloc_zeroed, dealloc, Layout};
 use std::ptr::NonNull;
@@ -729,6 +730,23 @@ impl ArchetypeTable {
         column.copy_payload(row, payload_bytes)
     }
 
+    fn commit_existing_component_payload(
+        &mut self,
+        component_id: ComponentId,
+        row: usize,
+        payload_bytes: &[u8],
+    ) {
+        debug_assert!(row < self.entities.len());
+        let column = self
+            .columns
+            .iter_mut()
+            .find(|column| column.component_id == component_id)
+            .expect("prepared component update column must still exist");
+        debug_assert!(row < column.row_count);
+        debug_assert_eq!(payload_bytes.len(), column.element_size);
+        column.commit_payload(row, payload_bytes);
+    }
+
     pub fn column(&self, id: ComponentId) -> Option<&ComponentColumn> {
         self.columns.iter().find(|column| column.component_id == id)
     }
@@ -1300,6 +1318,7 @@ impl ArcheWorld {
         })
     }
 
+    #[cfg(test)]
     pub fn execute_schedule_plan(
         &mut self,
         plan: &SchedulePlan,
@@ -1321,6 +1340,185 @@ impl ArcheWorld {
         Ok(())
     }
 
+    pub(crate) fn execute_schedule_plan_with_shape(
+        &mut self,
+        plan: &SchedulePlan,
+        shape: &VerifiedCoreExecutionShape,
+    ) -> Result<(), ScheduleExecuteError> {
+        if plan.schedule_id != shape.schedule.id || plan.schedule_name != shape.schedule.name {
+            return Err(schedule_execute_error(format!(
+                "schedule plan `{}` does not match verified execution shape `{}`",
+                plan.schedule_name, shape.schedule.name
+            )));
+        }
+        let [entry] = plan.entries() else {
+            return Err(schedule_execute_error(
+                "verified execution shape requires exactly one scheduled system",
+            ));
+        };
+        if entry.system_id != shape.system.id || entry.system_name != shape.system.name {
+            return Err(schedule_execute_error(format!(
+                "scheduled system `{}` does not match verified execution shape `{}`",
+                entry.system_name, shape.system.name
+            )));
+        }
+
+        let query = self
+            .query_descriptors
+            .get(shape.query.id)
+            .cloned()
+            .ok_or_else(|| {
+                schedule_execute_error(format!(
+                    "query descriptor `{}` is not registered",
+                    shape.query.name
+                ))
+            })?;
+        if query.name != shape.query.name
+            || query.terms.len() != 2
+            || !query.terms.iter().any(|term| {
+                term.component_id == shape.query.target.id && term.access == QueryAccess::Mut
+            })
+            || !query.terms.iter().any(|term| {
+                term.component_id == shape.query.source.id && term.access == QueryAccess::Read
+            })
+        {
+            return Err(schedule_execute_error(
+                "registered query descriptor does not match verified execution shape",
+            ));
+        }
+
+        let resource_descriptor = self
+            .resource_descriptors
+            .get(shape.resource.id)
+            .ok_or_else(|| {
+                schedule_execute_error(format!(
+                    "resource descriptor `{}` is not registered",
+                    shape.resource.name
+                ))
+            })?;
+        if resource_descriptor.name != shape.resource.name
+            || resource_descriptor.size != shape.resource.size
+            || resource_descriptor.align != shape.resource.align
+        {
+            return Err(schedule_execute_error(
+                "registered resource descriptor does not match verified execution shape",
+            ));
+        }
+        let resource_payload = self
+            .resource_payload(shape.resource.id)
+            .map_err(|error| schedule_execute_error(error.message))?;
+        if resource_payload.len() != shape.resource.size as usize {
+            return Err(schedule_execute_error(
+                "resource payload size does not match verified execution shape",
+            ));
+        }
+
+        let resource_lanes = shape
+            .lanes
+            .each_ref()
+            .map(|lane| {
+                read_schedule_f32(
+                    resource_payload,
+                    lane.resource_field_offset as usize,
+                    &format!("{}.{}", shape.resource.name, lane.resource_field_name),
+                )
+            })
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let query_plan = self.build_query_plan(&query);
+        let rows = self.iter_query_rows(&query_plan);
+        let mut updates = Vec::new();
+        updates.try_reserve(rows.len()).map_err(|error| {
+            schedule_execute_error(format!("failed to reserve verified row updates: {error}"))
+        })?;
+
+        for row in rows {
+            let table = self.archetype_at(row.archetype_index).ok_or_else(|| {
+                schedule_execute_error(format!(
+                    "query row references missing archetype {}",
+                    row.archetype_index
+                ))
+            })?;
+            let target_payload = table
+                .column(shape.query.target.id)
+                .and_then(|column| column.row_bytes(row.row))
+                .ok_or_else(|| {
+                    schedule_execute_error(format!(
+                        "{} payload is missing for row {}",
+                        shape.query.target.name, row.row
+                    ))
+                })?;
+            let source_payload = table
+                .column(shape.query.source.id)
+                .and_then(|column| column.row_bytes(row.row))
+                .ok_or_else(|| {
+                    schedule_execute_error(format!(
+                        "{} payload is missing for row {}",
+                        shape.query.source.name, row.row
+                    ))
+                })?;
+            if target_payload.len() != shape.query.target.size as usize
+                || source_payload.len() != shape.query.source.size as usize
+            {
+                return Err(schedule_execute_error(
+                    "query row payload size does not match verified execution shape",
+                ));
+            }
+
+            let mut updated_target = Vec::new();
+            updated_target
+                .try_reserve_exact(target_payload.len())
+                .map_err(|error| {
+                    schedule_execute_error(format!(
+                        "failed to reserve verified target payload update: {error}"
+                    ))
+                })?;
+            updated_target.extend_from_slice(target_payload);
+
+            for (lane, resource_value) in shape.lanes.iter().zip(&resource_lanes) {
+                let target_name = format!("{}.{}", shape.query.target.name, lane.target_field_name);
+                let source_name = format!("{}.{}", shape.query.source.name, lane.source_field_name);
+                let target_value = read_schedule_f32(
+                    target_payload,
+                    lane.target_field_offset as usize,
+                    &target_name,
+                )?;
+                let source_value = read_schedule_f32(
+                    source_payload,
+                    lane.source_field_offset as usize,
+                    &source_name,
+                )?;
+                write_schedule_f32(
+                    &mut updated_target,
+                    lane.target_field_offset as usize,
+                    target_value + source_value * resource_value,
+                    &target_name,
+                )?;
+            }
+
+            updates.push(PreparedShapeRowUpdate {
+                archetype_index: row.archetype_index,
+                row: row.row,
+                target_payload: updated_target,
+            });
+        }
+
+        // Every lookup, bounds check, arithmetic operation, and allocation completes before this
+        // point. The world is unchanged on every returned error; committing only replaces bytes in
+        // rows whose columns and exact payload sizes were validated above.
+        for update in updates {
+            self.archetypes[update.archetype_index].commit_existing_component_payload(
+                shape.query.target.id,
+                update.row,
+                &update.target_payload,
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(test)]
     fn execute_demo_move_system(&mut self) -> Result<(), ScheduleExecuteError> {
         let position_id = ComponentId(0x002202c6aeb4f27b);
         let velocity_id = ComponentId(0x2cf8a68bcb7f913b);
@@ -1575,6 +1773,13 @@ fn schedule_execute_error(message: impl Into<String>) -> ScheduleExecuteError {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct PreparedShapeRowUpdate {
+    archetype_index: usize,
+    row: usize,
+    target_payload: Vec<u8>,
+}
+
 fn f32_pair_payload(x: f32, y: f32) -> [u8; 8] {
     let x = x.to_le_bytes();
     let y = y.to_le_bytes();
@@ -1594,6 +1799,22 @@ fn read_schedule_f32(
     })?;
 
     Ok(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn write_schedule_f32(
+    bytes: &mut [u8],
+    offset: usize,
+    value: f32,
+    field_name: &str,
+) -> Result<(), ScheduleExecuteError> {
+    let end = offset
+        .checked_add(4)
+        .ok_or_else(|| schedule_execute_error(format!("{field_name} offset overflows")))?;
+    let destination = bytes.get_mut(offset..end).ok_or_else(|| {
+        schedule_execute_error(format!("{field_name} extends beyond component payload"))
+    })?;
+    destination.copy_from_slice(&value.to_le_bytes());
+    Ok(())
 }
 
 pub fn debug_inspect_world(world: &ArcheWorld) -> String {

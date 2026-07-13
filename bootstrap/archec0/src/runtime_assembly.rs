@@ -5,6 +5,7 @@ use crate::core::{
     CoreSpawnFieldValue, CoreSystemParamKind, CoreType,
 };
 use crate::core_verify;
+use crate::execution_shape::VerifiedCoreExecutionShape;
 use crate::layout::{self, ComponentId};
 use crate::parser::{
     ComponentDecl, ComponentLiteralValue, Program, QueryAccess as ParserQueryAccess, ResourceDecl,
@@ -643,6 +644,7 @@ pub fn execute_startup_spawn_operation(
         .map_err(|error| assembly_error(error.message))
 }
 
+#[cfg(test)]
 pub fn execute_startup_run_schedule_operation(
     operation: &StartupOperation,
     world: &mut ArcheWorld,
@@ -675,6 +677,46 @@ pub fn execute_startup_run_schedule_operation(
         .map_err(|error| assembly_error(error.message))
 }
 
+pub(crate) fn execute_startup_run_schedule_operation_with_shape(
+    operation: &StartupOperation,
+    world: &mut ArcheWorld,
+    shape: &VerifiedCoreExecutionShape,
+) -> Result<(), RuntimeAssemblyError> {
+    let (schedule_id, schedule_name) = match operation {
+        StartupOperation::RunSchedule {
+            schedule_id,
+            schedule_name,
+        } => (*schedule_id, schedule_name),
+        _ => {
+            return Err(assembly_error("startup operation is not a run schedule"));
+        }
+    };
+    if schedule_id != shape.schedule.id || schedule_name != &shape.schedule.name {
+        return Err(assembly_error(format!(
+            "startup schedule `{schedule_name}` does not match verified execution shape `{}`",
+            shape.schedule.name
+        )));
+    }
+
+    let schedule = world
+        .schedule_descriptors()
+        .get(schedule_id)
+        .cloned()
+        .ok_or_else(|| {
+            assembly_error(format!(
+                "schedule descriptor `{schedule_name}` is not registered"
+            ))
+        })?;
+    let plan = world
+        .build_schedule_plan(&schedule)
+        .map_err(|error| assembly_error(error.message))?;
+
+    world
+        .execute_schedule_plan_with_shape(&plan, shape)
+        .map_err(|error| assembly_error(error.message))
+}
+
+#[cfg(test)]
 pub fn execute_runtime_program_assembly(
     assembly: &RuntimeProgramAssembly,
 ) -> Result<ArcheWorld, RuntimeAssemblyError> {
@@ -691,6 +733,36 @@ pub fn execute_runtime_program_assembly(
             }
             StartupOperation::RunSchedule { .. } => {
                 execute_startup_run_schedule_operation(operation, &mut world)?;
+            }
+        }
+    }
+
+    Ok(world)
+}
+
+pub(crate) fn execute_runtime_program_assembly_with_shape(
+    assembly: &RuntimeProgramAssembly,
+    shape: &VerifiedCoreExecutionShape,
+) -> Result<ArcheWorld, RuntimeAssemblyError> {
+    let mut world = ArcheWorld::create();
+
+    register_assembly_descriptors_into_world(assembly, &mut world)?;
+    for (operation_index, operation) in assembly.startup_operations.iter().enumerate() {
+        match operation {
+            StartupOperation::ResourcePayload { .. } => {
+                execute_startup_resource_payload_operation(operation, &mut world)?;
+            }
+            StartupOperation::Spawn { .. } => {
+                execute_startup_spawn_operation(operation, &mut world)?;
+            }
+            StartupOperation::RunSchedule { .. } => {
+                if operation_index != shape.schedule.startup_operation_index {
+                    return Err(assembly_error(format!(
+                        "startup schedule operation {operation_index} does not match verified execution shape operation {}",
+                        shape.schedule.startup_operation_index
+                    )));
+                }
+                execute_startup_run_schedule_operation_with_shape(operation, &mut world, shape)?;
             }
         }
     }
@@ -1212,6 +1284,9 @@ pub struct StartupSpawnComponent {
 mod tests {
     use super::*;
     use crate::core::{BlockId, CoreBlock, CoreInstruction, CoreTerminator, ValueId};
+    use crate::execution_shape::{
+        derive_verified_core_execution_shape, VerifiedCoreExecutionShape,
+    };
     use crate::layout::ComponentId;
     use crate::runtime::{
         stable_query_id, stable_resource_id, stable_schedule_id, stable_system_id, ArchetypeKey,
@@ -2267,6 +2342,109 @@ startup {
             Some(initial_velocity.as_slice())
         );
         assert!(world.entities().is_alive(entity));
+    }
+
+    #[test]
+    fn executes_descriptor_generic_shape_for_both_acceptance_programs() {
+        let (demo_world, demo_shape) =
+            execute_shape_fixture(include_str!("../../../examples/move_system_two_rows.arc"));
+        let demo_key =
+            ArchetypeKey::new(vec![demo_shape.query.target.id, demo_shape.query.source.id]);
+        let demo_table = demo_world
+            .archetype(&demo_key)
+            .expect("Demo query archetype exists");
+        assert_eq!(
+            component_rows(demo_table, demo_shape.query.target.id),
+            vec![f32_pair_payload(4.0, 6.0), f32_pair_payload(11.0, 22.0)]
+        );
+        assert_eq!(
+            component_rows(demo_table, demo_shape.query.source.id),
+            vec![f32_pair_payload(3.0, 4.0), f32_pair_payload(1.0, 2.0)]
+        );
+
+        let (arena_world, arena_shape) =
+            execute_shape_fixture(include_str!("../../../examples/arena_recovery.arc"));
+        let faction_id = crate::layout::stable_component_id("Arena", "Faction");
+        let full_key = ArchetypeKey::new(vec![
+            arena_shape.query.target.id,
+            arena_shape.query.source.id,
+            faction_id,
+        ]);
+        let partial_key = ArchetypeKey::new(vec![arena_shape.query.target.id, faction_id]);
+        let full = arena_world
+            .archetype(&full_key)
+            .expect("Arena matching archetype exists");
+        let partial = arena_world
+            .archetype(&partial_key)
+            .expect("Arena excluded archetype exists");
+
+        assert_eq!(
+            component_rows(full, arena_shape.query.target.id),
+            vec![
+                f32_pair_payload(11.0, 102.0),
+                f32_pair_payload(22.0, 203.0),
+                f32_pair_payload(33.0, 304.0),
+            ]
+        );
+        assert_eq!(
+            component_rows(partial, arena_shape.query.target.id),
+            vec![f32_pair_payload(40.0, 400.0), f32_pair_payload(50.0, 500.0)]
+        );
+        assert_eq!(
+            component_rows(full, arena_shape.query.source.id),
+            vec![
+                f32_triple_payload(2.0, 4.0, 120.0),
+                f32_triple_payload(4.0, 6.0, 230.0),
+                f32_triple_payload(6.0, 8.0, 340.0),
+            ],
+            "read-only Regeneration payloads, including unrelated cap fields, remain unchanged"
+        );
+        assert_eq!(
+            component_rows(full, faction_id),
+            vec![i32_payload(1), i32_payload(2), i32_payload(3)]
+        );
+        assert_eq!(
+            component_rows(partial, faction_id),
+            vec![i32_payload(4), i32_payload(5)],
+            "non-query Faction payloads remain unchanged in every archetype"
+        );
+    }
+
+    fn execute_shape_fixture(source: &str) -> (ArcheWorld, VerifiedCoreExecutionShape) {
+        let tokens = lexer::lex(source).expect("acceptance fixture lexes");
+        let program = parser::parse_program(&tokens).expect("acceptance fixture parses");
+        checker::check_program(&program).expect("acceptance fixture checks");
+        let core = core_lower::lower_program_to_core(&program).expect("acceptance Core lowers");
+        let assembly = assemble_runtime_program_from_verified_core(&program, &core)
+            .expect("acceptance runtime assembly builds");
+        let shape = derive_verified_core_execution_shape(&core, &assembly)
+            .expect("supported execution shape derives");
+        let world = execute_runtime_program_assembly_with_shape(&assembly, &shape)
+            .expect("descriptor-generic reference execution succeeds");
+        (world, shape)
+    }
+
+    fn component_rows(table: &crate::runtime::ArchetypeTable, id: ComponentId) -> Vec<Vec<u8>> {
+        let column = table.column(id).expect("component column exists");
+        (0..table.entity_count())
+            .map(|row| {
+                column
+                    .row_bytes(row)
+                    .expect("component row exists")
+                    .to_vec()
+            })
+            .collect()
+    }
+
+    fn f32_triple_payload(first: f32, second: f32, third: f32) -> Vec<u8> {
+        [first, second, third]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect()
+    }
+
+    fn i32_payload(value: i32) -> Vec<u8> {
+        value.to_le_bytes().to_vec()
     }
 
     fn xy_component_descriptor(id: ComponentId, name: &str) -> ComponentDescriptor {
