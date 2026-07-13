@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M24 is complete; the M25 acceptance contract and issue split are frozen, and M25-001 is Ready.
+**Current focus:** M25 implementation is complete and the Board is closed; the next work is a deliberate M26 design checkpoint, not M26 implementation.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -13,6 +13,27 @@ This file is not a second design document. It is the build map for proving that 
 - Generated proof/build artifacts are intentionally ignored via `.gitignore`, including `build/` and `bootstrap/archec0/target/`.
 - Repository setup does not advance milestone issues; the current board is tracked below.
 - `README.md` provides GitHub orientation for the repository; it does not advance the milestone board.
+
+## 2026-07-13 M25 Descriptor-Generic Native World
+
+M25 answers its binary question **yes**: Arche executes Arena from verified semantics, descriptor identities, checked layouts, startup operations, and query bindings; no Arena or Demo identity selects production storage or execution. This proves the descriptor-generic supported shape, not arbitrary Core execution.
+
+Five ordered implementation commits establish the proof:
+
+- `c7032f4` derives canonical, checked `NativeWorldStoragePlan` values from verified Core schemas and runtime descriptors.
+- `ab82e06` emits descriptor-sized, multi-table stack storage and catalogs with checked alignment.
+- `064ed9f` carries typed `i32` startup literals end to end and materializes arbitrary component lists transactionally.
+- `50585d4` matches archetype subsets and binds query terms by stable component ID.
+- `2be3c51` derives one `VerifiedCoreExecutionShape` and uses it for reference and native execution, with a test-only `ARCHEOBS1` observer that compares live post-schedule state.
+
+Local closure evidence on `2be3c51`:
+
+- Formatting, locked debug and release all-target suites, normal Clippy, both complete PowerShell runners, `cargo audit`, and `git diff --check` passed. Debug and release each ran 146 tests with no failures; three e2e scripts were discovered.
+- Strict Clippy reproduced exactly five known diagnostics in the existing `too_many_arguments`, `type_complexity`, and `filter_map_bool_then` categories—down from the audit's eight—with no new diagnostic or category.
+- Both PowerShell Core 7.6.3 and Windows PowerShell 5.1 generated and ran Arena through WSL. Its descriptor-derived production frame was 1,360 bytes and it exited `47`.
+- Independent observed native/reference streams were byte-identical. Demo positions became `(4,6)` and `(11,22)`. Arena Vitality became `(11,102)`, `(22,203)`, and `(33,304)` while excluded rows `(40,400)` and `(50,500)`, Regeneration payloads, Faction values `1..5`, memberships, row counts, and capacities `4`/`2` remained unchanged.
+- Required implementation-head CI run [`29291558560`](https://github.com/noahsabaj/arche/actions/runs/29291558560) passed. `Proof / Native Linux` job [`86956066315`](https://github.com/noahsabaj/arche/actions/runs/29291558560/job/86956066315) ran the native observer, published fixtures, Unix alias and executable-permission gates, dependency audit, and tracked-diff check. `Proof / Windows` job [`86956066332`](https://github.com/noahsabaj/arche/actions/runs/29291558560/job/86956066332) passed both PowerShell editions and its tracked-diff check.
+- Every phase preserved repository `AUDIT.md` SHA-256 `B5A84B5DA0E28106A220D0A05F0AC1B54720D955DEA98608376E51BCBB41C48E` and external ledger SHA-256 `0F82FFA0178BEC66298FE535A75A8824B3501DB7DA919B430BCCA7762B25A2A7`. Tooling changed no repository file; `cargo audit` refreshed only the user-level advisory cache.
 
 ## 2026-07-13 Audit Remediation
 
@@ -92,19 +113,16 @@ If an issue cannot produce one of those, it is too vague and must be split or re
 ## Current Bootstrap North Star
 
 ```text
-Source file -> parsed ECS program -> Arche Core -> runtime world -> schedule -> query loop -> updated Position -> native proof.
+Source -> checked AST -> verified Core -> descriptor-derived storage/execution shape -> reference + native execution -> canonical state equivalence.
 ```
 
 This is the current bootstrap proof, not the final product boundary.
 
-Current missing links:
+Current proven chain and remaining boundary:
 
-- Native executable startup can validate embedded `ARCHEECS` metadata, register descriptor counts, materialize descriptor section record offsets/lengths, decode component/resource/system/query/schedule descriptor records into explicit stack-resident descriptor-table state, materialize source-order startup operation records into a native startup operation table, validate startup table records against decoded descriptors, iterate startup operation table rows by materialized count for resource/spawn/run handlers, apply the `Demo.Time` resource payload, create one or two bounded bootstrap-native spawn rows, dispatch `run Demo.Main`, materialize compiled schedule state through reusable schedule table rows, build native query-plan state from iterated query-plan table rows backed by reusable decoded table rows, validate query-plan state against decoded system/query/component/startup tables, and execute compiled `Demo.Move` query-loop code over each planned row through a named native ECS execution-state layout.
-- `move_system.arc --emit-core` can print the lowered `Demo.Move` query-loop body.
-- The native ECS table slots now have a reusable row model and cursor model for descriptor, startup, compiled schedule, and query-plan state, including decoded descriptor name references; descriptor decoding, startup operation dispatch, query planning, and compiled `Demo.Move` execution now consume count-driven/iterated table-row matches for the current one-row and bounded two-row native proofs.
-- M23 bridges the current bounded native proof rows into an explicit stack-resident native archetype-table storage model: startup spawn rows become storage-shaped table rows, query planning derives row count and payload addresses from storage, and compiled `Demo.Move` consumes storage-backed payload addresses for the one-row and bounded two-row fixtures.
-- M24 is complete. One bounded native storage-catalog table row with two descriptor-linked columns is materialized from decoded state; bounded spawn validation/writes, query-plan identity/size matching, row-count dereference, planned bases, later-row strides, compiled math/stores, and storage validation consume catalog/planned addresses. Local debug/release/PowerShell proofs and required Windows/native-Linux CI close the milestone.
-- M25 is specified but not implemented. `examples/arena_recovery.arc` freezes the structurally unrelated two-archetype, three-component, five-entity acceptance contract. Its deliberate current `PARSE001` failure on the first `Faction.id` literal is assigned to M25-003; no Arena name, hard-coded stable ID, or layout may become a compiler branch. Descriptor-provided component IDs remain the generic binding authority.
+- M25 derives canonical multi-table stack storage from verified schemas and startup operations, emits descriptor-sized 4/8/12-byte columns, materializes typed arbitrary startup lists, and resolves query subsets and bindings by stable component ID.
+- One verified-Core-derived supported shape drives both reference and native execution for the unrelated Demo and Arena programs. No fixture name, hard-coded fixture stable ID, declaration ordinal, physical offset, capacity, or row count selects production storage or execution.
+- Canonical test-only observation proves complete live-state equivalence. M26 must replace the temporary one-schedule/one-system/one-resource/one-query, two-term, two-lane `f32` multiply-add shape with generic verified-Core body and sequential-schedule execution.
 
 ## Integration Debt
 
@@ -112,22 +130,22 @@ These are intentional gaps created by narrow proof milestones.
 
 Current gaps:
 
-- Generated native binaries can carry complete decoded `ARCHEECS` metadata, and native startup can validate its envelope, register descriptor counts, materialize descriptor record offsets/lengths, decode component/resource/system/query/schedule descriptor records, materialize startup operation records into a stack-resident table, iterate startup operation table rows by materialized count for resource/spawn/run handlers, apply the first resource payload, create one or two bounded spawn rows into explicit native archetype-table storage, dispatch `run Demo.Main`, materialize compiled schedule state from reusable schedule rows, build query-plan state from storage-backed rows, and execute compiled `Demo.Move` query-loop code over one or two planned storage rows through named stack-resident execution state.
-- Source-level startup resource, spawn, and schedule execution drives runtime ECS state; generated native startup now mirrors the current fixture path through bounded stack-resident storage, but it is still fixture-shaped rather than a general runtime world implementation.
-- System declarations, query metadata, Core query-loop bodies, compiled native `Demo.Move` row scan/math/store code, native query-planning state, compiled schedule state, startup operation table state, a named native execution-state layout, and reusable native ECS table and cursor models with descriptor name references exist; descriptor row decoding, startup operation row dispatch, query-plan construction, and bounded multi-row native table execution are table-iteration driven.
-- M10/M14 Move behavior is proven through a runtime application path; M18 proves the equivalent generated native fixture path.
-- Runtime schedule execution is source-driven in tests; native schedule execution is table-row backed only for the current `Demo.Main -> Demo.Move` fixtures, not a general scheduler.
-- Native binaries still use bounded stack-resident native archetype-table storage for the current `Demo.Position + Demo.Velocity` fixtures. All semantic storage consumers now route through the materialized catalog; physical row-count/header/column addresses are named only while constructing that catalog (frame lifecycle zeroing is separate). The catalog remains one table with two role-shaped columns, fixed bounded capacity, and exact `Demo` execution specialization. M24 is not a heap-backed runtime world, arbitrary table allocator, command buffer, object/linker split, source syntax change, `ARCHEECS` metadata format change, or general scheduler.
+- Native storage is per-program, canonical, multi-table, descriptor-sized, aligned, and statically planned on the stack. It has no runtime heap growth or structural mutation; command buffers, entity lifecycle, and archetype transitions remain M27 work.
+- Startup component lists and payload shapes are descriptor-generic, and query matching accepts any archetype containing the required component-ID subset. Metadata remains version 1.
+- The current execution adapter accepts exactly one initialized read resource, one startup schedule, one system, one query, two distinct mut/read query components, one query loop, and exactly two distinct `f32` operations of `target += source * resource`.
+- The schedule contains exactly one sequential item. The source terminator must be the direct literal `exit 0`; published ECS proofs map success to `47` and metadata/runtime failure to `1`.
+- Compile-time geometric capacities bound each native column. Runtime reallocation, commands, events, relations, parallel scheduling, and arbitrary Core statements/expressions are not implemented.
+- Legacy Demo-shaped helpers remain only behind test/compatibility paths. Production planning, startup, binding, reference execution, and native emission use descriptor/Core-derived identities and offsets.
 
 ## Future Horizon
 
-These are milestone-level direction and closure constraints. M21 through M24 are complete, M25 is active on the Board below, and later milestones must not be expanded into issue rows before their predecessor closes.
+These are milestone-level direction and closure constraints. M21 through M25 are complete. M26 is the next deliberate design checkpoint but has no promoted issue; later milestones must not be expanded into issue rows before their predecessor closes.
 
 - M21: Native ECS table generalization is complete below.
 - M22: Native ECS table row iteration is complete below.
 - M23: Native ECS world storage bridge is complete below.
 - M24: Native ECS storage catalog and descriptor-driven column binding is complete below. It is the final milestone allowed to close using only the bounded, exact-name `Demo` native fixtures.
-- M25: Descriptor-generic native world is active below with a frozen two-program acceptance contract. Replace fixture-sized storage with descriptor-sized native tables and columns for differing component sets, layouts, alignments, and row counts. It closes only when both structurally distinct source programs execute without fixture names, hard-coded fixture stable IDs, declaration ordinals, offsets, or capacities controlling production allocation or binding paths; descriptor-provided component IDs remain the required lookup and binding keys.
+- M25: Descriptor-generic native world is complete. Demo and Arena execute through descriptor-sized multi-table storage and one verified-Core-derived supported shape without fixture identity, declaration ordinal, physical offset, capacity, or row count controlling production behavior.
 - M26: Core-generic native systems and schedules. Native lowering and execution must consume verified Core schemas, system bodies, query bindings, and schedule descriptors without recognizing `Demo.Move`, `Demo.Main`, or equivalent exact program shapes. It closes only when two distinct systems and schedules execute without compiler changes and agree with the reference runtime.
 - M27: Deferred structural commands and entity lifecycle. Add spawn, despawn, add-component, and remove-component commands; defined schedule-boundary application; archetype transitions; and stale-handle-safe entity reuse. It closes only when commands issued during query execution apply deterministically without invalidating the active scan or partially mutating world state.
 - M28: Deterministic many-world simulation and ML environment proof. Run a headless workload across at least 1,024 independent worlds with observation, action, episode-state, and reward data expressed through ordinary ECS data; repeated seeded schedule steps; and reproducible final-state checksums. It closes only when the same source runs standalone through the reference and native paths without compiler specialization and produces equivalent observable state.
@@ -154,7 +172,7 @@ M28 does not claim a tensor compiler, automatic differentiation, optimizer frame
 - Debugger or profiler.
 - Object/linker split.
 - Generics.
-- Command buffers before M25 descriptor-generic storage and M26 Core-generic execution.
+- Command buffers before M26 Core-generic execution closes.
 - Tensor syntax, automatic differentiation, optimizer APIs, GPU kernel compilation, or distributed training before the M28 simulation proof.
 - Python-first or host-language-first bindings as Arche's primary product surface.
 - A self-hosted compiler rewrite before Arche can express the compiler-supporting language features listed in the design document's bootstrap plan.
@@ -166,7 +184,7 @@ M28 does not claim a tensor compiler, automatic differentiation, optimizer frame
 - After M16: generated executables can create source-described ECS world state.
 - After M18: generated executables can run a compiled system query loop.
 - After M24: the bounded exact-name `Demo` bootstrap is complete; no later milestone may close solely on those fixtures.
-- After M25: native world storage is driven by source schemas and descriptors rather than fixture identities or capacities.
+- After M25 (achieved): native world storage is driven by source schemas and descriptors rather than fixture identities or capacities, and two unrelated programs agree across reference and native execution.
 - After M26: verified Core is the production authority for generic native system and schedule execution.
 - After M27: structural mutation has deterministic lifecycle and schedule-boundary semantics.
 - After M28: Arche has proved an ML-relevant many-world simulation substrate without claiming a general ML framework.
@@ -194,16 +212,13 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M25-001 | Derive descriptor-generic native world storage plan | `cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml derives_native_world_storage_plan` passes. Verified component schemas and startup operations produce canonical sorted component-ID archetype keys, checked table/column offsets, row counts, and capacity plans without exact source names, hard-coded fixture stable IDs, declaration ordinals, or fixture constants. Descriptor-provided component IDs are the generic identity authority. |
+| - | - | Empty. |
 
 ### Backlog
 
 | Issue | Title | Done when |
 |---|---|---|
-| M25-002 | Emit descriptor-sized native tables and columns | `cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml emits_descriptor_sized_native_tables_and_columns` passes. Codegen consumes the world plan for multiple tables and 4/8/12-byte columns; source schemas retain four-byte alignment, and synthetic planner fixtures prove checked 8- and 16-byte alignment without adding source types. |
-| M25-003 | Materialize arbitrary startup component lists | `cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml materializes_arbitrary_startup_component_lists` passes. `i32` component literals in `0..=i32::MAX` flow through parsing, checking, Core lowering/verification/formatting, runtime assembly, metadata, and native payload copies; resource literals in the same range follow their existing non-Core startup path through parsing, checking, runtime assembly, metadata, and native resource stores. Arbitrary startup component lists populate planned tables with checked compile-time geometric capacity progressions (`1 -> 2 -> 4` for Arena's three matching rows), and all failures leave committed rows unchanged. This issue owns the acceptance fixture's current `PARSE001` prerequisite. |
-| M25-004 | Match archetypes and bind query terms by component ID | `cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml matches_archetypes_and_binds_query_terms_by_component_id` passes. Canonical component-ID keys match both acceptance worlds, query bindings never depend on declaration ordinal, Arena selects exactly the three `Vitality + Regeneration + Faction` rows, and the two `Vitality + Faction` rows remain excluded. |
-| M25-005 | Close two-program descriptor-generic execution proof | `pwsh -NoLogo -NoProfile -File .\tools\test.ps1` passes after one verified-Core-derived supported-shape adapter drives both reference and native execution and an ASCII-framed test observer independently proves state equivalence for `move_system_two_rows.arc` and `arena_recovery.arc`. Arena results are `(11,102)`, `(22,203)`, `(33,304)`, with `(40,400)` and `(50,500)` unchanged; compile-time capacity progression, multiple archetypes, and absence of compiler branches for either program's names, hard-coded stable IDs, declaration order, offsets, or row counts are also proven. Required Windows/native-Linux CI is green and the milestone board is closed. |
+| - | - | Empty. |
 
 ### Doing
 
@@ -215,6 +230,11 @@ Board rules:
 
 | Issue | Title | Evidence |
 |---|---|---|
+| M25-005 | Close two-program descriptor-generic execution proof | Commit `2be3c51` derives a neutral `VerifiedCoreExecutionShape` from independently verified Core and cross-checked descriptors, then passes that same shape into runtime assembly, transactional reference execution, native planning, and native SSE emission. Published artifacts are silent and exit `47`; corrupt metadata fails with `1`. Test-only `ARCHEOBS1` observation independently parses live native state and byte-compares it with canonical reference state for Demo and Arena, including exact values, excluded rows, unchanged payloads, memberships, row counts, and capacities. Local formatting, locked debug/release 146/146 suites, normal/comparison Clippy, both complete PowerShell runners, dependency audit, and diff checks passed. Required implementation CI run [`29291558560`](https://github.com/noahsabaj/arche/actions/runs/29291558560) passed native Linux job `86956066315` and Windows job `86956066332` on the exact implementation head. |
+| M25-004 | Match archetypes and bind query terms by component ID | Commit `50585d4` builds query matches from canonical table keys, accepts legal supersets, binds terms and access modes by stable component ID in Core order, rejects mutable aliases, carries live row-count/base/size/field-offset state, and emits capacity/live-row guarded cases without fixture row counts. Demo matches its table; Arena matches only the three-row Regeneration archetype and excludes the two-row partial archetype. |
+| M25-003 | Materialize arbitrary startup component lists | Commit `064ed9f` adds typed `i32` component/resource literals through checking, Core, runtime assembly, metadata, and little-endian payload materialization; decodes arbitrary source-order component lists; and validates complete spawns before publishing any row. Arena materializes five lists of `3,3,3,2,2` components with Faction `1..5` and checked static capacity progressions `1 -> 2 -> 4` and `1 -> 2`. |
+| M25-002 | Emit descriptor-sized native tables and columns | Commit `ab82e06` makes frame sizing, zeroing, table/column catalogs, and payload ranges consume `NativeWorldStoragePlan`. Demo preserves its compatible layout; Arena produces two tables and five columns across 4/8/12-byte payloads; synthetic schemas prove checked 8/16-byte alignment and non-overlap. Catalog construction is the only production path that names physical payload offsets. |
+| M25-001 | Derive descriptor-generic native world storage plan | Commit `c7032f4` derives deterministic canonical component-ID keys, source-order rows, checked geometric capacities, aligned SoA payload ranges, catalog slots, and a 16-byte-aligned frame boundary from verified schemas and startup operations. Reordering declarations/component lists is deterministic; unused schemas, padding, malformed descriptor/Core agreement, and `u16` overflow are covered. |
 | M24-005 | Close catalog-backed native move proof | On 2026-07-13, formatting, locked debug and release all-target suites (123/123), normal Clippy, both complete local runners (PowerShell Core 7.6.3 and Windows PowerShell 5.1), `cargo audit`, and `git diff --check` passed; both locally generated movement fixtures exited `47` through WSL. Strict production Clippy reproduced only two `too_many_arguments`, one `type_complexity`, and one `filter_map_bool_then` diagnostic—four versus the audit's eight, with no new category. Required implementation CI run [`29277842859`](https://github.com/noahsabaj/arche/actions/runs/29277842859) passed: `Proof / Native Linux` job `86911289675` on `ubuntu-24.04` ran the native ELF, Unix symlink, and executable-permission gates; `Proof / Windows` job `86911289699` on `windows-2025` passed PowerShell Core and Windows PowerShell 5.1 compatibility with generated-Linux execution explicitly skipped there. Both jobs verified no tracked diff. Final docs-inclusive run [`29278130139`](https://github.com/noahsabaj/arche/actions/runs/29278130139) passed the same required checks on exact five-commit head `c3dc63e` before PR `#3` merged as `ff5c984`. Every phase preserved repository `AUDIT.md` SHA-256 `B5A84B5DA0E28106A220D0A05F0AC1B54720D955DEA98608376E51BCBB41C48E` and external ledger SHA-256 `0F82FFA0178BEC66298FE535A75A8824B3501DB7DA919B430BCCA7762B25A2A7`; tooling changed no repository file, while `cargo audit` refreshed only the user-level advisory cache. Ready, Doing, and Backlog were empty at M24 closure. |
 | M24-004 | Bind query plans through storage catalog | `cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml builds_query_plan_through_storage_catalog` passed for both movement fixtures, and the preserved historical `builds_native_query_plan_from_archetype_storage` command again executes one real compatibility proof. Locked all-target tests and the complete PowerShell runner passed with 123 discovered Rust tests and both generated movement fixtures exiting `47` through WSL; normal Clippy retained only the established diagnostics. Spawn and query consumers now independently require the supported eight-byte catalog element width before staging or address arithmetic, preventing correlated descriptor/payload-length corruption from escaping a bounded column. Query-plan rows dereference the catalog row-count address; copy catalog component IDs, sizes, and bases; cross-check IDs/sizes against query, system, and descriptor rows; and advance later rows through planned sizes. The focused proof isolates the builder's ordered target writes, proves that emitted builder is contiguous before planned math without an intervening plan rewrite, and rejects the known direct physical row-count, header, payload-address, and payload-validation encodings. Physical storage addresses remain only at catalog construction. |
 | M24-003 | Route spawn storage writes through catalog columns | `cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml materializes_spawn_rows_through_storage_catalog` passed for both movement fixtures. The complete PowerShell runner then passed with 122 discovered Rust tests, all byte/metadata/diagnostic checks, both discovered e2e scripts, and both native movement fixtures exiting `47` through WSL. Each bounded spawn now validates component count, current row, capacity, component IDs, and payload lengths through the catalog; stages both payloads; writes row zero through catalog bases and row one through `base + element_size`; and only then publishes the authoritative row count through the catalog address and mirrors the logical spawn count. The focused proof rejects the superseded staging-to-physical-slot sequences and verifies no failure branch separates the dual writes from count publication. Query consumption remains M24-004 work. |
@@ -1934,7 +1954,7 @@ Purpose:
 Execute two structurally unrelated ECS programs because of verified semantics and descriptors, never because codegen recognizes hard-coded fixture names or hard-coded fixture stable IDs, declaration order, offsets, or row counts.
 ```
 
-M25 remains a statically planned native world milestone. It may compute checked geometric capacities and reserve the resulting per-program native frame, but it does not add heap allocation, commands, entity lifecycle, new type families, new metadata sections, arbitrary Core execution, parallel scheduling, ML syntax, or GPU work. The existing two-field `f32` multiply-add execution shape may be parameterized from verified Core; M26 owns arbitrary supported system bodies and schedules.
+M25 closes as a statically planned native world milestone. It computes checked geometric capacities and reserves the resulting per-program native frame, but does not add heap allocation, commands, entity lifecycle, new type families, new metadata sections, arbitrary Core execution, parallel scheduling, ML syntax, or GPU work. The two-field `f32` multiply-add execution shape is parameterized from verified Core; M26 owns arbitrary supported system bodies and schedules.
 
 #### Acceptance Programs
 
@@ -1948,14 +1968,14 @@ The first acceptance program remains `examples/move_system_two_rows.arc`. The se
 - Three `Vitality + Regeneration + Faction` entities and two `Vitality + Faction` entities, creating two canonical archetype keys. Compile-time planning simulates the first table's geometric capacity progression as `1 -> 2 -> 4` and the second as `1 -> 2`, then reserves final native capacities `4` and `2` statically; M25 adds no runtime native reallocation.
 - The query matches exactly the three rows containing Regeneration. With `Tick.delta = 0.5`, the expected Vitality pairs are `(11,102)`, `(22,203)`, and `(33,304)`; nonmatching `(40,400)` and `(50,500)` remain unchanged. `Faction` and `Regeneration.cap` also remain unchanged.
 
-The checkpoint intentionally commits Arena before making it green. Current verification is exact:
+Arena is now a green acceptance program. Typed `i32` startup support is semantic rather than fixture-specific:
 
 ```text
 cargo run --locked --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\arena_recovery.arc --check
-.\examples\arena_recovery.arc:42:23: error[PARSE001]: expected float literal for component field value
+archec0: check passed .\examples\arena_recovery.arc
 ```
 
-`Faction { id: 1.0 }` is not a workaround: it would be an `f32` literal and must fail the declared `i32` field type. M25-003 owns the smallest coherent completion of already-declared typed `i32` startup literals: component values use the typed Core spawn path, while resource values retain the existing checked non-Core startup path. Until then, Arena is excluded from the green discovery runner and its red state is an explicit acceptance prerequisite, not a passing test.
+`Faction { id: 1.0 }` remains invalid because it is an `f32` literal for an `i32` field. M25-003 completed ordinary decimal `i32` startup literals in `0..=i32::MAX` without coercion: component values use typed Core spawn instructions, while resource values retain the checked non-Core startup path. The discovered `arena_recovery.ps1` proof now checks semantics, deterministic Core, safe publication, dynamic frame discovery, and native Linux or WSL exit `47`.
 
 #### M25-001: Derive Descriptor-Generic Native World Storage Plan
 
@@ -1967,7 +1987,7 @@ cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml derives_nativ
 
 Define `NativeWorldStoragePlan` from independently verified component schemas and startup operations. Each spawn maps to a canonical key formed by sorting its descriptor-provided component IDs; duplicate IDs fail. Tables are ordered lexicographically by canonical key, and columns are ordered by descriptor component ID. Checked align-up, multiply, and add operations derive deterministic table headers, column descriptors, payload ranges, row counts, and geometric capacity targets. The plan carries IDs, byte sizes, alignments, and field layouts from verified schemas and contains no hard-coded `Demo`, `Arena`, Position, Velocity, Vitality, Regeneration, Faction, or fixture-ID branch. Empty inputs, duplicate schemas, missing schemas, overflow, and inconsistent repeated archetype plans are focused failures.
 
-Because the source Arena fixture remains deliberately red until M25-003, M25-001's focused tests construct the equivalent already-validated schema/startup input at the planner boundary; they do not bypass or weaken the parser/checker. M25-003 replaces that constructed input with the real source path.
+M25-001's planner-boundary tests used constructed verified inputs while typed Arena startup syntax was still pending. M25-003 then connected the same plan to the real checked source/Core/runtime-assembly path; no planner bypass remains in the acceptance proof.
 
 #### M25-002: Emit Descriptor-Sized Native Tables and Columns
 
@@ -1977,7 +1997,7 @@ Acceptance test:
 cargo test --locked --manifest-path .\bootstrap\archec0\Cargo.toml emits_descriptor_sized_native_tables_and_columns
 ```
 
-Make native layout and code emission consume `NativeWorldStoragePlan`. Emit all planned table and column rows with descriptor-derived sizes and bases; no production constant may name a physical program component. Current source types remain four-byte aligned. Synthetic planner-only schemas with 8- and 16-byte alignment prove checked padding and non-overlap without adding source syntax or types. Demo stays green while Arena's typed-startup prerequisite remains deliberately red.
+Make native layout and code emission consume `NativeWorldStoragePlan`. Emit all planned table and column rows with descriptor-derived sizes and bases; no production constant may name a physical program component. Current source types remain four-byte aligned. Synthetic planner-only schemas with 8- and 16-byte alignment prove checked padding and non-overlap without adding source syntax or types. Demo layout compatibility and Arena's two-table/five-column layout are both green.
 
 #### M25-003: Materialize Arbitrary Startup Component Lists
 
@@ -2011,7 +2031,7 @@ M25-005 owns the remaining execution integration in this order: derive one `Veri
 
 Execute `move_system_two_rows.arc` and `arena_recovery.arc` through both reference and native paths and compare complete observable component state. Add a crate-internal `NativeEmissionMode::ObservedTest` codegen option that only Rust acceptance tests can select; the normal CLI and every published executable always use `Published`. On native Linux, the discovered acceptance test executes the observed ELF and captures stdout. Windows still proves ordinary published ELF generation, and hosts with the normal runner's WSL execution gate continue to execute those published fixtures; the required native-Linux job is the authority for executing the observed ELF.
 
-The observer writes ASCII only, beginning with `ARCHEOBS1\n`. Each table record is `T <key-count> <component-id-16hex>... <live-row-count>\n`. Each live row is `R <row-index> <startup-spawn-ordinal> <component-count> <component-id-16hex> <byte-length> <uppercase-payload-hex>...\n`. Tables use canonical table-key order, components use component-ID order, and rows use committed storage order. Length fields make the stream unambiguous without passing raw payload bytes through PowerShell text capture. The spawn ordinal is the M25 static-plan identity—not an M27 reusable entity handle—and, together with the table key and live row count, proves entity/archetype membership while structural changes remain out of scope. Every payload hex field comes from live post-schedule table memory; the observer contains no expected payload bytes.
+The observer writes ASCII only, beginning with `ARCHEOBS1\n`. Each table record is `T <key-count> <component-id-16hex>... <live-row-count> <capacity>\n`. Each live row is `R <row-index> <startup-spawn-ordinal> <component-count> <component-id-16hex> <byte-length> <uppercase-payload-hex>...\n`. Tables use canonical table-key order, components use component-ID order, and rows use committed storage order. Length fields make the stream unambiguous without passing raw payload bytes through PowerShell text capture. The spawn ordinal is the M25 static-plan identity—not an M27 reusable entity handle—and, together with the table key, live row count, and capacity, proves entity/archetype membership and planned growth while structural changes remain out of scope. Every payload hex field comes from live post-schedule table memory; the observer contains no expected payload bytes.
 
 An independent reference serializer emits the same canonical format from `ArcheWorld`, and the harness compares the ASCII byte streams exactly. Arena must produce the five Vitality results above while preserving non-target fields and entity/archetype membership. Review production code for exact acceptance-program names and hard-coded fixture stable IDs; none may control storage planning, startup materialization, query matching/binding, or the temporarily shape-limited execution template. Descriptor-provided component IDs must control generic lookup and binding. Close only after locked debug/release tests, formatting, normal and comparison Clippy, both PowerShell hosts, dependency audit, required Windows/native-Linux CI, and tracked-diff checks pass.
 
@@ -2021,26 +2041,27 @@ M25's closure question is binary:
 Can Arche execute Arena because of verified semantics and descriptors rather than because the compiler recognizes Arena?
 ```
 
-Checkpoint verification on 2026-07-13:
+Closure verification on 2026-07-13:
 
-- `cargo run --locked --manifest-path .\bootstrap\archec0\Cargo.toml -- .\examples\arena_recovery.arc --check` failed at the expected first unsupported `i32` component payload, line 42 column 23, with `PARSE001`; this is the frozen M25-003 prerequisite.
-- Formatting, 123 locked all-target tests, `git diff --check`, and the complete PowerShell Core 7.6.3 runner passed. The runner retained both generated Demo movement fixtures at exit `47` and did not discover Arena as a green test.
-- No compiler/runtime file changed. Repository `AUDIT.md` remained SHA-256 `B5A84B5DA0E28106A220D0A05F0AC1B54720D955DEA98608376E51BCBB41C48E`; the external ledger remained `0F82FFA0178BEC66298FE535A75A8824B3501DB7DA919B430BCCA7762B25A2A7`.
+- Formatting and locked debug/release all-target suites passed at 146/146. Normal Clippy passed; comparison Clippy reproduced five known diagnostics and zero new diagnostics. `cargo audit` reported no vulnerability, and `git diff --check` passed.
+- Both complete local runners passed under PowerShell Core 7.6.3 and Windows PowerShell 5.1 with three dynamically discovered e2e scripts. Demo and Arena published silently and exited `47` through WSL; Arena's production frame was discovered as 1,360 bytes.
+- Independent live-state observation matched the reference world byte for byte for both programs. Arena proved two archetypes, capacities `4`/`2`, three matching rows, two excluded rows, and unchanged Regeneration/Faction payloads.
+- Required implementation-head CI run [`29291558560`](https://github.com/noahsabaj/arche/actions/runs/29291558560) passed native Linux job `86956066315` and Windows job `86956066332`; Linux executed the native observer and Unix publication gates, while Windows passed both PowerShell editions.
+- Repository `AUDIT.md` remained SHA-256 `B5A84B5DA0E28106A220D0A05F0AC1B54720D955DEA98608376E51BCBB41C48E`; the external ledger remained `0F82FFA0178BEC66298FE535A75A8824B3501DB7DA919B430BCCA7762B25A2A7`. Tooling changed no repository file; only the user-level advisory cache was refreshed.
 
 ### M26 Preparation: Remaining Execution Specialization Ledger
 
-M26 is recorded but neither promoted nor implemented during the M25 checkpoint. M25 removes program identity from storage, archetype, binding, capacity, and offset decisions. The table distinguishes execution-authority gaps that M25 must close from shape restrictions that may remain temporarily only when parameterized from verified Core and shared by both acceptance programs:
+M26 is recorded but neither promoted nor implemented. M25 removed program identity from storage, archetype, binding, capacity, offset, and supported-shape execution decisions. The remaining restrictions are shape limits derived from verified Core and shared by both acceptance programs:
 
-| Boundary | Current production locations | Required state at M25 closure | Smallest M26 replacement |
-|---|---|---|---|
-| Verified-Core execution authority | `RuntimeProgramAssembly` and `execute_runtime_program_assembly` in `bootstrap/archec0/src/runtime_assembly.rs` carry descriptors and startup operations into exact reference-runtime dispatch without carrying verified Core system bodies. `bootstrap/archec0/src/main.rs` passes the parsed `Program`, rather than a verified Core execution package, into `ecs_metadata_decoder_text_payload` in `bootstrap/archec0/src/codegen.rs` for native output. | Both reference and native execution must receive independently verified Core bodies as their semantic authority. M25 may translate those bodies through the shared temporary supported-shape adapter, but runtime assembly or native codegen cannot reconstruct behavior from fixture identity or unverified AST shape. | Make one verified-Core execution package authoritative for arbitrary supported reference and native system execution, eliminating the temporary shape adapter. |
-| Core query-loop recognition | `native_move_query_loop_observable_from_core`, `require_move_add_assign`, and `require_velocity_delta_expression` in `bootstrap/archec0/src/codegen.rs` currently require exact `Move`/`time`/`movers`/`pos`/`vel` identities, hard-coded Demo stable IDs, one query loop, two bindings, and exactly two `f32` add-assign/multiply statements. | Remove every exact Demo/Arena name and hard-coded stable-ID condition. A renamed shape recognizer may accept any independently verified Core program with the one-read-resource, two-term mut/read query, one-loop, two-`f32`-multiply-add shape used by both acceptance programs; all parameter, binding, component, resource, and field identities come from verified Core/descriptors. | Walk any checker-admitted, independently verified Core system body and derive arbitrary supported parameters, bindings, statements, fields, and expressions without a bespoke shape recognizer. |
-| Compiled multiply-add emission | `emit_compiled_demo_move_query_loop`, its field multiply/store helpers, and `NativeMoveQueryLoopObservable`/`target_position_payload`/`field_product_payload` in `bootstrap/archec0/src/codegen.rs` emit and precompute exactly two scalar lanes. | The two-lane scalar template may remain, but it must derive target/source/resource component IDs, field offsets, column addresses, and row counts from verified Core and `NativeWorldStoragePlan`. No Demo/Arena identity or fixed physical offset may select the emitter. M25's independent live-state snapshot, not embedded expected bytes, is the equivalence authority. | Lower supported Core statements and expressions to native operations generically; expected-state calculation remains test/reference instrumentation and cannot define generated semantics. |
-| Sequential schedule dispatch | `ECS_COMPILED_SCHEDULE_BUILD_ROWS`, `emit_compiled_demo_main_schedule`, and `emit_compiled_schedule_build_row` in `bootstrap/archec0/src/codegen.rs` assume one schedule row, one system, and one query-plan row. `native_move_query_loop_observable_from_core` also recognizes exact `Main`, Demo schedule ID, one schedule item, and exact `Demo.Move`. `NativeDescriptorTableModel`, `NativeCompiledScheduleTableModel`, `NativeQueryPlanTableModel`, and their cursor/count constants reserve fixed single-system/query/schedule shapes. | One sequential schedule item and one system may remain the supported shape, but schedule/system/query identities and table rows must be derived from verified Core/descriptors for both programs with no exact Main/Step/Move/Recover branch. Any remaining single-item bounds must be explicit supported-shape limits, not fixture-sized tables or identity checks. | Iterate arbitrary verified sequential schedule items and dispatch their Core bodies by verified system identity; size schedule/query/system tables from verified input. Parallel scheduling remains deferred. |
-| Reference-runtime system dispatch | `ArcheWorld::execute_schedule_plan` and `execute_demo_move_system` in `bootstrap/archec0/src/runtime.rs` dispatch exact `Demo.Move` and hard-code component/resource/query identities plus field offsets; the `RuntimeProgramAssembly` handoff above supplies no verified Core body to replace that dispatch. | Remove exact Demo and Arena dispatch. The reference path must consume the same verified-Core execution package and temporarily shape-limited template as native lowering, with descriptor IDs and field layouts controlling access, so its independently serialized state can serve as the comparison oracle. | Execute arbitrary supported verified Core bodies and sequential schedules generically rather than through the temporary two-lane template. |
-| Exit-47 internal state validation | `ecs_metadata_decoder_text_payload`/`require_metadata_decoder_exit` require a final literal `exit 0`; `ecs_metadata_decoder_body` then hard-codes success exit `47`. `ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE`, `NativeMoveQueryLoopObservable` target/product payloads, `emit_startup_operation_state_validations`, and per-row comparisons in `bootstrap/archec0/src/codegen.rs` couple success to compiler-precomputed Demo-shaped expected bytes. `emit_native_query_plan_builder` and `emit_native_query_plan_build_row` also compile in `expected_matched_row_count` and compare it with the live catalog count. | The published executable may still require source `exit 0`, return internal success `47`, and retain descriptor-generic compiler-precomputed checks, but no check may contain Demo/Arena identity or fixed-layout assumptions. These internal checks are explicitly weaker than, and cannot substitute for, the M25 test-only live-memory snapshot comparison. | Make program exit behavior source-driven and validate arbitrary final state only in external/reference comparisons; generated production code must not contain compiler-precomputed acceptance results. |
+| Boundary | Current M25 restriction | Smallest coherent M26 replacement |
+|---|---|---|
+| Execution package cardinality | `derive_verified_core_execution_shape` in `bootstrap/archec0/src/execution_shape.rs` requires exactly one Core/runtime schedule, one system, one resource descriptor with one startup payload, and one query descriptor. All identities and layouts are cross-checked rather than recognized by name. | Make verified Core itself the execution package and derive descriptor/runtime tables for arbitrary supported system, query, resource, and schedule counts. |
+| Query/body recognition | The shape requires one read-resource parameter, one two-term mut/read query parameter, one query loop, and exactly two distinct `f32` statements of `target += source * resource`. `emit_verified_shape_query_execution` emits those lanes through planned live addresses. | Lower verified Core statements, expressions, locals, bindings, and field accesses to reference and native operations generically; delete the two-lane recognizer/template. |
+| Sequential schedule dispatch | The shape accepts one sequential schedule item and inlines one verified system/query execution by descriptor identity. Parallel scheduling remains explicitly deferred. | Iterate arbitrary verified sequential schedule items, dispatch each verified Core body by system identity, and size scratch/tables from the verified program. |
+| Reference execution | `execute_runtime_program_assembly_with_shape` and `execute_schedule_plan_with_shape` apply the same two-lane shape transactionally across every matching archetype. The older `execute_runtime_program_assembly`, `execute_schedule_plan`, and `execute_demo_move_system` survive only for legacy compatibility tests and are not production authority. | Interpret or lower arbitrary checker-admitted verified Core bodies in the reference world, sharing only semantic data—not expected results—with native emission; then remove the legacy adapters. |
+| Terminators and proof exits | The shape rejects nonliteral or nonzero source exits. Published ECS artifacts are silent and map successful internal proof completion to `47`; malformed metadata/runtime state maps to `1`. | Make verified Core terminators source-driven in native/reference execution and keep final-state validation exclusively in external test/reference observation. |
 
-No M26 issue is Ready, Doing, or Backlog until M25 closes and this ledger is re-audited against the then-current production paths.
+Static startup-only storage, runtime structural mutation, entity lifecycle, and command application remain M27 concerns, not reasons to widen M26. No M26 issue is Ready, Doing, or Backlog until its acceptance programs and issue split are reviewed deliberately.
 
 ## Daily Workflow
 
@@ -2088,20 +2109,18 @@ Subproblem confidence:
 
 | Subproblem | Confidence |
 |---|---:|
-| `arena_recovery.arc` is structurally distinct from Demo in world and declaration identities, component shapes, archetype count, entity count, compile-time capacity progression, and query exclusion behavior | 99/100 |
-| Arena's exact expected state is frozen, and its current typed-`i32` startup-literal failure is verified and owned by M25-003 rather than hidden by a fixture workaround | 99/100 |
-| M25-001 through M25-005 isolate planning, physical emission, typed component/resource startup materialization and capacity planning, descriptor-ID-based query binding, and two-program closure | 97/100 |
-| Canonical keys, deterministic table/column order, checked alignment/arithmetic, and transactional publication conditions make the issue set decision-complete without implementing M25 | 97/100 |
-| The M26 ledger records the audited execution-authority gaps and temporarily permitted shape specializations while forbidding exact Demo or Arena branches during M25 | 98/100 |
-| Board state has exactly M25-001 Ready, M25-002 through M25-005 Backlog, Doing empty, and no M26 issue promoted | 99/100 |
+| `arena_recovery.arc` is structurally distinct from Demo in identities, layouts, archetype/entity counts, capacity progression, and query exclusion, yet executes without a fixture-specific production branch | 99/100 |
+| Native and reference observation proves Arena's exact matching and excluded values, unchanged Regeneration/Faction payloads, memberships, rows, and capacities | 99/100 |
+| M25-001 through M25-005 are implemented as ordered planning, emission, startup materialization, identity binding, and two-program execution proofs | 99/100 |
+| Canonical keys/order, checked layout arithmetic, whole-spawn validation, transactional reference updates, and live native observation support the descriptor-generic claim | 98/100 |
+| The M26 ledger names only current verified-Core shape restrictions and keeps structural mutation assigned to M27 | 99/100 |
+| Ready, Doing, and Backlog are empty; M25-001 through M25-005 are Done and no M26 issue is promoted | 100/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- `Ready` contains M25-001.
-- `Doing` is empty.
-- `Backlog` contains M25-002 through M25-005.
-- `Done` contains completed M0, completed M1, completed M2, completed M3, completed M4, completed M5, completed M6, completed M7, completed M8, completed M9, completed M10, completed M11, completed M12, completed M13, completed M14, completed M15, completed M16, completed M17, completed M18, completed M19, completed M20, completed M21, M22-001 through M22-005, M23-001 through M23-005, and M24-001 through M24-005.
+- `Ready`, `Doing`, and `Backlog` are empty.
+- `Done` contains completed M0 through M21, M22-001 through M22-005, M23-001 through M23-005, M24-001 through M24-005, and M25-001 through M25-005.
 - Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, M16-001 through M16-005, M17-001 through M17-005, M18-001 through M18-005, M19-001 through M19-005, M20-001 through M20-005, M21-001 through M21-005, M22-001 through M22-005, M23-001 through M23-005, M24-001 through M24-005, and M25-001 through M25-005 only.
-- M7 spawn entities, M8 resources, M9 system/resource access, M10 first query loop, M11 schedules, M12 ECS semantic verification, M13 source-driven runtime program assembly, M14 source-level ECS runtime execution, M15 complete ECS metadata in generated native binaries, M16 native executable source-level ECS startup, M17 Core system-body lowering, M18 native codegen for compiled query loops, M19 native ECS execution state, M20 native ECS descriptor-table decoding, M21 native ECS table generalization, M22 native ECS table row iteration, M23 native ECS world storage bridge, and M24 native ECS storage catalog and descriptor-driven column binding are complete. The M25 checkpoint is frozen with M25-001 Ready; no M25 implementation or M26 issue has begun.
+- M7 through M25 are complete through their recorded scopes. M25 proves descriptor-generic storage and execution of the shared verified-Core shape across two unrelated programs. M26 remains unpromoted pending a deliberate acceptance/design checkpoint.
