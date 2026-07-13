@@ -14,6 +14,39 @@ This file is not a second design document. It is the build map for proving that 
 - Repository setup does not advance milestone issues; the current board is tracked below.
 - `README.md` provides GitHub orientation for the repository; it does not advance the milestone board.
 
+## 2026-07-13 Audit Remediation
+
+The promoted findings in the dated external audit were remediated as shared root causes without changing the M24 milestone board:
+
+- One source semantic phase now resolves declarations, fields, queries, schedules, startup statements, supported types, duplicate scopes/literals, and literal ranges with real spans before every semantic output path. Core carries independent ECS schemas and verifies resolved ECS invariants.
+- Runtime resources and component columns use initialized aligned storage, checked geometric growth, contiguous committed rows, and world-level transactional payload spawning.
+- ELF construction is separate from identity-safe publication. Output uses retained source identity, lexical and physical alias checks, a synced sibling temporary, atomic replacement, cleanup guards, and native-Unix executable permissions.
+- The official runner replaced 85 filtered Rust test launches with one discovered `cargo test --locked --all-targets` gate. Remaining runner-owned Cargo commands receive `--locked`.
+- `rust-toolchain.toml` pins the verified 1.95.0 toolchain and the crate declares `rust-version = "1.95.0"`. This is an exact verified environment declaration, not evidence of a historically tested lower MSRV.
+- `same-file = 1.0.6` is locked for cross-platform file identity, including Windows hard links.
+
+Verification:
+
+- Locked debug and release all-target suites passed: 118 tests, 0 failures.
+- The complete PowerShell proof runner passed, including WSL execution, metadata corruption checks, negative compiler checks, source/output alias preservation, and two dynamically discovered e2e scripts.
+- Formatting and normal Clippy passed. Strict Clippy reproduced the audit's same eight production diagnostics (four dead constants, two argument-count lints, one complex type, and one `filter_map(bool::then)`) with no new audit-remediation diagnostic.
+- A refreshed RustSec scan inspected the five locked packages and reported no vulnerability.
+- Windows CLI reproductions rejected exact, hard-link, and missing-parent/`..` source aliases with exit 2, preserved the source hash, created no alias parent, and left no sibling temporary. A distinct output remained valid ELF.
+- Native-Unix symlink and executable-mode regressions are implemented behind `cfg(unix)` but were not executed in this Windows/WSL DrvFS environment; that remains a platform verification limitation rather than a claimed pass.
+
+## 2026-07-13 Product Direction and PowerShell Update
+
+- The long-term product constraint now records Arche as a standalone ECS-first language and runtime. `archec0` is explicitly a seed compiler, interoperability is permitted at defined boundaries, and host-language integration must not become Arche's primary programming or execution model.
+- M24 is now the final milestone allowed to close solely on the bounded exact-name `Demo` fixtures. M25 through M28 are horizon constraints for descriptor-generic storage, Core-generic execution, deterministic structural commands, and a standalone many-world simulation proof; they were not added to the active Board.
+- The machine-learning horizon is simulation-first. Reinforcement-learning environments, multi-agent simulation, neuroevolution, and inference orchestration are in scope after generic native execution. Tensor training, automatic differentiation, accelerator kernels, and distributed training remain separate later research questions.
+- The preferred local proof shell is PowerShell Core. The installed version is 7.6.3, not the expected 7.6.2. The runner now reports its host, preserves blank native diagnostic records on PowerShell 7, and launches discovered e2e scripts under the same PowerShell executable while retaining Windows PowerShell 5.1 compatibility.
+
+Verification:
+
+- The first PowerShell Core run exposed a cross-edition parameter-binding defect when blank native stderr records reached a mandatory string-array assertion. The assertion now explicitly accepts empty records without filtering or changing captured output.
+- The complete proof runner then passed under PowerShell Core 7.6.3 and Windows PowerShell 5.1. Both runs discovered and passed all 118 Rust tests, WSL/native artifact checks, negative diagnostics, metadata corruption checks, and both dynamically discovered e2e scripts.
+- The active M24 Board remained unchanged.
+
 ## Operating Model
 
 The work structure is:
@@ -27,6 +60,10 @@ Milestone
 ```
 
 The design document constrains architecture. The issue board controls execution. Tests prove reality. Code is the source of truth.
+
+## Long-Term Product Constraint
+
+Arche is intended to stand on its own as an ECS-first language, compiler, Core representation, runtime kernel, and native execution model—not as a DSL, transpiler, framework, or hosted accessory to another language. The Rust implementation of `archec0` is an external seed compiler and a bootstrap detail. Interoperability may be added at explicit boundaries, but must not become the definition of Arche programs or their primary execution path. Self-hosting remains a later maturity proof after Arche can express the compiler and runtime workloads identified in the design document.
 
 Every session should work on one specific proof, not on "the language" in the abstract.
 
@@ -44,11 +81,13 @@ Every issue must produce at least one of these:
 
 If an issue cannot produce one of those, it is too vague and must be split or rewritten.
 
-## Current North Star
+## Current Bootstrap North Star
 
 ```text
 Source file -> parsed ECS program -> Arche Core -> runtime world -> schedule -> query loop -> updated Position -> native proof.
 ```
+
+This is the current bootstrap proof, not the final product boundary.
 
 Current missing links:
 
@@ -73,12 +112,29 @@ Current gaps:
 
 ## Future Horizon
 
-These are milestone targets only, not detailed issue expansions.
+These are milestone-level direction and closure constraints, not active Board issues. They must not be expanded into issue rows until their predecessor is complete.
 
 - M21: Native ECS table generalization is complete below.
 - M22: Native ECS table row iteration is complete below.
 - M23: Native ECS world storage bridge is complete below.
-- M24: Native ECS storage catalog and descriptor-driven column binding is active below.
+- M24: Native ECS storage catalog and descriptor-driven column binding is active below. It is the final milestone allowed to close using only the bounded, exact-name `Demo` native fixtures.
+- M25: Descriptor-generic native world. Replace fixture-sized storage with descriptor-sized native tables and columns for differing component sets, layouts, alignments, and row counts. It closes only when at least two structurally distinct source programs execute without fixture names, stable IDs, offsets, or capacities controlling production allocation or binding paths.
+- M26: Core-generic native systems and schedules. Native lowering and execution must consume verified Core schemas, system bodies, query bindings, and schedule descriptors without recognizing `Demo.Move`, `Demo.Main`, or equivalent exact program shapes. It closes only when two distinct systems and schedules execute without compiler changes and agree with the reference runtime.
+- M27: Deferred structural commands and entity lifecycle. Add spawn, despawn, add-component, and remove-component commands; defined schedule-boundary application; archetype transitions; and stale-handle-safe entity reuse. It closes only when commands issued during query execution apply deterministically without invalidating the active scan or partially mutating world state.
+- M28: Deterministic many-world simulation and ML environment proof. Run a headless workload across at least 1,024 independent worlds with observation, action, episode-state, and reward data expressed through ordinary ECS data; repeated seeded schedule steps; and reproducible final-state checksums. It closes only when the same source runs standalone through the reference and native paths without compiler specialization and produces equivalent observable state.
+
+## Machine Learning Boundary
+
+Arche's first ML exploration is simulation-first: reinforcement-learning environments, multi-agent or agent-based simulation, neuroevolution workloads, and inference orchestration whose heterogeneous state and behavior are naturally represented by components, resources, systems, queries, and schedules. Arche remains the programming model; an integration must not require users to treat it primarily as a Python, Rust, or C++ library. A thin optional bridge to an external trainer is interoperability, not a runtime dependency, and the Arche environment must still run without it.
+
+Research basis reviewed on 2026-07-13:
+
+- [GPUDrive](https://arxiv.org/abs/2408.01584) uses the ECS-based Madrona many-world engine for reinforcement-learning simulation and reports more than one million simulation steps per second. This supports ECS-native batched environments as a serious ML workload.
+- [Exploring the Theory and Practice of Concurrency in the Entity-Component-System Pattern](https://arxiv.org/abs/2508.15264) identifies a class of Core ECS programs that are deterministic regardless of scheduling and finds deterministic concurrency left unexploited by surveyed frameworks. This supports reproducible parallel simulation as a potential Arche differentiator.
+- [Simulation Streams](https://arxiv.org/abs/2501.18668) uses ECS to organize multi-entity LLM simulations, rule enforcement, information control, and reinforcement-learning tasks. This supports agent-state orchestration, while not establishing a need for LLM-specific language primitives.
+- [The Essence of Entity Component System](https://arxiv.org/abs/2606.14919) formalizes archetype ECS state transitions and a storage-safety type system. This reinforces the value of language-level ECS semantics beyond framework conventions.
+
+M28 does not claim a tensor compiler, automatic differentiation, optimizer framework, GPU kernel compiler, distributed trainer, model ecosystem, or Python-first API. Dense tensor training is a different computational substrate; those capabilities become candidates only after an executable workload demonstrates that they belong inside an ECS-native language rather than at an interoperability boundary.
 
 ## Do Not Start Yet
 
@@ -89,7 +145,10 @@ These are milestone targets only, not detailed issue expansions.
 - Debugger or profiler.
 - Object/linker split.
 - Generics.
-- Command buffers before schedule/source execution.
+- Command buffers before M25 descriptor-generic storage and M26 Core-generic execution.
+- Tensor syntax, automatic differentiation, optimizer APIs, GPU kernel compilation, or distributed training before the M28 simulation proof.
+- Python-first or host-language-first bindings as Arche's primary product surface.
+- A self-hosted compiler rewrite before Arche can express the compiler-supporting language features listed in the design document's bootstrap plan.
 
 ## Integration Checkpoints
 
@@ -97,6 +156,11 @@ These are milestone targets only, not detailed issue expansions.
 - After M14: source can drive runtime ECS behavior.
 - After M16: generated executables can create source-described ECS world state.
 - After M18: generated executables can run a compiled system query loop.
+- After M24: the bounded exact-name `Demo` bootstrap is complete; no later milestone may close solely on those fixtures.
+- After M25: native world storage is driven by source schemas and descriptors rather than fixture identities or capacities.
+- After M26: verified Core is the production authority for generic native system and schedule execution.
+- After M27: structural mutation has deterministic lifecycle and schedule-boundary semantics.
+- After M28: Arche has proved an ML-relevant many-world simulation substrate without claiming a general ML framework.
 
 ## Board
 
@@ -115,6 +179,7 @@ Board rules:
 - Promote issues to `Ready` only when their dependencies are done.
 - Do not expand the active board beyond the next one or two unblocked proofs.
 - Do not use the design document as a top-to-bottom checklist.
+- Every post-M24 milestone must name the fixture-specific production assumptions it removes and include a structurally distinct source program that requires no program-specific compiler change.
 
 ### Ready
 
@@ -129,7 +194,7 @@ Board rules:
 | M24-002 | Materialize storage catalog rows from decoded descriptors | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml materializes_native_storage_catalog_from_descriptors` passes, proving native startup fills catalog rows from decoded component/startup descriptor state for the current fixtures. |
 | M24-003 | Route spawn storage writes through catalog columns | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml materializes_spawn_rows_through_storage_catalog` passes, proving startup spawn handling writes Position/Velocity payloads through catalog-resolved storage columns instead of direct fixture slot references. |
 | M24-004 | Bind query plans through storage catalog | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml builds_query_plan_through_storage_catalog` passes, proving native query planning resolves matched row count and planned payload addresses through storage catalog rows. |
-| M24-005 | Close catalog-backed native move proof | `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passes with all M24 focused proofs wired into the full runner, both native move fixtures still exiting `47`, docs recording M24 complete, and Ready/Backlog/Doing empty. |
+| M24-005 | Close catalog-backed native move proof | `pwsh -NoLogo -NoProfile -File .\tools\test.ps1` passes with all M24 focused proofs wired into the full runner, both native move fixtures still exiting `47`, docs recording M24 complete, and Ready/Backlog/Doing empty. |
 
 ### Doing
 
@@ -1795,7 +1860,7 @@ Purpose:
 Bind bounded native archetype storage through descriptor-driven catalog rows instead of fixture-direct column slots.
 ```
 
-M24 is not a heap-backed runtime world, arbitrary table allocator, metadata format change, source syntax change, event system, relation system, command buffer, object/linker split, or general scheduler. It stays stack-resident and bounded to the current `Demo.Position + Demo.Velocity` native proofs.
+M24 is not a heap-backed runtime world, arbitrary table allocator, metadata format change, source syntax change, event system, relation system, command buffer, object/linker split, or general scheduler. It stays stack-resident and bounded to the current `Demo.Position + Demo.Velocity` native proofs. M24 is the final milestone that may close using only the current exact-name `Demo` programs; M25 begins the required second-program genericity proof.
 
 #### M24-001: Define Native Storage Catalog Model
 
@@ -1842,7 +1907,7 @@ Done when native query planning resolves matched row count and planned payload a
 Acceptance test:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1
+pwsh -NoLogo -NoProfile -File .\tools\test.ps1
 ```
 
 Done when all M24 focused proofs are wired into the full runner, both native move fixtures still exit `47`, docs record M24 complete, and Ready/Backlog/Doing are empty.
