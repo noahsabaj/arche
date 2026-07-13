@@ -1,5 +1,11 @@
 #![allow(dead_code)]
 
+use crate::core::{
+    CoreInstruction, CoreProgram, CoreQueryAccess, CoreScheduleItem, CoreSpawnComponent,
+    CoreSpawnFieldValue, CoreSystemParamKind, CoreType,
+};
+use crate::core_verify;
+use crate::execution_shape::VerifiedCoreExecutionShape;
 use crate::layout::{self, ComponentId};
 use crate::parser::{
     ComponentDecl, ComponentLiteralValue, Program, QueryAccess as ParserQueryAccess, ResourceDecl,
@@ -65,6 +71,61 @@ impl RuntimeProgramAssembly {
 pub fn assemble_runtime_program_from_source(
     program: &Program,
 ) -> Result<RuntimeProgramAssembly, RuntimeAssemblyError> {
+    let mut assembly = assemble_runtime_program_descriptors(program)?;
+    if let Some(startup) = &program.startup {
+        assembly.startup_operations = assemble_startup_operations(
+            &program.world.name,
+            &assembly.component_descriptors,
+            &assembly.resource_descriptors,
+            &assembly.schedule_descriptors,
+            &startup.statements,
+        )?;
+    }
+
+    Ok(assembly)
+}
+
+pub fn assemble_runtime_program_from_verified_core(
+    program: &Program,
+    core: &CoreProgram,
+) -> Result<RuntimeProgramAssembly, RuntimeAssemblyError> {
+    core_verify::verify_core_program(core).map_err(|error| {
+        assembly_error(format!(
+            "cannot assemble runtime metadata from invalid Core: {}",
+            error.message
+        ))
+    })?;
+    if core.world.name != program.world.name {
+        return Err(assembly_error(format!(
+            "verified Core world `{}` does not match source world `{}`",
+            core.world.name, program.world.name
+        )));
+    }
+
+    let mut assembly = assemble_runtime_program_descriptors(program)?;
+    verify_core_runtime_descriptors(core, &assembly)?;
+    let core_spawns = verified_core_startup_spawns(core)?;
+    if let Some(startup) = &program.startup {
+        assembly.startup_operations = assemble_startup_operations_from_verified_core(
+            &program.world.name,
+            &assembly.component_descriptors,
+            &assembly.resource_descriptors,
+            &assembly.schedule_descriptors,
+            &startup.statements,
+            &core_spawns,
+        )?;
+    } else if !core_spawns.is_empty() {
+        return Err(assembly_error(
+            "verified Core contains startup spawns but source has no startup block",
+        ));
+    }
+
+    Ok(assembly)
+}
+
+fn assemble_runtime_program_descriptors(
+    program: &Program,
+) -> Result<RuntimeProgramAssembly, RuntimeAssemblyError> {
     let mut assembly = RuntimeProgramAssembly::new(program.world.name.clone());
     assembly.component_descriptors = program
         .components
@@ -91,17 +152,359 @@ pub fn assemble_runtime_program_from_source(
         .iter()
         .map(|schedule| assemble_schedule_descriptor(&program.world.name, schedule))
         .collect();
-    if let Some(startup) = &program.startup {
-        assembly.startup_operations = assemble_startup_operations(
-            &program.world.name,
-            &assembly.component_descriptors,
-            &assembly.resource_descriptors,
-            &assembly.schedule_descriptors,
-            &startup.statements,
-        )?;
+    Ok(assembly)
+}
+
+fn verify_core_runtime_descriptors(
+    core: &CoreProgram,
+    assembly: &RuntimeProgramAssembly,
+) -> Result<(), RuntimeAssemblyError> {
+    verify_core_component_schemas(core, &assembly.component_descriptors)?;
+    verify_core_resource_schemas(core, &assembly.resource_descriptors)?;
+    verify_core_system_descriptors(core, &assembly.system_descriptors)?;
+    verify_core_query_descriptors(core, &assembly.query_descriptors)?;
+    verify_core_schedule_descriptors(core, &assembly.schedule_descriptors)
+}
+
+fn verify_core_component_schemas(
+    core: &CoreProgram,
+    descriptors: &[ComponentDescriptor],
+) -> Result<(), RuntimeAssemblyError> {
+    if core.components.len() != descriptors.len() {
+        return Err(assembly_error(
+            "verified Core and source component schema counts do not match",
+        ));
     }
 
-    Ok(assembly)
+    for descriptor in descriptors {
+        let component = core
+            .components
+            .iter()
+            .find(|component| component.id == descriptor.id.0)
+            .ok_or_else(|| {
+                assembly_error(format!(
+                    "source component descriptor `{}` is absent from verified Core",
+                    descriptor.name
+                ))
+            })?;
+        if component.name != descriptor.name || component.fields.len() != descriptor.fields.len() {
+            return Err(assembly_error(format!(
+                "source component descriptor `{}` does not match verified Core",
+                descriptor.name
+            )));
+        }
+        for (field_index, (core_field, descriptor_field)) in
+            component.fields.iter().zip(&descriptor.fields).enumerate()
+        {
+            let core_type_name = core_type_name(core_field.ty);
+            if core_field.name != descriptor_field.name
+                || core_type_name != descriptor_field.type_name
+                || descriptor_field.offset != (field_index as u32) * 4
+            {
+                return Err(assembly_error(format!(
+                    "source component field `{}.{}` does not match verified Core",
+                    descriptor.name, descriptor_field.name
+                )));
+            }
+        }
+        let expected_size = u32::try_from(component.fields.len())
+            .ok()
+            .and_then(|count| count.checked_mul(4))
+            .ok_or_else(|| assembly_error("verified Core component size overflow"))?;
+        let expected_align = if component.fields.is_empty() { 1 } else { 4 };
+        if descriptor.size != expected_size || descriptor.align != expected_align {
+            return Err(assembly_error(format!(
+                "source component layout `{}` does not match verified Core",
+                descriptor.name
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn verify_core_resource_schemas(
+    core: &CoreProgram,
+    descriptors: &[ResourceDescriptor],
+) -> Result<(), RuntimeAssemblyError> {
+    if core.resources.len() != descriptors.len() {
+        return Err(assembly_error(
+            "verified Core and source resource schema counts do not match",
+        ));
+    }
+    for descriptor in descriptors {
+        let resource = core
+            .resources
+            .iter()
+            .find(|resource| resource.id == descriptor.id.0)
+            .ok_or_else(|| {
+                assembly_error(format!(
+                    "source resource descriptor `{}` is absent from verified Core",
+                    descriptor.name
+                ))
+            })?;
+        if resource.name != descriptor.name || resource.fields.len() != descriptor.fields.len() {
+            return Err(assembly_error(format!(
+                "source resource descriptor `{}` does not match verified Core",
+                descriptor.name
+            )));
+        }
+        for (field_index, (core_field, descriptor_field)) in
+            resource.fields.iter().zip(&descriptor.fields).enumerate()
+        {
+            if core_field.name != descriptor_field.name
+                || core_type_name(core_field.ty) != descriptor_field.type_name
+                || descriptor_field.offset != (field_index as u32) * 4
+            {
+                return Err(assembly_error(format!(
+                    "source resource field `{}.{}` does not match verified Core",
+                    descriptor.name, descriptor_field.name
+                )));
+            }
+        }
+        let expected_size = u32::try_from(resource.fields.len())
+            .ok()
+            .and_then(|count| count.checked_mul(4))
+            .ok_or_else(|| assembly_error("verified Core resource size overflow"))?;
+        let expected_align = if resource.fields.is_empty() { 1 } else { 4 };
+        if descriptor.size != expected_size || descriptor.align != expected_align {
+            return Err(assembly_error(format!(
+                "source resource layout `{}` does not match verified Core",
+                descriptor.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn verify_core_system_descriptors(
+    core: &CoreProgram,
+    descriptors: &[SystemDescriptor],
+) -> Result<(), RuntimeAssemblyError> {
+    if core.systems.len() != descriptors.len() {
+        return Err(assembly_error(
+            "verified Core and source system descriptor counts do not match",
+        ));
+    }
+    for descriptor in descriptors {
+        let system = core
+            .systems
+            .iter()
+            .find(|system| system.id == descriptor.id.0)
+            .ok_or_else(|| {
+                assembly_error(format!(
+                    "source system descriptor `{}` is absent from verified Core",
+                    descriptor.name
+                ))
+            })?;
+        if descriptor.name != qualified_name(&core.world.name, &system.name)
+            || descriptor.params.len() != system.params.len()
+        {
+            return Err(assembly_error(format!(
+                "source system descriptor `{}` does not match verified Core",
+                descriptor.name
+            )));
+        }
+        for (core_param, descriptor_param) in system.params.iter().zip(&descriptor.params) {
+            let matches = match (&core_param.kind, &descriptor_param.kind) {
+                (
+                    CoreSystemParamKind::ReadResource { resource_id, name },
+                    SystemParamDescriptorKind::ReadResource {
+                        resource_id: descriptor_id,
+                        name: descriptor_name,
+                    },
+                ) => *resource_id == descriptor_id.0 && name == descriptor_name,
+                (
+                    CoreSystemParamKind::Query { terms },
+                    SystemParamDescriptorKind::Query {
+                        terms: descriptor_terms,
+                    },
+                ) => {
+                    terms.len() == descriptor_terms.len()
+                        && terms
+                            .iter()
+                            .zip(descriptor_terms)
+                            .all(|(term, descriptor_term)| {
+                                term.component_id == descriptor_term.component_id.0
+                                    && term.name == descriptor_term.name
+                                    && core_access_matches_system(
+                                        term.access,
+                                        &descriptor_term.access,
+                                    )
+                            })
+                }
+                _ => false,
+            };
+            if core_param.name != descriptor_param.name || !matches {
+                return Err(assembly_error(format!(
+                    "source system parameter `{}.{}` does not match verified Core",
+                    descriptor.name, descriptor_param.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_core_query_descriptors(
+    core: &CoreProgram,
+    descriptors: &[QueryDescriptor],
+) -> Result<(), RuntimeAssemblyError> {
+    let expected_count = core
+        .systems
+        .iter()
+        .flat_map(|system| &system.params)
+        .filter(|param| matches!(&param.kind, CoreSystemParamKind::Query { .. }))
+        .count();
+    if expected_count != descriptors.len() {
+        return Err(assembly_error(
+            "verified Core and source query descriptor counts do not match",
+        ));
+    }
+    for system in &core.systems {
+        for param in &system.params {
+            let CoreSystemParamKind::Query { terms } = &param.kind else {
+                continue;
+            };
+            let expected_id = stable_query_id(&core.world.name, &system.name, &param.name);
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.id == expected_id)
+                .ok_or_else(|| {
+                    assembly_error(format!(
+                        "verified Core query `{}.{}.{}` is absent from source descriptors",
+                        core.world.name, system.name, param.name
+                    ))
+                })?;
+            let expected_name = format!("{}.{}.{}", core.world.name, system.name, param.name);
+            if descriptor.name != expected_name
+                || descriptor.terms.len() != terms.len()
+                || !terms
+                    .iter()
+                    .zip(&descriptor.terms)
+                    .all(|(term, descriptor_term)| {
+                        term.component_id == descriptor_term.component_id.0
+                            && term.name == descriptor_term.name
+                            && core_access_matches_query(term.access, &descriptor_term.access)
+                    })
+            {
+                return Err(assembly_error(format!(
+                    "source query descriptor `{}` does not match verified Core",
+                    descriptor.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn verify_core_schedule_descriptors(
+    core: &CoreProgram,
+    descriptors: &[ScheduleDescriptor],
+) -> Result<(), RuntimeAssemblyError> {
+    if core.schedules.len() != descriptors.len() {
+        return Err(assembly_error(
+            "verified Core and source schedule descriptor counts do not match",
+        ));
+    }
+    for descriptor in descriptors {
+        let schedule = core
+            .schedules
+            .iter()
+            .find(|schedule| schedule.id == descriptor.id.0)
+            .ok_or_else(|| {
+                assembly_error(format!(
+                    "source schedule descriptor `{}` is absent from verified Core",
+                    descriptor.name
+                ))
+            })?;
+        if descriptor.name != qualified_name(&core.world.name, &schedule.name)
+            || descriptor.items.len() != schedule.items.len()
+            || !schedule
+                .items
+                .iter()
+                .zip(&descriptor.items)
+                .all(|(item, descriptor_item)| match (item, descriptor_item) {
+                    (
+                        CoreScheduleItem::Run {
+                            system_id,
+                            system_name,
+                        },
+                        ScheduleItemDescriptor::Run {
+                            system_id: descriptor_id,
+                            system_name: descriptor_name,
+                        },
+                    ) => *system_id == descriptor_id.0 && system_name == descriptor_name,
+                })
+        {
+            return Err(assembly_error(format!(
+                "source schedule descriptor `{}` does not match verified Core",
+                descriptor.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn core_type_name(ty: CoreType) -> &'static str {
+    match ty {
+        CoreType::I32 => "i32",
+        CoreType::F32 => "f32",
+    }
+}
+
+fn core_access_matches_system(core: CoreQueryAccess, descriptor: &SystemAccess) -> bool {
+    matches!(
+        (core, descriptor),
+        (CoreQueryAccess::Read, &SystemAccess::Read) | (CoreQueryAccess::Mut, &SystemAccess::Mut)
+    )
+}
+
+fn core_access_matches_query(core: CoreQueryAccess, descriptor: &QueryAccess) -> bool {
+    matches!(
+        (core, descriptor),
+        (CoreQueryAccess::Read, &QueryAccess::Read) | (CoreQueryAccess::Mut, &QueryAccess::Mut)
+    )
+}
+
+fn verified_core_startup_spawns(
+    core: &CoreProgram,
+) -> Result<Vec<&[CoreSpawnComponent]>, RuntimeAssemblyError> {
+    Ok(verified_core_startup_instructions(core)?
+        .iter()
+        .filter_map(|instruction| match instruction {
+            CoreInstruction::Spawn { components } => Some(components.as_slice()),
+            _ => None,
+        })
+        .collect())
+}
+
+pub(crate) fn verified_core_startup_instructions(
+    core: &CoreProgram,
+) -> Result<&[CoreInstruction], RuntimeAssemblyError> {
+    let startup_functions = core
+        .functions
+        .iter()
+        .filter(|function| function.name == "startup")
+        .collect::<Vec<_>>();
+    if startup_functions.len() != 1 {
+        return Err(assembly_error(
+            "verified Core must contain exactly one `startup` function",
+        ));
+    }
+    let startup = startup_functions[0];
+    let [entry] = startup.blocks.as_slice() else {
+        return Err(assembly_error(
+            "verified bootstrap Core startup must contain exactly one block",
+        ));
+    };
+    if entry.id != startup.entry {
+        return Err(assembly_error(
+            "verified bootstrap Core startup block must be the entry block",
+        ));
+    }
+
+    Ok(&entry.instructions)
 }
 
 pub fn register_assembly_descriptors_into_world(
@@ -241,6 +644,7 @@ pub fn execute_startup_spawn_operation(
         .map_err(|error| assembly_error(error.message))
 }
 
+#[cfg(test)]
 pub fn execute_startup_run_schedule_operation(
     operation: &StartupOperation,
     world: &mut ArcheWorld,
@@ -273,6 +677,46 @@ pub fn execute_startup_run_schedule_operation(
         .map_err(|error| assembly_error(error.message))
 }
 
+pub(crate) fn execute_startup_run_schedule_operation_with_shape(
+    operation: &StartupOperation,
+    world: &mut ArcheWorld,
+    shape: &VerifiedCoreExecutionShape,
+) -> Result<(), RuntimeAssemblyError> {
+    let (schedule_id, schedule_name) = match operation {
+        StartupOperation::RunSchedule {
+            schedule_id,
+            schedule_name,
+        } => (*schedule_id, schedule_name),
+        _ => {
+            return Err(assembly_error("startup operation is not a run schedule"));
+        }
+    };
+    if schedule_id != shape.schedule.id || schedule_name != &shape.schedule.name {
+        return Err(assembly_error(format!(
+            "startup schedule `{schedule_name}` does not match verified execution shape `{}`",
+            shape.schedule.name
+        )));
+    }
+
+    let schedule = world
+        .schedule_descriptors()
+        .get(schedule_id)
+        .cloned()
+        .ok_or_else(|| {
+            assembly_error(format!(
+                "schedule descriptor `{schedule_name}` is not registered"
+            ))
+        })?;
+    let plan = world
+        .build_schedule_plan(&schedule)
+        .map_err(|error| assembly_error(error.message))?;
+
+    world
+        .execute_schedule_plan_with_shape(&plan, shape)
+        .map_err(|error| assembly_error(error.message))
+}
+
+#[cfg(test)]
 pub fn execute_runtime_program_assembly(
     assembly: &RuntimeProgramAssembly,
 ) -> Result<ArcheWorld, RuntimeAssemblyError> {
@@ -289,6 +733,36 @@ pub fn execute_runtime_program_assembly(
             }
             StartupOperation::RunSchedule { .. } => {
                 execute_startup_run_schedule_operation(operation, &mut world)?;
+            }
+        }
+    }
+
+    Ok(world)
+}
+
+pub(crate) fn execute_runtime_program_assembly_with_shape(
+    assembly: &RuntimeProgramAssembly,
+    shape: &VerifiedCoreExecutionShape,
+) -> Result<ArcheWorld, RuntimeAssemblyError> {
+    let mut world = ArcheWorld::create();
+
+    register_assembly_descriptors_into_world(assembly, &mut world)?;
+    for (operation_index, operation) in assembly.startup_operations.iter().enumerate() {
+        match operation {
+            StartupOperation::ResourcePayload { .. } => {
+                execute_startup_resource_payload_operation(operation, &mut world)?;
+            }
+            StartupOperation::Spawn { .. } => {
+                execute_startup_spawn_operation(operation, &mut world)?;
+            }
+            StartupOperation::RunSchedule { .. } => {
+                if operation_index != shape.schedule.startup_operation_index {
+                    return Err(assembly_error(format!(
+                        "startup schedule operation {operation_index} does not match verified execution shape operation {}",
+                        shape.schedule.startup_operation_index
+                    )));
+                }
+                execute_startup_run_schedule_operation_with_shape(operation, &mut world, shape)?;
             }
         }
     }
@@ -460,6 +934,52 @@ fn assemble_startup_operations(
     Ok(operations)
 }
 
+fn assemble_startup_operations_from_verified_core(
+    world_name: &str,
+    components: &[ComponentDescriptor],
+    resources: &[ResourceDescriptor],
+    schedules: &[ScheduleDescriptor],
+    statements: &[Statement],
+    core_spawns: &[&[CoreSpawnComponent]],
+) -> Result<Vec<StartupOperation>, RuntimeAssemblyError> {
+    let mut operations = Vec::new();
+    let mut core_spawn_index = 0usize;
+
+    for statement in statements {
+        match statement {
+            Statement::Resource(resource) => {
+                operations.push(assemble_resource_payload_operation(
+                    world_name, resources, resource,
+                )?);
+            }
+            Statement::Spawn(_) => {
+                let core_components = core_spawns.get(core_spawn_index).ok_or_else(|| {
+                    assembly_error(format!(
+                        "source startup spawn {core_spawn_index} is absent from verified Core"
+                    ))
+                })?;
+                operations.push(assemble_core_spawn_operation(components, core_components)?);
+                core_spawn_index = core_spawn_index
+                    .checked_add(1)
+                    .ok_or_else(|| assembly_error("startup spawn index overflow"))?;
+            }
+            Statement::Run(run) => {
+                operations.push(assemble_run_schedule_operation(world_name, schedules, run)?);
+            }
+            _ => {}
+        }
+    }
+
+    if core_spawn_index != core_spawns.len() {
+        return Err(assembly_error(format!(
+            "verified Core contains {} startup spawns but source contains {core_spawn_index}",
+            core_spawns.len()
+        )));
+    }
+
+    Ok(operations)
+}
+
 fn assemble_resource_payload_operation(
     world_name: &str,
     resources: &[ResourceDescriptor],
@@ -484,23 +1004,15 @@ fn assemble_resource_payload_operation(
                 ))
             })?;
 
-        if descriptor_field.type_name != "f32" {
-            return Err(assembly_error(format!(
-                "unsupported resource field type `{}` for `{}`",
-                descriptor_field.type_name, field.name
-            )));
-        }
-
-        let value = match &field.value {
-            ComponentLiteralValue::Float { text, .. } => text.parse::<f32>().map_err(|_| {
-                assembly_error(format!(
-                    "invalid f32 literal `{}` for resource field `{}`",
-                    text, field.name
-                ))
-            })?,
-        };
+        let value = encode_source_literal(
+            &descriptor_field.type_name,
+            &field.value,
+            &format!("resource field `{}.{}`", resource.name, field.name),
+        )?;
         let offset = descriptor_field.offset as usize;
-        let end = offset + 4;
+        let end = offset
+            .checked_add(value.len())
+            .ok_or_else(|| assembly_error("resource field payload range overflow"))?;
         if end > payload_bytes.len() {
             return Err(assembly_error(format!(
                 "resource field `{}` exceeds payload size",
@@ -508,7 +1020,7 @@ fn assemble_resource_payload_operation(
             )));
         }
 
-        payload_bytes[offset..end].copy_from_slice(&value.to_le_bytes());
+        payload_bytes[offset..end].copy_from_slice(&value);
     }
 
     Ok(StartupOperation::ResourcePayload {
@@ -545,23 +1057,15 @@ fn assemble_spawn_operation(
                     ))
                 })?;
 
-            if descriptor_field.type_name != "f32" {
-                return Err(assembly_error(format!(
-                    "unsupported component field type `{}` for `{}`",
-                    descriptor_field.type_name, field.name
-                )));
-            }
-
-            let value = match &field.value {
-                ComponentLiteralValue::Float { text, .. } => text.parse::<f32>().map_err(|_| {
-                    assembly_error(format!(
-                        "invalid f32 literal `{}` for component field `{}`",
-                        text, field.name
-                    ))
-                })?,
-            };
+            let value = encode_source_literal(
+                &descriptor_field.type_name,
+                &field.value,
+                &format!("component field `{}.{}`", component.name, field.name),
+            )?;
             let offset = descriptor_field.offset as usize;
-            let end = offset + 4;
+            let end = offset
+                .checked_add(value.len())
+                .ok_or_else(|| assembly_error("component field payload range overflow"))?;
             if end > payload_bytes.len() {
                 return Err(assembly_error(format!(
                     "component field `{}` exceeds payload size",
@@ -569,7 +1073,7 @@ fn assemble_spawn_operation(
                 )));
             }
 
-            payload_bytes[offset..end].copy_from_slice(&value.to_le_bytes());
+            payload_bytes[offset..end].copy_from_slice(&value);
         }
 
         operation_components.push(StartupSpawnComponent {
@@ -582,6 +1086,98 @@ fn assemble_spawn_operation(
     Ok(StartupOperation::Spawn {
         components: operation_components,
     })
+}
+
+fn assemble_core_spawn_operation(
+    descriptors: &[ComponentDescriptor],
+    components: &[CoreSpawnComponent],
+) -> Result<StartupOperation, RuntimeAssemblyError> {
+    let mut operation_components = Vec::with_capacity(components.len());
+
+    for component in components {
+        let descriptor = descriptors
+            .iter()
+            .find(|descriptor| descriptor.id.0 == component.component_id)
+            .ok_or_else(|| {
+                assembly_error(format!(
+                    "verified Core spawn component `{}` has no source descriptor",
+                    component.name
+                ))
+            })?;
+        if component.name != descriptor.name {
+            return Err(assembly_error(format!(
+                "verified Core spawn component `{}` does not match source descriptor `{}`",
+                component.name, descriptor.name
+            )));
+        }
+
+        let mut payload_bytes = vec![0; descriptor.size as usize];
+        for field in &component.fields {
+            let descriptor_field = descriptor
+                .fields
+                .iter()
+                .find(|candidate| candidate.name == field.name)
+                .ok_or_else(|| {
+                    assembly_error(format!(
+                        "verified Core field `{}.{}` has no source descriptor",
+                        component.name, field.name
+                    ))
+                })?;
+            let (actual_type, value) = match field.value {
+                CoreSpawnFieldValue::F32Bits(bits) => ("f32", bits.to_le_bytes()),
+                CoreSpawnFieldValue::I32(value) => ("i32", value.to_le_bytes()),
+            };
+            if descriptor_field.type_name != actual_type {
+                return Err(assembly_error(format!(
+                    "verified Core field `{}.{}` has type {actual_type}, expected {}",
+                    component.name, field.name, descriptor_field.type_name
+                )));
+            }
+            let start = descriptor_field.offset as usize;
+            let end = start
+                .checked_add(value.len())
+                .ok_or_else(|| assembly_error("Core component field payload range overflow"))?;
+            let target = payload_bytes.get_mut(start..end).ok_or_else(|| {
+                assembly_error(format!(
+                    "verified Core field `{}.{}` exceeds its source descriptor payload",
+                    component.name, field.name
+                ))
+            })?;
+            target.copy_from_slice(&value);
+        }
+
+        operation_components.push(StartupSpawnComponent {
+            component_id: descriptor.id,
+            component_name: descriptor.name.clone(),
+            payload_bytes,
+        });
+    }
+
+    Ok(StartupOperation::Spawn {
+        components: operation_components,
+    })
+}
+
+fn encode_source_literal(
+    type_name: &str,
+    value: &ComponentLiteralValue,
+    label: &str,
+) -> Result<[u8; 4], RuntimeAssemblyError> {
+    match (type_name, value) {
+        ("f32", ComponentLiteralValue::Float { text, .. }) => text
+            .parse::<f32>()
+            .map(f32::to_le_bytes)
+            .map_err(|_| assembly_error(format!("invalid f32 literal `{text}` for {label}"))),
+        ("i32", ComponentLiteralValue::Integer { value, .. }) => i32::try_from(*value)
+            .map(i32::to_le_bytes)
+            .map_err(|_| assembly_error(format!("integer literal does not fit i32 for {label}"))),
+        (expected, ComponentLiteralValue::Float { .. }) => Err(assembly_error(format!(
+            "float literal cannot initialize {expected} {label}"
+        ))),
+        (expected, ComponentLiteralValue::Integer { .. }) => Err(assembly_error(format!(
+            "integer literal cannot initialize {expected} {label}"
+        ))),
+    }
 }
 
 fn assemble_run_schedule_operation(
@@ -687,6 +1283,10 @@ pub struct StartupSpawnComponent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{BlockId, CoreBlock, CoreInstruction, CoreTerminator, ValueId};
+    use crate::execution_shape::{
+        derive_verified_core_execution_shape, VerifiedCoreExecutionShape,
+    };
     use crate::layout::ComponentId;
     use crate::runtime::{
         stable_query_id, stable_resource_id, stable_schedule_id, stable_system_id, ArchetypeKey,
@@ -694,7 +1294,7 @@ mod tests {
         ScheduleItemDescriptor, SystemAccess, SystemParamDescriptor, SystemParamDescriptorKind,
         SystemQueryTermDescriptor,
     };
-    use crate::{lexer, parser};
+    use crate::{checker, core_lower, core_verify, lexer, parser};
 
     #[test]
     fn defines_runtime_program_assembly_model() {
@@ -1102,6 +1702,141 @@ mod tests {
                 ],
             }
         );
+    }
+
+    #[test]
+    fn assembles_typed_startup_payloads_from_verified_core() {
+        let source = "world Bounds
+component Values { zero: i32 max: i32 scalar: f32 }
+resource Limits { zero: i32 max: i32 scalar: f32 }
+startup {
+  resource Limits { zero: 0, max: 2147483647, scalar: 1.5 }
+  spawn { Values { zero: 0, max: 2147483647, scalar: 2.5 } }
+  exit 0
+}";
+        let tokens = lexer::lex(source).expect("typed startup fixture lexes");
+        let program = parser::parse_program(&tokens).expect("typed startup fixture parses");
+        checker::check_program(&program).expect("typed startup fixture checks");
+        let mut core =
+            core_lower::lower_program_to_core(&program).expect("typed startup fixture lowers");
+        core_verify::verify_core_program(&core).expect("typed startup Core verifies");
+
+        let assembly = assemble_runtime_program_from_verified_core(&program, &core)
+            .expect("typed startup assembly builds from verified Core");
+        assert_eq!(
+            assembly.startup_operations[0],
+            StartupOperation::ResourcePayload {
+                resource_id: stable_resource_id("Bounds", "Limits"),
+                resource_name: "Bounds.Limits".to_string(),
+                payload_bytes: [
+                    0i32.to_le_bytes().as_slice(),
+                    i32::MAX.to_le_bytes().as_slice(),
+                    1.5f32.to_le_bytes().as_slice(),
+                ]
+                .concat(),
+            }
+        );
+        let StartupOperation::Spawn { components } = &assembly.startup_operations[1] else {
+            panic!("startup operation one must be the typed spawn");
+        };
+        assert_eq!(
+            components[0].payload_bytes,
+            [
+                0i32.to_le_bytes().as_slice(),
+                i32::MAX.to_le_bytes().as_slice(),
+                2.5f32.to_le_bytes().as_slice(),
+            ]
+            .concat()
+        );
+
+        let core_max = core.functions[0].blocks[0]
+            .instructions
+            .iter_mut()
+            .find_map(|instruction| match instruction {
+                crate::core::CoreInstruction::Spawn { components } => components[0]
+                    .fields
+                    .iter_mut()
+                    .find(|field| field.name == "max"),
+                _ => None,
+            })
+            .expect("typed spawn contains max field");
+        core_max.value = CoreSpawnFieldValue::I32(7);
+        let core_authoritative = assemble_runtime_program_from_verified_core(&program, &core)
+            .expect("changed valid Core remains assembly authority");
+        let StartupOperation::Spawn { components } = &core_authoritative.startup_operations[1]
+        else {
+            panic!("startup operation one must remain the typed spawn");
+        };
+        assert_eq!(&components[0].payload_bytes[4..8], &7i32.to_le_bytes());
+    }
+
+    #[test]
+    fn rejects_non_entry_startup_blocks_as_materialization_authority() {
+        let source = include_str!("../../../examples/spawn_position.arc");
+        let tokens = lexer::lex(source).expect("spawn fixture lexes");
+        let program = parser::parse_program(&tokens).expect("spawn fixture parses");
+        checker::check_program(&program).expect("spawn fixture checks");
+        let mut core = core_lower::lower_program_to_core(&program).expect("spawn fixture lowers");
+        core.functions[0].blocks.push(CoreBlock {
+            id: BlockId(99),
+            instructions: vec![CoreInstruction::I32Const {
+                result: ValueId(99),
+                value: 0,
+            }],
+            terminator: CoreTerminator::Exit { value: ValueId(99) },
+        });
+        core_verify::verify_core_program(&core)
+            .expect("the general Core verifier permits an additional isolated block");
+
+        let error = assemble_runtime_program_from_verified_core(&program, &core)
+            .expect_err("bootstrap materialization must reject unreachable startup blocks");
+        assert!(error.message.contains("exactly one block"));
+    }
+
+    #[test]
+    fn rejects_source_descriptors_absent_from_verified_core() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("movement fixture lexes");
+        let program = parser::parse_program(&tokens).expect("movement fixture parses");
+        checker::check_program(&program).expect("movement fixture checks");
+        let mut core =
+            core_lower::lower_program_to_core(&program).expect("movement fixture lowers");
+        core.resources.clear();
+        core.systems.clear();
+        core.schedules.clear();
+        core_verify::verify_core_program(&core)
+            .expect("the reduced Core remains internally self-consistent");
+
+        let error = assemble_runtime_program_from_verified_core(&program, &core)
+            .expect_err("source descriptors absent from Core must not be published");
+        assert!(error
+            .message
+            .contains("resource schema counts do not match"));
+    }
+
+    #[test]
+    fn rejects_invalid_typed_source_literals_during_direct_assembly() {
+        for (source, expected) in [
+            (
+                "world Bounds component Values { value: i32 } startup { spawn { Values { value: 2147483648 } } exit 0 }",
+                "does not fit i32",
+            ),
+            (
+                "world Bounds resource Limits { value: f32 } startup { resource Limits { value: 1 } exit 0 }",
+                "integer literal cannot initialize f32",
+            ),
+        ] {
+            let tokens = lexer::lex(source).expect("invalid typed assembly fixture lexes");
+            let program =
+                parser::parse_program(&tokens).expect("invalid typed assembly fixture parses");
+            let error = assemble_runtime_program_from_source(&program)
+                .expect_err("direct assembly must validate typed source literals");
+            assert!(
+                error.message.contains(expected),
+                "expected `{expected}`, got `{}`",
+                error.message
+            );
+        }
     }
 
     #[test]
@@ -1607,6 +2342,109 @@ mod tests {
             Some(initial_velocity.as_slice())
         );
         assert!(world.entities().is_alive(entity));
+    }
+
+    #[test]
+    fn executes_descriptor_generic_shape_for_both_acceptance_programs() {
+        let (demo_world, demo_shape) =
+            execute_shape_fixture(include_str!("../../../examples/move_system_two_rows.arc"));
+        let demo_key =
+            ArchetypeKey::new(vec![demo_shape.query.target.id, demo_shape.query.source.id]);
+        let demo_table = demo_world
+            .archetype(&demo_key)
+            .expect("Demo query archetype exists");
+        assert_eq!(
+            component_rows(demo_table, demo_shape.query.target.id),
+            vec![f32_pair_payload(4.0, 6.0), f32_pair_payload(11.0, 22.0)]
+        );
+        assert_eq!(
+            component_rows(demo_table, demo_shape.query.source.id),
+            vec![f32_pair_payload(3.0, 4.0), f32_pair_payload(1.0, 2.0)]
+        );
+
+        let (arena_world, arena_shape) =
+            execute_shape_fixture(include_str!("../../../examples/arena_recovery.arc"));
+        let faction_id = crate::layout::stable_component_id("Arena", "Faction");
+        let full_key = ArchetypeKey::new(vec![
+            arena_shape.query.target.id,
+            arena_shape.query.source.id,
+            faction_id,
+        ]);
+        let partial_key = ArchetypeKey::new(vec![arena_shape.query.target.id, faction_id]);
+        let full = arena_world
+            .archetype(&full_key)
+            .expect("Arena matching archetype exists");
+        let partial = arena_world
+            .archetype(&partial_key)
+            .expect("Arena excluded archetype exists");
+
+        assert_eq!(
+            component_rows(full, arena_shape.query.target.id),
+            vec![
+                f32_pair_payload(11.0, 102.0),
+                f32_pair_payload(22.0, 203.0),
+                f32_pair_payload(33.0, 304.0),
+            ]
+        );
+        assert_eq!(
+            component_rows(partial, arena_shape.query.target.id),
+            vec![f32_pair_payload(40.0, 400.0), f32_pair_payload(50.0, 500.0)]
+        );
+        assert_eq!(
+            component_rows(full, arena_shape.query.source.id),
+            vec![
+                f32_triple_payload(2.0, 4.0, 120.0),
+                f32_triple_payload(4.0, 6.0, 230.0),
+                f32_triple_payload(6.0, 8.0, 340.0),
+            ],
+            "read-only Regeneration payloads, including unrelated cap fields, remain unchanged"
+        );
+        assert_eq!(
+            component_rows(full, faction_id),
+            vec![i32_payload(1), i32_payload(2), i32_payload(3)]
+        );
+        assert_eq!(
+            component_rows(partial, faction_id),
+            vec![i32_payload(4), i32_payload(5)],
+            "non-query Faction payloads remain unchanged in every archetype"
+        );
+    }
+
+    fn execute_shape_fixture(source: &str) -> (ArcheWorld, VerifiedCoreExecutionShape) {
+        let tokens = lexer::lex(source).expect("acceptance fixture lexes");
+        let program = parser::parse_program(&tokens).expect("acceptance fixture parses");
+        checker::check_program(&program).expect("acceptance fixture checks");
+        let core = core_lower::lower_program_to_core(&program).expect("acceptance Core lowers");
+        let assembly = assemble_runtime_program_from_verified_core(&program, &core)
+            .expect("acceptance runtime assembly builds");
+        let shape = derive_verified_core_execution_shape(&core, &assembly)
+            .expect("supported execution shape derives");
+        let world = execute_runtime_program_assembly_with_shape(&assembly, &shape)
+            .expect("descriptor-generic reference execution succeeds");
+        (world, shape)
+    }
+
+    fn component_rows(table: &crate::runtime::ArchetypeTable, id: ComponentId) -> Vec<Vec<u8>> {
+        let column = table.column(id).expect("component column exists");
+        (0..table.entity_count())
+            .map(|row| {
+                column
+                    .row_bytes(row)
+                    .expect("component row exists")
+                    .to_vec()
+            })
+            .collect()
+    }
+
+    fn f32_triple_payload(first: f32, second: f32, third: f32) -> Vec<u8> {
+        [first, second, third]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect()
+    }
+
+    fn i32_payload(value: i32) -> Vec<u8> {
+        value.to_le_bytes().to_vec()
     }
 
     fn xy_component_descriptor(id: ComponentId, name: &str) -> ComponentDescriptor {

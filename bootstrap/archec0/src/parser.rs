@@ -196,6 +196,7 @@ pub struct ResourceLiteralField {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ComponentLiteralValue {
     Float { text: String, span: Span },
+    Integer { value: u64, span: Span },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -850,18 +851,25 @@ impl Parser<'_> {
     fn parse_component_literal_value(&mut self) -> Result<ComponentLiteralValue, ParseError> {
         let token = self.peek();
         let span = token.span;
-        let text = match &token.kind {
-            TokenKind::Float(text) => text.clone(),
-            _ => {
-                return Err(ParseError {
-                    span,
-                    message: "expected float literal for component field value".to_string(),
-                });
+        match &token.kind {
+            TokenKind::Float(text) => {
+                let text = text.clone();
+                self.advance();
+                Ok(ComponentLiteralValue::Float { text, span })
             }
-        };
-        self.advance();
-
-        Ok(ComponentLiteralValue::Float { text, span })
+            TokenKind::Integer(_) => {
+                let integer =
+                    self.parse_integer_literal("expected numeric literal for startup field value")?;
+                Ok(ComponentLiteralValue::Integer {
+                    value: integer.value,
+                    span: integer.span,
+                })
+            }
+            _ => Err(ParseError {
+                span,
+                message: "expected numeric literal for startup field value".to_string(),
+            }),
+        }
     }
 
     fn parse_identifier_with_span(&mut self, message: &str) -> Result<(String, Span), ParseError> {
@@ -1263,6 +1271,7 @@ impl fmt::Display for ComponentLiteralValue {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Float { text, .. } => formatter.write_str(text),
+            Self::Integer { value, .. } => write!(formatter, "{value}"),
         }
     }
 }
@@ -1280,6 +1289,9 @@ fn write_component_literal_value(
 ) -> fmt::Result {
     match value {
         ComponentLiteralValue::Float { text, .. } => write!(formatter, "{indent}float {text}"),
+        ComponentLiteralValue::Integer { value, .. } => {
+            write!(formatter, "{indent}integer {value}")
+        }
     }
 }
 

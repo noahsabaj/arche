@@ -71,46 +71,47 @@ The proof chain currently demonstrates:
 - Native startup resource payload application from embedded `ARCHEECS` metadata.
 - Native startup spawn-row application from embedded `ARCHEECS` metadata.
 - Final observable native startup proof for the source-described `Demo.Time` and one `Demo.Position + Demo.Velocity` row.
-- A non-executing Core system body model for the future `Demo.Move` query loop.
+- Verified Core system-body representation and query-loop lowering.
 - Core lowering for query-loop skeletons, starting with `for (pos, vel) in movers`.
 - Core lowering for query-loop field expressions and `f32` multiplication, starting with `vel * time.delta`.
 - Core lowering for add-assign/update statements inside query loops, starting with `pos.x += vel.x * time.delta`.
 - Core text emission for the lowered `Demo.Move` query loop in `move_system.arc --emit-core`.
-- A generated-native query-loop observable for the supported `Demo.Move` Core body.
-- A generated-native row-scan skeleton for the bootstrap `Demo.Position + Demo.Velocity` row.
-- Generated-native field loading and `f32` multiplication for `Velocity * Time.delta`.
-- Generated-native `Position` field stores for the bootstrap `Demo.Move` query-loop body.
-- Generated-native `run Demo.Main` dispatch into compiled `Demo.Move` query-loop code.
+- Generated-native query-loop execution for a supported verified-Core-derived shape.
+- Capacity- and live-row-guarded native row scans across every matching planned archetype.
+- Descriptor/Core-derived field loading, `f32` multiplication, and mutable component stores.
+- Descriptor-identity schedule dispatch into the supported compiled system shape.
 - A named native ECS execution-state layout for descriptor counts, startup state, query scan state, and compiled-system temporaries.
 - Native descriptor record state materialization for component/resource/system/query/schedule section offsets and byte lengths.
 - Native startup operation dispatch for source-order resource, spawn, and run-schedule operation kinds.
-- Native query-planning state for the bootstrap `Demo.Position + Demo.Velocity` row used by compiled `Demo.Move`.
-- Native compiled schedule state for dispatching `Demo.Main` into compiled `Demo.Move`.
+- Native query-planning state bound by stable component identity rather than declaration ordinal.
+- Native compiled schedule state derived from verified schedule/system descriptors.
 - Native component/resource descriptor-table decoding from embedded `ARCHEECS` records.
 - Native system/query/schedule descriptor-table decoding from embedded `ARCHEECS` records.
 - Native startup operation table materialization from embedded `ARCHEECS` records.
 - Native query-plan construction from decoded descriptor records.
-- Generated-native `move_system` execution through decoded descriptor, startup, schedule, and query-plan tables.
+- Generated-native ECS execution through decoded descriptor, startup, schedule, and query-plan tables.
 - A reusable native ECS table model that names the current descriptor, startup, compiled schedule, and query-plan rows without changing generated native bytes.
 - Native descriptor name-reference decoding into table state, with generated startup validating exact descriptor name bytes from embedded `ARCHEECS`.
 - Generic source-order startup operation table iteration for native resource, spawn, and run-schedule handlers.
-- Native query-plan construction from reusable table rows for the current `Demo.Move.movers` proof.
-- Native compiled schedule execution through reusable table rows for the current `Demo.Main -> Demo.Move` proof.
+- Native query-plan construction from reusable table rows and component-ID subset matching.
+- Native compiled schedule execution through reusable descriptor-derived table rows.
 - A native table iteration cursor model over current descriptor, startup operation, compiled schedule, and query-plan rows without changing generated native bytes.
 - Count-driven native descriptor table row iteration for component, resource, system, query, and schedule descriptor records.
 - Count-driven native startup operation table row iteration for resource, spawn, and run-schedule handlers.
 - Native query-plan construction through iterated query-plan table rows.
-- A bounded two-row generated-native ECS table proof for `Demo.Position + Demo.Velocity` startup rows and compiled `Demo.Move` execution.
-- Explicit stack-resident native archetype-table storage for the current `Demo.Position + Demo.Velocity` fixtures, with startup spawn rows materialized into storage columns and compiled `Demo.Move` executing through storage-backed query-plan addresses.
-- A bounded native storage catalog for the current archetype table is materialized after descriptor/startup-table decoding and before startup dispatch. Startup spawns independently require the supported eight-byte column width before staging, then validate and write through catalog columns; query plans resolve and independently width-check IDs, sizes, row count, bases, and later-row strides through the same catalog; compiled math/stores and storage validation consume only planned/catalog addresses.
+- Canonical descriptor-generic `NativeWorldStoragePlan` values with multiple archetypes, descriptor-sized SoA columns, checked alignment, and compile-time geometric capacities.
+- Typed `i32`/`f32` startup payload materialization for arbitrary component lists, with whole-spawn validation before row publication.
+- Query subset matching and binding by stable component ID, including legal extra archetype columns and capacity/live-row guarded scans.
+- One neutral `VerifiedCoreExecutionShape` shared by reference and native paths for both `move_system_two_rows.arc` and structurally unrelated `arena_recovery.arc`.
+- Independent test-only `ARCHEOBS1` serialization of live post-schedule state, proving byte-identical reference/native results, memberships, row counts, and capacities.
 
-M23 native ECS world storage bridge and M24 native ECS storage catalog are complete. The bounded catalog is defined, materialized, and consumed for spawn and query execution over the one-row and two-row fixtures; native Linux and Windows proof gates close the milestone. Physical storage addresses enter semantic execution only during catalog construction. M24 is not a heap world, allocator, scheduler, command buffer, source syntax change, or `ARCHEECS` format change.
+M25 descriptor-generic world execution is complete. Demo and Arena execute because of verified Core and descriptors, not fixture names, hard-coded fixture IDs, declaration order, physical offsets, capacities, or expected row counts. Required native-Linux and Windows proof gates cover the two-program result. Physical payload offsets enter semantic execution only during catalog construction.
 
 ## What This Is Not Yet
 
 Arche is not yet a complete language, package manager, editor integration, debugger, profiler, production runtime, or general-purpose compiler. The current implementation is intentionally narrow and proof-driven.
 
-`examples/arena_recovery.arc` is the intentionally red M25 acceptance contract for the first structurally unrelated ECS program. It is not part of the green runner yet: the current compiler stops at its first `Faction` payload with `PARSE001` because typed `i32` component startup literals are not yet carried end to end. M25-003 owns that prerequisite; the checkpoint does not special-case Arena.
+Arche still uses statically planned stack storage and metadata v1. The temporary execution adapter accepts one startup schedule, one system, one read resource, one two-term mut/read query, one loop, and exactly two `f32` multiply-add lanes with a direct source `exit 0`; M26 owns arbitrary supported Core bodies and sequential schedules. Runtime structural mutation, entity lifecycle, and command buffers remain M27 work.
 
 ## Repository Layout
 
