@@ -110,6 +110,8 @@ M23 native ECS world storage bridge and M24 native ECS storage catalog are compl
 
 Arche is not yet a complete language, package manager, editor integration, debugger, profiler, production runtime, or general-purpose compiler. The current implementation is intentionally narrow and proof-driven.
 
+`examples/arena_recovery.arc` is the intentionally red M25 acceptance contract for the first structurally unrelated ECS program. It is not part of the green runner yet: the current compiler stops at its first `Faction` payload with `PARSE001` because typed `i32` component startup literals are not yet carried end to end. M25-003 owns that prerequisite; the checkpoint does not special-case Arena.
+
 ## Repository Layout
 
 ```text
