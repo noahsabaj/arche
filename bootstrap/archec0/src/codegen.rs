@@ -3489,6 +3489,7 @@ fn ecs_metadata_decoder_body(
     );
     emit_descriptor_name_table_decodes(&mut bytes, &mut jump_to_startup_state_failure_offsets);
     emit_startup_operation_table_decodes(&mut bytes, &startup_payloads);
+    emit_native_storage_catalog_materialization(&mut bytes);
 
     emit_native_startup_operation_table_iteration(
         &mut bytes,
@@ -3792,12 +3793,6 @@ fn emit_spawn_startup_operation_handler(
     bytes.push(0xb8); // mov eax, native archetype storage row count
     bytes.extend_from_slice(&(row_count_after_spawn as u32).to_le_bytes());
     store_rax_to_stack_slot(bytes, ECS_ARCHETYPE_STORAGE_ROW_COUNT_SLOT);
-    bytes.push(0xb8); // mov eax, archetype storage capacity
-    bytes.extend_from_slice(&(ECS_ARCHETYPE_STORAGE_CAPACITY as u32).to_le_bytes());
-    store_rax_to_stack_slot(bytes, ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT);
-    bytes.push(0xb8); // mov eax, archetype table row stride
-    bytes.extend_from_slice(&(ECS_ARCHETYPE_STORAGE_ROW_STRIDE as u32).to_le_bytes());
-    store_rax_to_stack_slot(bytes, ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT);
 
     load_metadata_qword_via_offset_slot(
         bytes,
@@ -4249,6 +4244,41 @@ fn emit_startup_operation_table_decodes(
     );
 }
 
+fn emit_native_storage_catalog_materialization(bytes: &mut Vec<u8>) {
+    let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+    let first_spawn = NATIVE_ECS_TABLE_MODEL.startup_operations.spawn_rows[0];
+
+    load_stack_slot_to_rax(bytes, first_spawn.component_count.offset);
+    store_rax_to_stack_slot(bytes, catalog_table.slots.column_count.offset);
+
+    emit_lea_stack_address_to_rax(bytes, catalog_table.storage.row_count.offset);
+    store_rax_to_stack_slot(bytes, catalog_table.slots.row_count_address.offset);
+
+    bytes.push(0xb8); // mov eax, bounded archetype storage capacity
+    bytes.extend_from_slice(&(ECS_ARCHETYPE_STORAGE_CAPACITY as u32).to_le_bytes());
+    store_rax_to_stack_slot(bytes, catalog_table.storage.capacity.offset);
+    load_stack_slot_to_rax(bytes, catalog_table.storage.capacity.offset);
+    store_rax_to_stack_slot(bytes, catalog_table.slots.capacity.offset);
+
+    load_stack_slot_to_rax(bytes, catalog_table.columns[0].descriptor.size.offset);
+    add_stack_slot_to_rax(bytes, catalog_table.columns[1].descriptor.size.offset);
+    store_rax_to_stack_slot(bytes, catalog_table.storage.row_stride.offset);
+    store_rax_to_stack_slot(bytes, catalog_table.slots.row_stride.offset);
+
+    for column in catalog_table.columns {
+        for (source, target) in [
+            (column.descriptor.id, column.slots.component_id),
+            (column.descriptor.size, column.slots.element_size),
+            (column.descriptor.align, column.slots.element_align),
+        ] {
+            load_stack_slot_to_rax(bytes, source.offset);
+            store_rax_to_stack_slot(bytes, target.offset);
+        }
+        emit_lea_stack_address_to_rax(bytes, column.payload_column.payload_rows[0].offset);
+        store_rax_to_stack_slot(bytes, column.slots.payload_base_address.offset);
+    }
+}
+
 fn emit_startup_table_qword_load(bytes: &mut Vec<u8>, metadata_offset: i32, stack_slot: u16) {
     bytes.extend_from_slice(&[0x48, 0x8b, 0x86]); // mov rax, qword ptr [rsi + offset]
     bytes.extend_from_slice(&metadata_offset.to_le_bytes());
@@ -4627,6 +4657,17 @@ fn load_stack_slot_to_rax(bytes: &mut Vec<u8>, stack_slot: u16) {
         bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, stack_slot as u8]); // mov rax, qword ptr [rsp + slot]
     } else {
         bytes.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]); // mov rax, qword ptr [rsp + slot]
+        bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
+    }
+}
+
+fn add_stack_slot_to_rax(bytes: &mut Vec<u8>, stack_slot: u16) {
+    if stack_slot == 0 {
+        bytes.extend_from_slice(&[0x48, 0x03, 0x04, 0x24]); // add rax, qword ptr [rsp]
+    } else if stack_slot <= 127 {
+        bytes.extend_from_slice(&[0x48, 0x03, 0x44, 0x24, stack_slot as u8]); // add rax, qword ptr [rsp + slot]
+    } else {
+        bytes.extend_from_slice(&[0x48, 0x03, 0x84, 0x24]); // add rax, qword ptr [rsp + slot]
         bytes.extend_from_slice(&(stack_slot as u32).to_le_bytes());
     }
 }
@@ -7731,6 +7772,167 @@ mod tests {
     }
 
     #[test]
+    fn materializes_native_storage_catalog_from_descriptors() {
+        let source = include_str!("../../../examples/move_system.arc");
+        let tokens = lexer::lex(source).expect("move_system.arc lexes");
+        let program = parser::parse_program(&tokens).expect("move_system.arc parses");
+        let assembly = runtime_assembly::assemble_runtime_program_from_source(&program)
+            .expect("move_system.arc assembles");
+        let metadata =
+            ecs_metadata::encode_ecs_metadata(&assembly).expect("move_system metadata encodes");
+        let startup_payloads = startup_payloads(&metadata).expect("startup payloads parse");
+        let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
+        let first_spawn = NATIVE_ECS_TABLE_MODEL.startup_operations.spawn_rows[0];
+
+        assert_eq!(startup_payloads.spawn_operations[0].component_count, 2);
+        assert_eq!(catalog_table.columns.len(), 2);
+
+        let text = ecs_metadata_decoder_text_payload(&program, &metadata)
+            .expect("move_system ECS decoder text emits");
+
+        let final_descriptor_decode =
+            metadata_qword_load_store_sequence(556, ECS_MAIN_SCHEDULE_RUN_SYSTEM_ID_SLOT);
+        let final_name_reference = ECS_DESCRIPTOR_NAME_REFERENCES[5];
+        let final_name_decode = metadata_ascii_compare_sequences(
+            final_name_reference.byte_offset as i32,
+            final_name_reference.name.as_bytes(),
+        )
+        .pop()
+        .expect("Demo.Main name decode has at least one comparison");
+        let final_startup_table_decode = metadata_qword_load_store_sequence(
+            startup_payloads.run_schedule_id_offset,
+            ECS_STARTUP_TABLE_RUN_SCHEDULE_ID_SLOT,
+        );
+        let catalog_materialization =
+            native_storage_catalog_materialization_sequence(catalog_table, first_spawn);
+        let startup_record_count_materialization = metadata_dword_load_store_sequence(
+            ECS_STARTUP_RECORD_COUNT_OFFSET,
+            ECS_STARTUP_OPERATION_COUNT_SLOT,
+        );
+        let first_dispatch = compare_stack_slot_sequence(
+            ECS_STARTUP_TABLE_RESOURCE_KIND_SLOT,
+            ECS_STARTUP_OP_RESOURCE_PAYLOAD as u64,
+        );
+
+        assert_eq!(
+            count_subsequence(&text, &catalog_materialization),
+            1,
+            "the complete descriptor-backed catalog should materialize exactly once"
+        );
+
+        let descriptor_decode_index = find_subsequence_from(&text, &final_descriptor_decode, 0)
+            .expect("final descriptor row should decode");
+        let name_decode_index = find_subsequence_from(
+            &text,
+            &final_name_decode,
+            descriptor_decode_index + final_descriptor_decode.len(),
+        )
+        .expect("final descriptor name should decode after descriptor rows");
+        let startup_table_decode_index = find_subsequence_from(
+            &text,
+            &final_startup_table_decode,
+            name_decode_index + final_name_decode.len(),
+        )
+        .expect("final startup table field should decode after descriptor names");
+        let catalog_materialization_index = find_subsequence_from(
+            &text,
+            &catalog_materialization,
+            startup_table_decode_index + final_startup_table_decode.len(),
+        )
+        .expect("storage catalog should materialize after the complete startup table");
+        let startup_record_count_index = find_subsequence_from(
+            &text,
+            &startup_record_count_materialization,
+            catalog_materialization_index + catalog_materialization.len(),
+        )
+        .expect("startup record count should load after the complete storage catalog");
+        let first_dispatch_index = find_subsequence_from(
+            &text,
+            &first_dispatch,
+            startup_record_count_index + startup_record_count_materialization.len(),
+        )
+        .expect("startup dispatch should follow storage catalog materialization");
+        assert!(
+            descriptor_decode_index < name_decode_index
+                && name_decode_index < startup_table_decode_index
+                && startup_table_decode_index < catalog_materialization_index
+                && catalog_materialization_index < startup_record_count_index
+                && startup_record_count_index < first_dispatch_index,
+            "catalog materialization should follow descriptor/name/startup decoding and precede dispatch"
+        );
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &lea_stack_address_store_sequence(
+                    catalog_table.storage.row_count.offset,
+                    catalog_table.slots.row_count_address.offset,
+                ),
+            ),
+            "catalog row-count field should hold the authoritative storage row-count address"
+        );
+
+        let capacity_materialization = storage_capacity_catalog_materialization_sequence(
+            ECS_ARCHETYPE_STORAGE_CAPACITY as u32,
+            catalog_table.storage.capacity.offset,
+            catalog_table.slots.capacity.offset,
+        );
+        assert_eq!(
+            count_subsequence(&text, &capacity_materialization),
+            1,
+            "bounded storage capacity should initialize once and then copy into the catalog"
+        );
+
+        let row_stride_materialization = storage_row_stride_catalog_materialization_sequence(
+            catalog_table.columns[0].descriptor.size.offset,
+            catalog_table.columns[1].descriptor.size.offset,
+            catalog_table.storage.row_stride.offset,
+            catalog_table.slots.row_stride.offset,
+        );
+        assert_eq!(
+            count_subsequence(&text, &row_stride_materialization),
+            1,
+            "storage and catalog row stride should derive once from Position plus Velocity sizes"
+        );
+
+        for column in catalog_table.columns {
+            for (source_slot, catalog_slot) in [
+                (column.descriptor.id, column.slots.component_id),
+                (column.descriptor.size, column.slots.element_size),
+                (column.descriptor.align, column.slots.element_align),
+            ] {
+                assert!(
+                    contains_subsequence(
+                        &text,
+                        &load_store_stack_slot_sequence(source_slot.offset, catalog_slot.offset),
+                    ),
+                    "catalog field at {} should copy decoded descriptor field at {}",
+                    catalog_slot.offset,
+                    source_slot.offset
+                );
+            }
+            assert!(
+                contains_subsequence(
+                    &text,
+                    &lea_stack_address_store_sequence(
+                        column.payload_column.payload_rows[0].offset,
+                        column.slots.payload_base_address.offset,
+                    ),
+                ),
+                "catalog column should address its physical row-zero payload base"
+            );
+        }
+
+        assert!(
+            contains_subsequence(
+                &text,
+                &[0xbf, ECS_COMPILED_MOVE_SUCCESS_EXIT_CODE, 0x00, 0x00, 0x00],
+            ),
+            "catalog materialization should preserve valid move_system exit 47"
+        );
+    }
+
+    #[test]
     fn iterates_native_startup_operation_table_generically() {
         let source = include_str!("../../../examples/move_system.arc");
         let tokens = lexer::lex(source).expect("move_system.arc lexes");
@@ -7880,6 +8082,7 @@ mod tests {
 
         assert_eq!(startup_payloads.spawn_operations.len(), 1);
         let storage = NATIVE_ECS_TABLE_MODEL.archetype_storage;
+        let catalog_table = NATIVE_ECS_TABLE_MODEL.storage_catalog.table_rows[0];
         let row0_storage = archetype_storage_row_slots(0).expect("row 0 storage slots are defined");
         assert_eq!(
             storage.row_count.offset,
@@ -7917,22 +8120,25 @@ mod tests {
         assert!(
             contains_subsequence(
                 &text,
-                &mov_eax_immediate_store_sequence(
+                &storage_capacity_catalog_materialization_sequence(
                     ECS_ARCHETYPE_STORAGE_CAPACITY as u32,
                     ECS_ARCHETYPE_STORAGE_CAPACITY_SLOT,
+                    catalog_table.slots.capacity.offset,
                 ),
             ),
-            "generated startup should set bounded native storage capacity"
+            "generated startup should initialize bounded storage capacity once and copy it to the catalog"
         );
         assert!(
             contains_subsequence(
                 &text,
-                &mov_eax_immediate_store_sequence(
-                    ECS_ARCHETYPE_STORAGE_ROW_STRIDE as u32,
+                &storage_row_stride_catalog_materialization_sequence(
+                    ECS_POSITION_DESCRIPTOR_SIZE_SLOT,
+                    ECS_VELOCITY_DESCRIPTOR_SIZE_SLOT,
                     ECS_ARCHETYPE_STORAGE_ROW_STRIDE_SLOT,
+                    catalog_table.slots.row_stride.offset,
                 ),
             ),
-            "generated startup should set native storage row stride"
+            "generated startup should derive native storage and catalog row stride from descriptors"
         );
         assert!(
             contains_ordered_subsequences(
@@ -9924,6 +10130,13 @@ mod tests {
             .any(|window| window == needle)
     }
 
+    fn count_subsequence(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .filter(|window| *window == needle)
+            .count()
+    }
+
     fn find_subsequence_from(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
         haystack[start..]
             .windows(needle.len())
@@ -10023,6 +10236,73 @@ mod tests {
         let mut bytes = Vec::new();
         append_load_stack_slot_to_rax(&mut bytes, load_slot);
         append_rax_qword_store(&mut bytes, store_slot);
+        bytes
+    }
+
+    fn storage_capacity_catalog_materialization_sequence(
+        capacity: u32,
+        storage_slot: u16,
+        catalog_slot: u16,
+    ) -> Vec<u8> {
+        let mut bytes = mov_eax_immediate_store_sequence(capacity, storage_slot);
+        append_load_stack_slot_to_rax(&mut bytes, storage_slot);
+        append_rax_qword_store(&mut bytes, catalog_slot);
+        bytes
+    }
+
+    fn storage_row_stride_catalog_materialization_sequence(
+        position_size_slot: u16,
+        velocity_size_slot: u16,
+        storage_slot: u16,
+        catalog_slot: u16,
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        append_load_stack_slot_to_rax(&mut bytes, position_size_slot);
+        append_add_stack_slot_to_rax(&mut bytes, velocity_size_slot);
+        append_rax_qword_store(&mut bytes, storage_slot);
+        append_rax_qword_store(&mut bytes, catalog_slot);
+        bytes
+    }
+
+    fn native_storage_catalog_materialization_sequence(
+        catalog_table: NativeStorageCatalogTableRow,
+        first_spawn: NativeSpawnStartupOperationSlots,
+    ) -> Vec<u8> {
+        let mut bytes = load_store_stack_slot_sequence(
+            first_spawn.component_count.offset,
+            catalog_table.slots.column_count.offset,
+        );
+        bytes.extend_from_slice(&lea_stack_address_store_sequence(
+            catalog_table.storage.row_count.offset,
+            catalog_table.slots.row_count_address.offset,
+        ));
+        bytes.extend_from_slice(&storage_capacity_catalog_materialization_sequence(
+            ECS_ARCHETYPE_STORAGE_CAPACITY as u32,
+            catalog_table.storage.capacity.offset,
+            catalog_table.slots.capacity.offset,
+        ));
+        bytes.extend_from_slice(&storage_row_stride_catalog_materialization_sequence(
+            catalog_table.columns[0].descriptor.size.offset,
+            catalog_table.columns[1].descriptor.size.offset,
+            catalog_table.storage.row_stride.offset,
+            catalog_table.slots.row_stride.offset,
+        ));
+        for column in catalog_table.columns {
+            for (source, target) in [
+                (column.descriptor.id, column.slots.component_id),
+                (column.descriptor.size, column.slots.element_size),
+                (column.descriptor.align, column.slots.element_align),
+            ] {
+                bytes.extend_from_slice(&load_store_stack_slot_sequence(
+                    source.offset,
+                    target.offset,
+                ));
+            }
+            bytes.extend_from_slice(&lea_stack_address_store_sequence(
+                column.payload_column.payload_rows[0].offset,
+                column.slots.payload_base_address.offset,
+            ));
+        }
         bytes
     }
 
@@ -10177,6 +10457,17 @@ mod tests {
             bytes.extend_from_slice(&[0x48, 0x8b, 0x44, 0x24, offset as u8]);
         } else {
             bytes.extend_from_slice(&[0x48, 0x8b, 0x84, 0x24]);
+            bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+        }
+    }
+
+    fn append_add_stack_slot_to_rax(bytes: &mut Vec<u8>, offset: u16) {
+        if offset == 0 {
+            bytes.extend_from_slice(&[0x48, 0x03, 0x04, 0x24]);
+        } else if offset <= 127 {
+            bytes.extend_from_slice(&[0x48, 0x03, 0x44, 0x24, offset as u8]);
+        } else {
+            bytes.extend_from_slice(&[0x48, 0x03, 0x84, 0x24]);
             bytes.extend_from_slice(&(offset as u32).to_le_bytes());
         }
     }
