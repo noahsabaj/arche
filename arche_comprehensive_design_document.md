@@ -2,10 +2,10 @@
 
 **Document version:** 0.2
 **Date:** 2026-08-01
-**Status:** Foundational design plus normative M26 closure contract; implementation locally verified, milestone open
+**Status:** Foundational design plus implemented and accepted M26 execution contract; milestone closed
 **Primary goal:** Define Arche as an independent, native, ECS-first programming language and software platform.
 
-The broad platform design in this document remains directional. The M26 clauses are normative for the current bootstrap milestone and override older "initial," example, or future-facing sketches where they conflict. This document defines the contract; `WORK_LOG.md` alone records implementation and acceptance evidence. Documentation or local proof is not evidence that M26 or exact-head CI has completed. The metadata-authoritative native physical-storage path has local reference/native parity evidence; M26 remains open until both required hosted greater-than-4-GiB jobs and required exact-head CI pass and are recorded there.
+The broad platform design in this document remains directional. The M26 clauses are normative for the closed bootstrap milestone and override older "initial," example, or future-facing sketches where they conflict. This document defines the contract; `WORK_LOG.md` alone records implementation and acceptance evidence. The metadata-authoritative native physical-storage path has local and hosted reference/native parity evidence, and both required greater-than-4-GiB jobs plus required exact-head CI passed before M26 closed.
 
 ---
 

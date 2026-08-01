@@ -4,11 +4,11 @@ Arche is an ECS-native software platform bootstrap. This repository is proving t
 
 This is not yet a broad language implementation. Work advances through executable proofs. [`WORK_LOG.md`](WORK_LOG.md) is the source of truth for implementation evidence, current milestone state, and any acceptance gates that remain open.
 
-## Active M26 Contract
+## M26 Execution Contract
 
-M26 replaces the earlier fixture-shaped bridge with one generic execution contract. The rules below describe the required milestone result; their presence here does not mean every acceptance gate has passed. M26 closes only when the reference and native paths agree on the required structurally different programs, both required greater-than-4-GiB jobs pass, strict cross-platform CI is green at the exact commit, and the evidence is recorded in `WORK_LOG.md`.
+M26 replaced the earlier fixture-shaped bridge with one generic execution contract. It closed after the reference and native paths agreed on the required structurally different programs, both required greater-than-4-GiB jobs passed, strict cross-platform CI was green at the exact implementation and merged commits, and the evidence was recorded in `WORK_LOG.md`.
 
-The implementation is locally settled, but M26 is not closed. The host decoder, verified-Core reference path, v2 linker, metadata-authoritative native storage and dispatch, segmented PIE writer, and canonical observation/trap paths are exercised together. Local Windows, WSL, PowerShell, readelf, physical-source, and sparse-executable proofs are green for the primary fixture, structurally different Arena fixture, and trap fixture. The two hosted greater-than-4-GiB jobs have not run on an implementation commit and their check contexts are not yet required by branch protection; required exact-head CI has likewise not been recorded green. Milestone closure therefore remains external evidence rather than a documentation claim.
+The host decoder, verified-Core reference path, v2 linker, metadata-authoritative native storage and dispatch, segmented PIE writer, and canonical observation/trap paths are exercised together. Local Windows, WSL, PowerShell, readelf, physical-source, and sparse-executable proofs are green for the primary fixture, structurally different Arena fixture, and trap fixture. Strict branch protection requires the Linux, Windows, physical-source, and sparse-executable proofs; all four passed on the exact merged M26 implementation commit. The durable run and job identities are recorded in `WORK_LOG.md`.
 
 ### Compiler modes
 
