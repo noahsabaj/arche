@@ -16,7 +16,7 @@ This file is not a second design document. It is the build map for proving that 
 
 ## 2026-07-31 M26 Audit Remediation Locally Verified (updated 2026-08-01)
 
-The accepted M26 closure contract is being implemented as a hard compatibility cut. This entry records current worktree evidence only. It is not milestone closure evidence and has no implementation commit, hosted large-file result, or exact-head CI result.
+The accepted M26 closure contract is implemented as a hard compatibility cut. This entry records local and hosted evidence, but it is not milestone closure evidence until the final ledger head and merged `main` SHA both pass every required check.
 
 Implemented and locally exercised so far:
 
@@ -29,12 +29,12 @@ Implemented and locally exercised so far:
 - Machine IR is derived only from verified Core. Metadata selects schemas, payloads, startup/schedule order, query bindings, functions, and dispatch; AOT code remains authoritative for system-body instructions, with separate ABI and Core-body link hashes. Exact AST, Core, and Machine goldens now cover the M26 closure fixture; Core and Machine output expose every canonical ID32 separately from checked `u64` Core indexes, while the syntax-only AST stays identity-free.
 - The ELF writer plans and streams separate R-- header, R-X text, RW non-executable data/BSS, and R-- metadata segments with a non-executable GNU stack, seek-created sparse holes, 64-bit image-relative anchors, far-safe transfers, and no W+X segment. Publication uses a synchronized sibling temporary and promises atomic visibility only.
 - The native runtime decodes and validates the complete v2 directory before mutation, binds canonical declaration/ABI identity without retaining behavioral metadata mirrors, resolves schedule dispatch through decoded function links, uses per-schema physical-storage rows, and dynamically enumerates resources, spawns, query terms, tables, rows, columns, and `ARCHEOBS2`. Allocation-free decoded-count scans enforce payload, string, and source-span use plus function-body ownership, containment, and non-overlap with the same accepted/rejected boundary as the host decoder.
-- Linux and Windows strict-Clippy jobs and separate 20-minute physical-large-source and sparse-large-executable Linux jobs are defined in the proof workflow. Defining those jobs is not evidence that hosted runners passed them or that the new contexts are required by branch protection.
+- Linux and Windows strict-Clippy jobs and separate 20-minute physical-large-source and sparse-large-executable Linux jobs are defined in the proof workflow. All four GitHub Actions contexts are now registered and required by strict `main` branch protection.
 - A Linux-only test-harness race that intermittently produced `ETXTBSY` under default-parallel execution is closed structurally: one `cfg(all(test, target_os = "linux"))` mutex now covers each temporary PIE's publication, execution, and cleanup across AOT, native-runtime, and sparse-proof helpers. It introduces no production hook or lint suppression.
 - The stale repository `AUDIT.md` and its sole `.gitattributes` preservation rule are deleted; Git history remains the audit record.
 - Production encoders, decoders, observers, fixture-shape recognizers, and source-derived runtime assembly no longer provide ARCHECMP, ARCHEECS v1, or ARCHEOBS1 compatibility paths. Only explicit legacy-rejection probes and these required status-1 diagnostics remain: `arche: unsupported ARCHEECS version 1; rebuild with archec0` and `arche: unsupported ARCHECMP artifact; rebuild with archec0`.
 
-Current local evidence captured on this uncommitted worktree:
+Current local and implementation-head evidence:
 
 - Formatting, locked all-target checks, strict `-D warnings` Clippy, and locked debug and release all-target tests are green. Debug and release each passed 52 library tests and 151 executable tests; the ten ignored Windows-host cases are the explicit WSL-native counterparts.
 - The final x86-64 Linux-musl cross-target check and strict `-D warnings` Clippy are green. The exact-current Linux binary harness passed twice at default parallelism and once serially, each with 175 passed, zero failed, and only the required sparse proof ignored; the focused ignored sparse proof then passed 1/1. The Linux library harness passed 52/52. These repeated parallel runs close the temporary-PIE `ETXTBSY` regression rather than hiding it behind a serial CI invocation.
@@ -43,13 +43,14 @@ Current local evidence captured on this uncommitted worktree:
 - A fresh exact-current local physical-source proof compiled 4,294,969,985 logical bytes with 4,294,975,488 allocated bytes through the detached immutable spool. It observed and then mutated the original at byte 4,294,969,965 only after snapshot completion; the 122,080-byte emitted PIE retained snapshot behavior, exited `47`, and matched ARCHEOBS2 byte for byte. The measured compiler peak RSS was 1,792 KiB, scratch peak 8,590,086,144 bytes, and elapsed time 9.87 seconds.
 - The fresh exact-current production sparse-writer proof executed with real v2 metadata beyond 4 GiB, passed its readelf assertions, and matched the direct Core reference. Its artifact was 4,294,972,896 logical bytes with 112 allocated 512-byte blocks (57,344 bytes); peak RSS was 2,912 KiB, peak scratch was 69,632 bytes, and elapsed time was 0.03 seconds. The proof removed both large artifacts and its private scratch root.
 - `cargo audit --file ./bootstrap/archec0/Cargo.lock`, workflow YAML parsing, `bash -n` for all ten multiline Linux workflow blocks, and `git diff --check` passed.
-- A live GitHub protection audit found strict `main` protection still requires only `Proof / Native Linux` and `Proof / Windows`; no open implementation pull request or ruleset has registered or required the two new large-job contexts. No external state was changed.
+- Pull request [`#7`](https://github.com/noahsabaj/arche/pull/7) publishes implementation commits `9d0f5c3`, `cb9a9d8`, and `a86a7a1`. The latter two close CI-only checkout/inventory findings exposed by the first hosted runs: exact Core/Machine goldens normalize checked-out CRLF to canonical LF at comparison time, and the native trap inventory requires the exact registered Linux proof name.
+- Strict `main` protection now retains `Proof / Native Linux` and `Proof / Windows` and additionally requires `Proof / Physical >4-GiB Source` and `Proof / Sparse >4-GiB Executable`, all bound to GitHub Actions app ID `15368`.
+- Exact implementation-head run [`30708966147`](https://github.com/noahsabaj/arche/actions/runs/30708966147) passed all four required jobs on `a86a7a19bf7ab19d2298e4541cfe47685a7b69e6`: [Native Linux `91392904061`](https://github.com/noahsabaj/arche/actions/runs/30708966147/job/91392904061), [Windows `91392904073`](https://github.com/noahsabaj/arche/actions/runs/30708966147/job/91392904073), [physical source `91392904077`](https://github.com/noahsabaj/arche/actions/runs/30708966147/job/91392904077), and [sparse executable `91392904059`](https://github.com/noahsabaj/arche/actions/runs/30708966147/job/91392904059).
 
 Still required before M26 can close:
 
-- Publish the implementation on an authorized branch and pull request so the two new greater-than-4-GiB check contexts register, then add both contexts to strict `main` branch protection while retaining the existing Linux and Windows proof checks.
-- Run both required `ubuntu-24.04` greater-than-4-GiB jobs on the exact implementation/ledger head within their RSS, scratch, and time contracts. Local equivalents are evidence about the implementation, not substitutes for the required hosted-runner results.
-- Obtain all four required checks green on the exact pull-request/merge-group head and again on the exact merged `main` SHA, then record every run and job identity here. Until those external gates are recorded, M26 remains open.
+- Commit this evidence ledger and obtain all four required checks green again on that exact pull-request head. If GitHub produces a merge-group head, the workflow's `merge_group` trigger must pass the same four jobs.
+- Merge through strict protection, obtain all four jobs green on the exact merged `main` SHA, and record the final run and job identities here. Until that docs-inclusive exact-head evidence is committed and green, M26 remains open.
 
 ## 2026-07-13 M25 Descriptor-Generic Native World
 
