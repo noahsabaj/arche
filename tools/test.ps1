@@ -1051,8 +1051,8 @@ function Assert-ProofTestInventory {
             -Expected "aot_v2::tests::rich_m26_native_matches_direct_core_reference"
         Assert-True -Condition ($TestList.Stdout -match '(?im)^.*arena.*native.*reference.*: test$|^.*native.*arena.*reference.*: test$') `
             -Message "M26 red gate: no Arena direct-Core/native parity test is registered"
-        Assert-True -Condition ($TestList.Stdout -match '(?im)^.*trap.*native.*reference.*: test$|^.*native.*trap.*reference.*: test$') `
-            -Message "M26 red gate: no trap direct-Core/native parity test is registered"
+        Assert-Contains -Name "trap reference/native proof" -Actual $TestList.Stdout `
+            -Expected "aot_v2::tests::trap_native_matches_exact_direct_core_observation_and_diagnostic"
     }
     Write-Host "PASS: M26 reference/native proof inventory"
 }
