@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M26 audit remediation and closure implementation is active. M26 remains open until reference/native parity, both required greater-than-4-GiB jobs, the complete cross-platform proof suite, and exact-head CI are green.
+**Current focus:** M26 audit remediation is closed. The next milestone has not been promoted; the board remains empty pending deliberate M27 acceptance design.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -14,9 +14,9 @@ This file is not a second design document. It is the build map for proving that 
 - Repository setup does not advance milestone issues; the current board is tracked below.
 - `README.md` provides GitHub orientation for the repository; it does not advance the milestone board.
 
-## 2026-07-31 M26 Audit Remediation Locally Verified (updated 2026-08-01)
+## 2026-08-01 M26 Audit Remediation Closed
 
-The accepted M26 closure contract is implemented as a hard compatibility cut. This entry records local and hosted evidence, but it is not milestone closure evidence until the final ledger head and merged `main` SHA both pass every required check.
+The accepted M26 closure contract is implemented as a hard compatibility cut. Local proofs, protected pull-request checks, and all four required jobs on the exact merged implementation SHA are green. This entry is the durable closure ledger; the evidence-only closure commit that contains it must pass the same protected checks before merging.
 
 Implemented and locally exercised so far:
 
@@ -34,7 +34,7 @@ Implemented and locally exercised so far:
 - The stale repository `AUDIT.md` and its sole `.gitattributes` preservation rule are deleted; Git history remains the audit record.
 - Production encoders, decoders, observers, fixture-shape recognizers, and source-derived runtime assembly no longer provide ARCHECMP, ARCHEECS v1, or ARCHEOBS1 compatibility paths. Only explicit legacy-rejection probes and these required status-1 diagnostics remain: `arche: unsupported ARCHEECS version 1; rebuild with archec0` and `arche: unsupported ARCHECMP artifact; rebuild with archec0`.
 
-Current local and implementation-head evidence:
+Local, implementation-head, and merged-main evidence:
 
 - Formatting, locked all-target checks, strict `-D warnings` Clippy, and locked debug and release all-target tests are green. Debug and release each passed 52 library tests and 151 executable tests; the ten ignored Windows-host cases are the explicit WSL-native counterparts.
 - The final x86-64 Linux-musl cross-target check and strict `-D warnings` Clippy are green. The exact-current Linux binary harness passed twice at default parallelism and once serially, each with 175 passed, zero failed, and only the required sparse proof ignored; the focused ignored sparse proof then passed 1/1. The Linux library harness passed 52/52. These repeated parallel runs close the temporary-PIE `ETXTBSY` regression rather than hiding it behind a serial CI invocation.
@@ -46,11 +46,14 @@ Current local and implementation-head evidence:
 - Pull request [`#7`](https://github.com/noahsabaj/arche/pull/7) publishes implementation commits `9d0f5c3`, `cb9a9d8`, and `a86a7a1`. The latter two close CI-only checkout/inventory findings exposed by the first hosted runs: exact Core/Machine goldens normalize checked-out CRLF to canonical LF at comparison time, and the native trap inventory requires the exact registered Linux proof name.
 - Strict `main` protection now retains `Proof / Native Linux` and `Proof / Windows` and additionally requires `Proof / Physical >4-GiB Source` and `Proof / Sparse >4-GiB Executable`, all bound to GitHub Actions app ID `15368`.
 - Exact implementation-head run [`30708966147`](https://github.com/noahsabaj/arche/actions/runs/30708966147) passed all four required jobs on `a86a7a19bf7ab19d2298e4541cfe47685a7b69e6`: [Native Linux `91392904061`](https://github.com/noahsabaj/arche/actions/runs/30708966147/job/91392904061), [Windows `91392904073`](https://github.com/noahsabaj/arche/actions/runs/30708966147/job/91392904073), [physical source `91392904077`](https://github.com/noahsabaj/arche/actions/runs/30708966147/job/91392904077), and [sparse executable `91392904059`](https://github.com/noahsabaj/arche/actions/runs/30708966147/job/91392904059).
+- Exact documentation-inclusive pull-request run [`30709163804`](https://github.com/noahsabaj/arche/actions/runs/30709163804) passed all four required jobs on `04d49fd5d0661709d77b9f4257d4d79a0745e9b3`: [Native Linux `91393433569`](https://github.com/noahsabaj/arche/actions/runs/30709163804/job/91393433569), [Windows `91393433587`](https://github.com/noahsabaj/arche/actions/runs/30709163804/job/91393433587), [physical source `91393433594`](https://github.com/noahsabaj/arche/actions/runs/30709163804/job/91393433594), and [sparse executable `91393433566`](https://github.com/noahsabaj/arche/actions/runs/30709163804/job/91393433566).
+- Pull request [`#7`](https://github.com/noahsabaj/arche/pull/7) merged through strict protection as `b52f1ab0383db34e22c759a92737d86b6d9a5895`. Exact merged-`main` run [`30709348257`](https://github.com/noahsabaj/arche/actions/runs/30709348257) passed all four required jobs on that SHA: [Native Linux `91393935726`](https://github.com/noahsabaj/arche/actions/runs/30709348257/job/91393935726), [Windows `91393935785`](https://github.com/noahsabaj/arche/actions/runs/30709348257/job/91393935785), [physical source `91393935739`](https://github.com/noahsabaj/arche/actions/runs/30709348257/job/91393935739), and [sparse executable `91393935737`](https://github.com/noahsabaj/arche/actions/runs/30709348257/job/91393935737).
 
-Still required before M26 can close:
+Closure result:
 
-- Commit this evidence ledger and obtain all four required checks green again on that exact pull-request head. If GitHub produces a merge-group head, the workflow's `merge_group` trigger must pass the same four jobs.
-- Merge through strict protection, obtain all four jobs green on the exact merged `main` SHA, and record the final run and job identities here. Until that docs-inclusive exact-head evidence is committed and green, M26 remains open.
+- Reference and native execution agree byte-for-byte and status-for-status for the primary M26 fixture, structurally distinct Arena fixture, and exact-span trap fixture without compiler-side fixture identity or shape recognition.
+- Both required greater-than-4-GiB hosted jobs satisfy their runner, time, memory, scratch, physical-allocation, and sparse-allocation contracts.
+- Strict Linux and Windows Clippy and proof gates are green, the four check contexts are required by branch protection, and the exact merged implementation SHA passed every required check. M26 is closed.
 
 ## 2026-07-13 M25 Descriptor-Generic Native World
 
@@ -159,32 +162,30 @@ immutable source snapshot -> checked AST -> VerifiedExecutableCore
 
 This is the current bootstrap proof, not the final product boundary.
 
-Current proven chain and remaining boundary:
+Current proven chain:
 
 - Source, executable checking, verified Core, stable 128-bit IDs, the host v2 decoder/linker, the independent reference interpreter, canonical observation, and the segmented static-PIE writer implement the accepted M26 contracts without the M25 shape recognizer or source-derived runtime assembly.
 - Decoded metadata is the authority for schemas, payloads, startup/schedule order, query terms/bindings, function selection, and dispatch; AOT bodies are the authority for compiled system instructions.
-- Metadata-authoritative per-schema native storage, decoded startup/schedule/query/function dispatch, dynamic state enumeration, primary-fixture/Arena/trap parity, and local physical/sparse greater-than-4-GiB proofs are green. The remaining boundary is hosted large-file and exact-head CI evidence.
+- Metadata-authoritative per-schema native storage, decoded startup/schedule/query/function dispatch, dynamic state enumeration, primary-fixture/Arena/trap parity, and local and hosted physical/sparse greater-than-4-GiB proofs are green. Required exact-head Linux and Windows CI is also green.
 
 ## Integration Debt
 
-These are the current open integration boundaries. The M25 restrictions below survive only in historical milestone records; they are not the present production contract.
+These are the current post-M26 integration boundaries. The M25 restrictions below survive only in historical milestone records; they are not the present production contract.
 
 Current gaps:
 
-- The two hosted greater-than-4-GiB jobs are defined and locally reproduced but are not yet recorded within their required `ubuntu-24.04` runner contracts.
-- Required exact-head Linux and Windows CI has not run on a committed implementation head. All settled local implementation gates are green; this external acceptance boundary remains outstanding.
 - Runtime growth, system-time structural mutation, entity lifecycle, archetype transitions, command buffers, events, relations, and parallel scheduling remain deliberate post-M26 work rather than compatibility debt.
 
 ## Future Horizon
 
-These are milestone-level direction and closure constraints. M21 through M25 are complete. M26 implementation is active under the accepted closure contract; later milestones must not be expanded into issue rows before M26 closes.
+These are milestone-level direction and closure constraints. M21 through M26 are complete. M27 has not been promoted; its acceptance design must be reviewed before issue rows are added.
 
 - M21: Native ECS table generalization is complete below.
 - M22: Native ECS table row iteration is complete below.
 - M23: Native ECS world storage bridge is complete below.
 - M24: Native ECS storage catalog and descriptor-driven column binding is complete below. It is the final milestone allowed to close using only the bounded, exact-name `Demo` native fixtures.
 - M25: Descriptor-generic native world is complete. Demo and Arena execute through descriptor-sized multi-table storage and one verified-Core-derived supported shape without fixture identity, declaration ordinal, physical offset, capacity, or row count controlling production behavior.
-- M26: Core-generic native systems and schedules. The accepted host, reference, metadata-authoritative native storage/dispatch, AOT, observation, and local parity contracts are implemented and locally green. It closes only when the hosted greater-than-4-GiB and exact-head CI gates are green and recorded.
+- M26: Core-generic native systems and schedules is complete. The accepted host, reference, metadata-authoritative native storage/dispatch, AOT, observation, local parity, hosted greater-than-4-GiB, and exact-head CI contracts are implemented, green, and recorded above.
 - M27: Deferred structural commands and entity lifecycle. Add spawn, despawn, add-component, and remove-component commands; defined schedule-boundary application; archetype transitions; and stale-handle-safe entity reuse. It closes only when commands issued during query execution apply deterministically without invalidating the active scan or partially mutating world state.
 - M28: Deterministic many-world simulation and ML environment proof. Run a headless workload across at least 1,024 independent worlds with observation, action, episode-state, and reward data expressed through ordinary ECS data; repeated seeded schedule steps; and reproducible final-state checksums. It closes only when the same source runs standalone through the reference and native paths without compiler specialization and produces equivalent observable state.
 
@@ -210,7 +211,7 @@ M28 does not claim a tensor compiler, automatic differentiation, optimizer frame
 - Debugger or profiler.
 - Object/linker split.
 - Generics.
-- Command buffers before M26 Core-generic execution closes.
+- Command buffers before the deliberate M27 structural-command acceptance design.
 - Tensor syntax, automatic differentiation, optimizer APIs, GPU kernel compilation, or distributed training before the M28 simulation proof.
 - Python-first or host-language-first bindings as Arche's primary product surface.
 - A self-hosted compiler rewrite before Arche can express the compiler-supporting language features listed in the design document's bootstrap plan.
@@ -262,12 +263,13 @@ Board rules:
 
 | Issue | Title | Notes |
 |---|---|---|
-| M26-CLOSURE | Audit remediation and M26 closure | Implementation and local reference/native, cross-shell, physical-source, and sparse-executable proofs are green. Required hosted large-file jobs and exact-head CI remain open. |
+| - | - | Empty. |
 
 ### Done
 
 | Issue | Title | Evidence |
 |---|---|---|
+| M26-CLOSURE | Audit remediation and M26 closure | `VerifiedExecutableCore`, ARCHEECS v2, generic direct-Core reference execution, metadata-authoritative AOT dispatch and native world storage, ARCHEOBS2, checked `u64` streaming interfaces, static PIE output, strict Clippy, and transactional trap behavior are implemented. The primary, Arena, trap, physical greater-than-4-GiB source, and sparse greater-than-4-GiB executable proofs passed locally and in required protected CI. Pull request [#7](https://github.com/noahsabaj/arche/pull/7) merged as `b52f1ab0383db34e22c759a92737d86b6d9a5895`; exact merged-main run [30709348257](https://github.com/noahsabaj/arche/actions/runs/30709348257) passed all four required jobs. |
 | M25-005 | Close two-program descriptor-generic execution proof | Commit `2be3c51` derives a neutral `VerifiedCoreExecutionShape` from independently verified Core and cross-checked descriptors, then passes that same shape into runtime assembly, transactional reference execution, native planning, and native SSE emission. Published artifacts are silent and exit `47`; corrupt metadata fails with `1`. Test-only `ARCHEOBS1` observation independently parses live native state and byte-compares it with canonical reference state for Demo and Arena, including exact values, excluded rows, unchanged payloads, memberships, row counts, and capacities. Local formatting, locked debug/release 146/146 suites, normal/comparison Clippy, both complete PowerShell runners, dependency audit, and diff checks passed. Required implementation CI run [`29291558560`](https://github.com/noahsabaj/arche/actions/runs/29291558560) passed native Linux job `86956066315` and Windows job `86956066332` on the exact implementation head. |
 | M25-004 | Match archetypes and bind query terms by component ID | Commit `50585d4` builds query matches from canonical table keys, accepts legal supersets, binds terms and access modes by stable component ID in Core order, rejects mutable aliases, carries live row-count/base/size/field-offset state, and emits capacity/live-row guarded cases without fixture row counts. Demo matches its table; Arena matches only the three-row Regeneration archetype and excludes the two-row partial archetype. |
 | M25-003 | Materialize arbitrary startup component lists | Commit `064ed9f` adds typed `i32` component/resource literals through checking, Core, runtime assembly, metadata, and little-endian payload materialization; decodes arbitrary source-order component lists; and validates complete spawns before publishing any row. Arena materializes five lists of `3,3,3,2,2` components with Faction `1..5` and checked static capacity progressions `1 -> 2 -> 4` and `1 -> 2`. |
