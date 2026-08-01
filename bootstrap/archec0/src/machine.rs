@@ -191,11 +191,10 @@ mod tests {
     fn emits_generalized_m26_systems_schedules_queries_and_startup_effects() {
         let core = verified(include_str!("../../../examples/m26_closure.arc"));
         let output = emit_machine(&core);
+        let expected =
+            include_str!("../../../tests/golden/m26_closure.machine").replace("\r\n", "\n");
 
-        assert_eq!(
-            output,
-            include_str!("../../../tests/golden/m26_closure.machine").trim_end()
-        );
+        assert_eq!(output, expected.trim_end());
         assert!(output.contains(
             "link schema core-id @0 schema-id DD73DA45122DA6C43B963101BF8427BA component M26Closure.Position"
         ));

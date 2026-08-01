@@ -808,10 +808,8 @@ mod tests {
         let core = crate::core_verify::verify_executable_core(core).expect("fixture Core verifies");
 
         let output = format_verified_core_program(&core);
-        assert_eq!(
-            output,
-            include_str!("../../../tests/golden/m26_closure.core").trim_end()
-        );
+        let expected = include_str!("../../../tests/golden/m26_closure.core").replace("\r\n", "\n");
+        assert_eq!(output, expected.trim_end());
         assert!(output.contains(
             "schema core-id @0 schema-id DD73DA45122DA6C43B963101BF8427BA component M26Closure.Position"
         ));
