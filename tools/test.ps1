@@ -2,130 +2,33 @@ param(
     [switch] $SkipGeneratedLinuxExecution
 )
 
+Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
-$DefaultNativeRuntimeFrameSize = 1088
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
-$e2eDir = Join-Path $repoRoot "tests/e2e"
-$powerShellExecutable = (Get-Process -Id $PID).Path
+$manifestPath = Join-Path $repoRoot "bootstrap/archec0/Cargo.toml"
+$proofRoot = Join-Path $repoRoot "build/m26-proof"
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $isWindowsPlatform = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 $isLinuxPlatform = $false
 if (!$isWindowsPlatform) {
     $isLinuxVariable = Get-Variable -Name IsLinux -ErrorAction SilentlyContinue
-    $isLinuxPlatform = $null -ne $isLinuxVariable -and [bool] $isLinuxVariable.Value
+    $isLinuxPlatform = $null -ne $isLinuxVariable -and [bool]$isLinuxVariable.Value
 }
-$manifestPath = "./bootstrap/archec0/Cargo.toml"
-$debugExecutableName = "archec0"
-if ($isWindowsPlatform) {
-    $debugExecutableName = "archec0.exe"
-}
-$debugExecutablePath = Join-Path $repoRoot "bootstrap/archec0/target/debug/$debugExecutableName"
 
-function Add-CargoLockedArgument {
+function Assert-True {
     param(
         [Parameter(Mandatory = $true)]
-        [string] $Executable,
+        [bool] $Condition,
 
         [Parameter(Mandatory = $true)]
-        [string[]] $Arguments
+        [string] $Message
     )
 
-    if ($Executable -ne "cargo" -or $Arguments.Count -eq 0 -or $Arguments -contains "--locked") {
-        return $Arguments
+    if (!$Condition) {
+        throw $Message
     }
-
-    return @($Arguments[0], "--locked") + @($Arguments | Select-Object -Skip 1)
-}
-
-function Invoke-CheckedCommand {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Name,
-
-        [Parameter(Mandatory = $true)]
-        [string] $Executable,
-
-        [Parameter(Mandatory = $true)]
-        [string[]] $Arguments
-    )
-
-    Write-Host "==> $Name"
-    $effectiveArguments = @(Add-CargoLockedArgument -Executable $Executable -Arguments $Arguments)
-    & $Executable @effectiveArguments
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "$Name failed with exit code $LASTEXITCODE"
-        exit $LASTEXITCODE
-    }
-
-    Write-Host "PASS: $Name"
-}
-
-function Invoke-CheckedCommandWithOutput {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Name,
-
-        [Parameter(Mandatory = $true)]
-        [string] $Executable,
-
-        [Parameter(Mandatory = $true)]
-        [string[]] $Arguments
-    )
-
-    Write-Host "==> $Name"
-    $effectiveArguments = @(Add-CargoLockedArgument -Executable $Executable -Arguments $Arguments)
-    $output = @(& $Executable @effectiveArguments)
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "$Name failed with exit code $LASTEXITCODE"
-        exit $LASTEXITCODE
-    }
-
-    Write-Host "PASS: $Name"
-    return $output
-}
-
-function Invoke-CommandExpectFailure {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Name,
-
-        [Parameter(Mandatory = $true)]
-        [string] $Executable,
-
-        [Parameter(Mandatory = $true)]
-        [string[]] $Arguments,
-
-        [Parameter(Mandatory = $false)]
-        [int] $ExpectedExitCode = -1
-    )
-
-    Write-Host "==> $Name"
-    $previousErrorActionPreference = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        $effectiveArguments = @(Add-CargoLockedArgument -Executable $Executable -Arguments $Arguments)
-        $output = @(& $Executable @effectiveArguments 2>&1)
-        $exitCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $previousErrorActionPreference
-    }
-
-    if ($exitCode -eq 0) {
-        Write-Error "$Name was expected to fail but exited 0"
-        exit 1
-    }
-
-    if ($ExpectedExitCode -ge 0 -and $exitCode -ne $ExpectedExitCode) {
-        Write-Error "$Name expected exit code $ExpectedExitCode but got $exitCode"
-        exit 1
-    }
-
-    Write-Host "PASS: $Name failed as expected"
-    return @($output | ForEach-Object { $_.ToString() })
 }
 
 function Assert-Equal {
@@ -133,1742 +36,1218 @@ function Assert-Equal {
         [Parameter(Mandatory = $true)]
         [string] $Name,
 
-        [Parameter(Mandatory = $true)]
-        [UInt64] $Actual,
+        [Parameter(Mandatory = $false)]
+        $Actual,
 
-        [Parameter(Mandatory = $true)]
-        [UInt64] $Expected
+        [Parameter(Mandatory = $false)]
+        $Expected
     )
 
     if ($Actual -ne $Expected) {
-        Write-Error "$Name expected $Expected but got $Actual"
-        exit 1
+        throw "$Name expected '$Expected' but got '$Actual'"
     }
 }
 
-function Assert-StringEqual {
+function Assert-Contains {
     param(
         [Parameter(Mandatory = $true)]
         [string] $Name,
 
         [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
         [string] $Actual,
 
         [Parameter(Mandatory = $true)]
         [string] $Expected
     )
 
-    if ($Actual -ne $Expected) {
-        Write-Error "$Name expected '$Expected' but got '$Actual'"
-        exit 1
+    if (!$Actual.Contains($Expected)) {
+        throw "$Name expected text '$Expected'"
     }
 }
 
-function ConvertFrom-HexUInt64 {
+function Normalize-LineEndings {
     param(
         [Parameter(Mandatory = $true)]
-        [string] $Hex
+        [AllowEmptyString()]
+        [string] $Text
     )
 
-    return [UInt64]::Parse(
-        $Hex,
-        [System.Globalization.NumberStyles]::HexNumber,
-        [System.Globalization.CultureInfo]::InvariantCulture
-    )
+    return $Text.Replace("`r`n", "`n").Replace("`r", "`n")
 }
 
-function Assert-OutputContains {
+function ConvertTo-ProcessArgument {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Value
+    )
+
+    if ($Value.Length -eq 0) {
+        return '""'
+    }
+    if ($Value -notmatch '[\s"]') {
+        return $Value
+    }
+
+    # All proof paths are controlled by this repository. Quoting whitespace and
+    # embedded quotes is sufficient for ProcessStartInfo on .NET Framework 4.8
+    # and current .NET, which keeps the runner compatible with PowerShell 5.1.
+    return '"' + $Value.Replace('"', '\"') + '"'
+}
+
+function Invoke-CapturedProcess {
     param(
         [Parameter(Mandatory = $true)]
         [string] $Name,
 
         [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string[]] $Output,
-
-        [Parameter(Mandatory = $true)]
-        [string] $ExpectedText
-    )
-
-    $text = $Output -join "`n"
-    if (!$text.Contains($ExpectedText)) {
-        Write-Error "$Name expected output to contain '$ExpectedText'"
-        exit 1
-    }
-}
-
-function Assert-BytesEqual {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Name,
-
-        [Parameter(Mandatory = $true)]
-        [byte[]] $Actual,
-
-        [Parameter(Mandatory = $true)]
-        [byte[]] $Expected
-    )
-
-    if ($Actual.Length -ne $Expected.Length) {
-        Write-Error "$Name expected $($Expected.Length) bytes but got $($Actual.Length)"
-        exit 1
-    }
-
-    for ($i = 0; $i -lt $Expected.Length; $i++) {
-        if ($Actual[$i] -ne $Expected[$i]) {
-            Write-Error "$Name byte $i expected $($Expected[$i]) but got $($Actual[$i])"
-            exit 1
-        }
-    }
-}
-
-function Assert-LinesEqual {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Name,
-
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string[]] $Actual,
-
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string[]] $Expected
-    )
-
-    if ($Actual.Count -ne $Expected.Count) {
-        Write-Error "$Name expected $($Expected.Count) lines but got $($Actual.Count)"
-        exit 1
-    }
-
-    for ($i = 0; $i -lt $Expected.Count; $i++) {
-        if ($Actual[$i] -ne $Expected[$i]) {
-            Write-Error "$Name line $($i + 1) expected '$($Expected[$i])' but got '$($Actual[$i])'"
-            exit 1
-        }
-    }
-}
-
-function Test-Elf64Payload {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path,
-
-        [Parameter(Mandatory = $true)]
-        [byte[]] $ExpectedText,
+        [string] $Executable,
 
         [Parameter(Mandatory = $false)]
-        [UInt64] $ExpectedTrailingPayloadLength = 0
+        [string[]] $Arguments = @()
     )
 
-    Write-Host "==> ELF64 header check"
+    Write-Host "==> $Name"
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $Executable
+    $startInfo.Arguments = (($Arguments | ForEach-Object {
+        ConvertTo-ProcessArgument -Value $_
+    }) -join " ")
+    $startInfo.WorkingDirectory = $repoRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
 
-    if (!(Test-Path -LiteralPath $Path)) {
-        Write-Error "ELF output not found: $Path"
-        exit 1
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        Assert-True -Condition $process.Start() -Message "$Name could not start"
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.Result
+        $stderr = $stderrTask.Result
+        $status = $process.ExitCode
+    }
+    finally {
+        $process.Dispose()
     }
 
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Path))
-
-    if ($bytes.Length -lt 120) {
-        Write-Error "ELF output is too small: $($bytes.Length) bytes"
-        exit 1
+    return [PSCustomObject]@{
+        Name = $Name
+        Status = $status
+        Stdout = $stdout
+        Stderr = $stderr
     }
-
-    Assert-Equal -Name "ELF magic byte 0" -Actual $bytes[0] -Expected 0x7f
-    Assert-Equal -Name "ELF magic byte 1" -Actual $bytes[1] -Expected 0x45
-    Assert-Equal -Name "ELF magic byte 2" -Actual $bytes[2] -Expected 0x4c
-    Assert-Equal -Name "ELF magic byte 3" -Actual $bytes[3] -Expected 0x46
-    Assert-Equal -Name "ELF class" -Actual $bytes[4] -Expected 2
-    Assert-Equal -Name "ELF data encoding" -Actual $bytes[5] -Expected 1
-    $entrypoint = [BitConverter]::ToUInt64($bytes, 24)
-    $loadFlags = [BitConverter]::ToUInt32($bytes, 68)
-    $loadOffset = [BitConverter]::ToUInt64($bytes, 72)
-    $loadVaddr = [BitConverter]::ToUInt64($bytes, 80)
-    $loadFileSize = [BitConverter]::ToUInt64($bytes, 96)
-
-    Assert-Equal -Name "ELF type" -Actual ([BitConverter]::ToUInt16($bytes, 16)) -Expected 2
-    Assert-Equal -Name "ELF machine" -Actual ([BitConverter]::ToUInt16($bytes, 18)) -Expected 0x3e
-    Assert-Equal -Name "ELF program header entry size" -Actual ([BitConverter]::ToUInt16($bytes, 54)) -Expected 56
-    Assert-Equal -Name "ELF load segment flags" -Actual $loadFlags -Expected 5
-
-    $programHeaderCount = [BitConverter]::ToUInt16($bytes, 56)
-    if ($programHeaderCount -lt 1) {
-        Write-Error "ELF program header count expected at least 1 but got $programHeaderCount"
-        exit 1
-    }
-
-    Write-Host "PASS: ELF64 header check"
-    Write-Host "==> ELF text payload check"
-
-    if ($bytes.Length -le 120) {
-        Write-Error "ELF output does not contain text payload bytes"
-        exit 1
-    }
-
-    Assert-Equal -Name "ELF load segment file size" -Actual ([BitConverter]::ToUInt64($bytes, 96)) -Expected $bytes.Length
-    Assert-Equal -Name "ELF load segment memory size" -Actual ([BitConverter]::ToUInt64($bytes, 104)) -Expected $bytes.Length
-    Assert-Equal -Name "ELF text plus trailing payload length" -Actual ($bytes.Length - 120) -Expected ([UInt64]($expectedText.Length + $ExpectedTrailingPayloadLength))
-
-    for ($i = 0; $i -lt $expectedText.Length; $i++) {
-        Assert-Equal -Name "ELF text payload byte $i" -Actual $bytes[120 + $i] -Expected $expectedText[$i]
-    }
-
-    Write-Host "PASS: ELF text payload check"
-    Write-Host "==> ELF entrypoint check"
-
-    $expectedEntrypoint = $loadVaddr + 120
-    Assert-Equal -Name "ELF entrypoint" -Actual $entrypoint -Expected $expectedEntrypoint
-
-    if (($entrypoint -lt $loadVaddr) -or ($entrypoint -ge ($loadVaddr + $loadFileSize))) {
-        Write-Error "ELF entrypoint is outside the executable load segment"
-        exit 1
-    }
-
-    $entryFileOffset = [UInt64]$loadOffset + ($entrypoint - $loadVaddr)
-    Assert-Equal -Name "ELF entrypoint file offset" -Actual $entryFileOffset -Expected 120
-
-    if ($entryFileOffset -ge [UInt64]$bytes.Length) {
-        Write-Error "ELF entrypoint file offset is outside the file"
-        exit 1
-    }
-
-    $entryFileOffsetInt = [int]$entryFileOffset
-    Assert-RuntimeFrameEnvelope `
-        -Bytes $bytes `
-        -EntryFileOffset $entryFileOffsetInt `
-        -TextEnd ([UInt64]($bytes.Length - $ExpectedTrailingPayloadLength))
-    for ($i = 0; $i -lt $expectedText.Length; $i++) {
-        Assert-Equal -Name "ELF entrypoint byte $i" -Actual $bytes[$entryFileOffsetInt + $i] -Expected $expectedText[$i]
-    }
-
-    Write-Host "PASS: ELF entrypoint check"
 }
 
-function Test-Elf64TrailingPayload {
+function Assert-ProcessStatus {
+    param(
+        [Parameter(Mandatory = $true)]
+        $Result,
+
+        [Parameter(Mandatory = $true)]
+        [int] $Expected
+    )
+
+    if ($Result.Status -ne $Expected) {
+        if ($Result.Stdout.Length -ne 0) {
+            Write-Host "stdout:`n$($Result.Stdout)"
+        }
+        if ($Result.Stderr.Length -ne 0) {
+            Write-Host "stderr:`n$($Result.Stderr)"
+        }
+        throw "$($Result.Name) expected status $Expected but got $($Result.Status)"
+    }
+    Write-Host "PASS: $($Result.Name) (status $Expected)"
+}
+
+function Invoke-Compiler {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Compiler,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Name,
+
+        [Parameter(Mandatory = $false)]
+        [string[]] $Arguments = @()
+    )
+
+    return Invoke-CapturedProcess -Name $Name -Executable $Compiler -Arguments $Arguments
+}
+
+function Write-Utf8File {
     param(
         [Parameter(Mandatory = $true)]
         [string] $Path,
 
         [Parameter(Mandatory = $true)]
-        [UInt64] $ExpectedTrailingPayloadLength
+        [string] $Text
     )
 
-    Write-Host "==> ELF64 header check"
+    [System.IO.File]::WriteAllText($Path, $Text, $utf8NoBom)
+}
 
-    if (!(Test-Path -LiteralPath $Path)) {
-        Write-Error "ELF output not found: $Path"
-        exit 1
-    }
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Path))
-
-    if ($bytes.Length -lt (120 + $ExpectedTrailingPayloadLength + 1)) {
-        Write-Error "ELF output is too small for expected trailing payload: $($bytes.Length) bytes"
-        exit 1
-    }
-
-    Assert-Equal -Name "ELF magic byte 0" -Actual $bytes[0] -Expected 0x7f
-    Assert-Equal -Name "ELF magic byte 1" -Actual $bytes[1] -Expected 0x45
-    Assert-Equal -Name "ELF magic byte 2" -Actual $bytes[2] -Expected 0x4c
-    Assert-Equal -Name "ELF magic byte 3" -Actual $bytes[3] -Expected 0x46
-    Assert-Equal -Name "ELF class" -Actual $bytes[4] -Expected 2
-    Assert-Equal -Name "ELF data encoding" -Actual $bytes[5] -Expected 1
-    Assert-Equal -Name "ELF type" -Actual ([BitConverter]::ToUInt16($bytes, 16)) -Expected 2
-    Assert-Equal -Name "ELF machine" -Actual ([BitConverter]::ToUInt16($bytes, 18)) -Expected 0x3e
-    Assert-Equal -Name "ELF program header entry size" -Actual ([BitConverter]::ToUInt16($bytes, 54)) -Expected 56
-
-    $entrypoint = [BitConverter]::ToUInt64($bytes, 24)
-    $loadFlags = [BitConverter]::ToUInt32($bytes, 68)
-    $loadOffset = [BitConverter]::ToUInt64($bytes, 72)
-    $loadVaddr = [BitConverter]::ToUInt64($bytes, 80)
-    $loadFileSize = [BitConverter]::ToUInt64($bytes, 96)
-    $metadataStart = [UInt64]($bytes.Length - $ExpectedTrailingPayloadLength)
-
-    Assert-Equal -Name "ELF load segment flags" -Actual $loadFlags -Expected 5
-    Assert-Equal -Name "ELF load segment file size" -Actual $loadFileSize -Expected $bytes.Length
-    Assert-Equal -Name "ELF load segment memory size" -Actual ([BitConverter]::ToUInt64($bytes, 104)) -Expected $bytes.Length
-    Assert-Equal -Name "ELF entrypoint" -Actual $entrypoint -Expected ($loadVaddr + 120)
-    $entryFileOffset = [UInt64]$loadOffset + ($entrypoint - $loadVaddr)
-    Assert-Equal -Name "ELF entrypoint file offset" -Actual $entryFileOffset -Expected 120
-
-    if ($metadataStart -le 120) {
-        Write-Error "ELF text payload is missing before trailing metadata"
-        exit 1
-    }
-
-    Assert-RuntimeFrameEnvelope `
-        -Bytes $bytes `
-        -EntryFileOffset ([int]$entryFileOffset) `
-        -TextEnd $metadataStart
-
-    Write-Host "PASS: ELF64 header check"
+function Read-U16 {
+    param([byte[]] $Bytes, [UInt64] $Offset)
+    return [BitConverter]::ToUInt16($Bytes, [int]$Offset)
 }
 
 function Read-U32 {
-    param(
-        [Parameter(Mandatory = $true)]
-        [byte[]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [ref] $Offset
-    )
-
-    $value = [BitConverter]::ToUInt32($Bytes, $Offset.Value)
-    $Offset.Value += 4
-    return $value
+    param([byte[]] $Bytes, [UInt64] $Offset)
+    return [BitConverter]::ToUInt32($Bytes, [int]$Offset)
 }
 
 function Read-U64 {
-    param(
-        [Parameter(Mandatory = $true)]
-        [byte[]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [ref] $Offset
-    )
-
-    $value = [BitConverter]::ToUInt64($Bytes, $Offset.Value)
-    $Offset.Value += 8
-    return $value
+    param([byte[]] $Bytes, [UInt64] $Offset)
+    return [BitConverter]::ToUInt64($Bytes, [int]$Offset)
 }
 
-function Read-MetadataString {
-    param(
-        [Parameter(Mandatory = $true)]
-        [byte[]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [ref] $Offset
-    )
-
-    $length = Read-U32 -Bytes $Bytes -Offset $Offset
-    $value = [System.Text.Encoding]::ASCII.GetString($Bytes, $Offset.Value, [int]$length)
-    $Offset.Value += [int]$length
-    return $value
-}
-
-function Read-MetadataBytes {
-    param(
-        [Parameter(Mandatory = $true)]
-        [byte[]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [ref] $Offset
-    )
-
-    $length = Read-U32 -Bytes $Bytes -Offset $Offset
-    $value = New-Object byte[] $length
-    [Array]::Copy($Bytes, $Offset.Value, $value, 0, $length)
-    $Offset.Value += [int]$length
-    return [byte[]]$value
-}
-
-function Add-ByteSequence {
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyCollection()]
-        [System.Collections.Generic.List[byte]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [byte[]] $Sequence
-    )
-
-    foreach ($byte in $Sequence) {
-        [void] $Bytes.Add($byte)
+function Write-U32 {
+    param([byte[]] $Bytes, [UInt64] $Offset, [UInt32] $Value)
+    $encoded = [BitConverter]::GetBytes($Value)
+    for ($index = 0; $index -lt $encoded.Length; $index++) {
+        $Bytes[[int]$Offset + $index] = $encoded[$index]
     }
 }
 
-function Add-StackFrameAdjust {
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyCollection()]
-        [System.Collections.Generic.List[byte]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [byte] $Opcode,
-
-        [Parameter(Mandatory = $true)]
-        [int] $FrameSize
-    )
-
-    if ($FrameSize -le 127) {
-        Add-ByteSequence -Bytes $Bytes -Sequence ([byte[]]@(0x48, 0x83, $Opcode, [byte]$FrameSize))
-        return
-    }
-
-    Add-ByteSequence -Bytes $Bytes -Sequence ([byte[]]@(0x48, 0x81, $Opcode))
-    Add-ByteSequence -Bytes $Bytes -Sequence ([BitConverter]::GetBytes([UInt32]$FrameSize))
-}
-
-function Add-ZeroQwordStore {
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyCollection()]
-        [System.Collections.Generic.List[byte]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [int] $Offset
-    )
-
-    if ($Offset -eq 0) {
-        Add-ByteSequence -Bytes $Bytes -Sequence ([byte[]]@(0x48, 0x89, 0x04, 0x24))
-    } elseif ($Offset -le 127) {
-        Add-ByteSequence -Bytes $Bytes -Sequence ([byte[]]@(0x48, 0x89, 0x44, 0x24, [byte]$Offset))
-    } else {
-        Add-ByteSequence -Bytes $Bytes -Sequence ([byte[]]@(0x48, 0x89, 0x84, 0x24))
-        Add-ByteSequence -Bytes $Bytes -Sequence ([BitConverter]::GetBytes([UInt32]$Offset))
+function Write-U64 {
+    param([byte[]] $Bytes, [UInt64] $Offset, [UInt64] $Value)
+    $encoded = [BitConverter]::GetBytes($Value)
+    for ($index = 0; $index -lt $encoded.Length; $index++) {
+        $Bytes[[int]$Offset + $index] = $encoded[$index]
     }
 }
 
-function New-RuntimeStateQwordOffsets {
-    param(
-        [int] $FrameSize = $DefaultNativeRuntimeFrameSize
-    )
-
-    0..(($FrameSize / 8) - 1) | ForEach-Object { $_ * 8 }
+function Align-Up {
+    param([UInt64] $Value, [UInt64] $Alignment)
+    return [UInt64](($Value + $Alignment - 1) -band (-bnot ($Alignment - 1)))
 }
 
-function New-RuntimeCreatePrefix {
-    param(
-        [int] $FrameSize = $DefaultNativeRuntimeFrameSize
-    )
-
-    $bytes = [System.Collections.Generic.List[byte]]::new()
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xec -FrameSize $FrameSize
-    Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
-    foreach ($offset in (New-RuntimeStateQwordOffsets -FrameSize $FrameSize)) {
-        Add-ZeroQwordStore -Bytes $bytes -Offset $offset
-    }
-    [byte[]]$bytes.ToArray()
+function Test-PowerOfTwo {
+    param([UInt64] $Value)
+    return $Value -ne 0 -and (($Value -band ($Value - 1)) -eq 0)
 }
 
-function New-RuntimeDestroySuffix {
-    param(
-        [int] $FrameSize = $DefaultNativeRuntimeFrameSize
-    )
-
-    $bytes = [System.Collections.Generic.List[byte]]::new()
-    Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0x31, 0xc0))
-    foreach ($offset in (New-RuntimeStateQwordOffsets -FrameSize $FrameSize)) {
-        Add-ZeroQwordStore -Bytes $bytes -Offset $offset
-    }
-    Add-StackFrameAdjust -Bytes $bytes -Opcode 0xc4 -FrameSize $FrameSize
-    Add-ByteSequence -Bytes $bytes -Sequence ([byte[]]@(0xb8, 0x3c, 0x00, 0x00, 0x00, 0x0f, 0x05))
-    [byte[]]$bytes.ToArray()
-}
-
-function Get-RuntimeFrameSizeAtEntry {
-    param(
-        [Parameter(Mandatory = $true)]
-        [byte[]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [int] $EntryFileOffset
-    )
-
-    if (($EntryFileOffset -lt 0) -or ($EntryFileOffset + 4 -gt $Bytes.Length)) {
-        Write-Error "runtime entry does not contain a complete stack-frame instruction"
-        exit 1
-    }
-
-    if (($Bytes[$EntryFileOffset] -ne 0x48) -or ($Bytes[$EntryFileOffset + 2] -ne 0xec)) {
-        Write-Error "runtime entry does not begin with sub rsp"
-        exit 1
-    }
-
-    if ($Bytes[$EntryFileOffset + 1] -eq 0x83) {
-        $frameSize = [int]$Bytes[$EntryFileOffset + 3]
-    } elseif ($Bytes[$EntryFileOffset + 1] -eq 0x81) {
-        if ($EntryFileOffset + 7 -gt $Bytes.Length) {
-            Write-Error "runtime entry does not contain the complete sub rsp immediate"
-            exit 1
-        }
-        $rawFrameSize = [BitConverter]::ToUInt32($Bytes, $EntryFileOffset + 3)
-        if ($rawFrameSize -gt [int]::MaxValue) {
-            Write-Error "runtime frame size exceeds the supported signed range"
-            exit 1
-        }
-        $frameSize = [int]$rawFrameSize
-    } else {
-        Write-Error "runtime entry uses an unsupported sub rsp encoding"
-        exit 1
-    }
-
-    if (($frameSize -le 0) -or (($frameSize % 16) -ne 0)) {
-        Write-Error "runtime frame size must be positive and 16-byte aligned, got $frameSize"
-        exit 1
-    }
-
-    return $frameSize
-}
-
-function Assert-RuntimeFrameEnvelope {
-    param(
-        [Parameter(Mandatory = $true)]
-        [byte[]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [int] $EntryFileOffset,
-
-        [Parameter(Mandatory = $true)]
-        [UInt64] $TextEnd
-    )
-
-    if (($TextEnd -gt [UInt64]$Bytes.Length) -or ($TextEnd -gt [int]::MaxValue)) {
-        Write-Error "runtime text end is outside the artifact"
-        exit 1
-    }
-
-    $frameSize = Get-RuntimeFrameSizeAtEntry -Bytes $Bytes -EntryFileOffset $EntryFileOffset
-    [byte[]]$expectedPrefix = New-RuntimeCreatePrefix -FrameSize $frameSize
-    [byte[]]$expectedSuffix = New-RuntimeDestroySuffix -FrameSize $frameSize
-    $textEndInt = [int]$TextEnd
-    $suffixStart = $textEndInt - $expectedSuffix.Length
-
-    if (($EntryFileOffset + $expectedPrefix.Length -gt $suffixStart) -or ($suffixStart -lt 0)) {
-        Write-Error "runtime text is too short for its discovered frame envelope"
-        exit 1
-    }
-
-    for ($i = 0; $i -lt $expectedPrefix.Length; $i++) {
-        if ($Bytes[$EntryFileOffset + $i] -ne $expectedPrefix[$i]) {
-            Write-Error "runtime create prefix byte $i does not match discovered frame size $frameSize"
-            exit 1
-        }
-    }
-    for ($i = 0; $i -lt $expectedSuffix.Length; $i++) {
-        if ($Bytes[$suffixStart + $i] -ne $expectedSuffix[$i]) {
-            Write-Error "runtime destroy suffix byte $i does not match discovered frame size $frameSize"
-            exit 1
-        }
-    }
-
-    Write-Host "PASS: runtime frame envelope ($frameSize bytes)"
-}
-
-function New-RuntimeWrappedText {
-    param(
-        [Parameter(Mandatory = $true)]
-        [byte[]] $StartupBody
-    )
-
-    $bytes = New-Object System.Collections.Generic.List[byte]
-
-    foreach ($byte in [byte[]](New-RuntimeCreatePrefix)) {
-        [void] $bytes.Add($byte)
-    }
-
-    foreach ($byte in $StartupBody) {
-        [void] $bytes.Add($byte)
-    }
-
-    foreach ($byte in [byte[]](New-RuntimeDestroySuffix)) {
-        [void] $bytes.Add($byte)
-    }
-
-    return [byte[]] $bytes.ToArray()
-}
-
-function New-ImmediateRuntimeText {
-    param(
-        [Parameter(Mandatory = $true)]
-        [UInt64] $ExpectedExitCode
-    )
-
-    $exitImmediate = [BitConverter]::GetBytes([UInt32]$ExpectedExitCode)
-    $startupBody = [byte[]]@(
-        0xbf, $exitImmediate[0], $exitImmediate[1], $exitImmediate[2], $exitImmediate[3]
-    )
-
-    return New-RuntimeWrappedText -StartupBody $startupBody
-}
-
-function New-AddRuntimeText {
-    param(
-        [Parameter(Mandatory = $true)]
-        [UInt32] $Left,
-
-        [Parameter(Mandatory = $true)]
-        [UInt32] $Right
-    )
-
-    $leftImmediate = [BitConverter]::GetBytes($Left)
-    $rightImmediate = [BitConverter]::GetBytes($Right)
-    $startupBody = [byte[]]@(
-        0x48, 0x83, 0xec, 0x08,
-        0xc7, 0x04, 0x24, $leftImmediate[0], $leftImmediate[1], $leftImmediate[2], $leftImmediate[3],
-        0x81, 0x04, 0x24, $rightImmediate[0], $rightImmediate[1], $rightImmediate[2], $rightImmediate[3],
-        0x8b, 0x3c, 0x24,
-        0x48, 0x83, 0xc4, 0x08
-    )
-
-    return New-RuntimeWrappedText -StartupBody $startupBody
-}
-
-function Test-PositionComponentMetadata {
+function Get-StaticPieLayout {
     param(
         [Parameter(Mandatory = $true)]
         [string] $Path
     )
 
-    $expectedText = New-ImmediateRuntimeText -ExpectedExitCode 0
+    Assert-True -Condition (Test-Path -LiteralPath $Path -PathType Leaf) `
+        -Message "ELF artifact does not exist: $Path"
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
+    [byte[]]$bytes = [System.IO.File]::ReadAllBytes($resolvedPath)
+    Assert-True -Condition ($bytes.Length -ge 344) `
+        -Message "ELF artifact is too short for five program headers"
+    Assert-Equal -Name "ELF magic" `
+        -Actual ([Text.Encoding]::ASCII.GetString($bytes, 1, 3)) -Expected "ELF"
+    Assert-Equal -Name "ELF magic prefix" -Actual $bytes[0] -Expected 0x7f
+    Assert-Equal -Name "ELF class" -Actual $bytes[4] -Expected 2
+    Assert-Equal -Name "ELF endianness" -Actual $bytes[5] -Expected 1
+    Assert-Equal -Name "ELF type" -Actual (Read-U16 $bytes 16) -Expected 3
+    Assert-Equal -Name "ELF machine" -Actual (Read-U16 $bytes 18) -Expected 0x3e
+    Assert-Equal -Name "ELF header size" -Actual (Read-U16 $bytes 52) -Expected 64
+    Assert-Equal -Name "ELF program-header size" -Actual (Read-U16 $bytes 54) -Expected 56
+    Assert-Equal -Name "ELF program-header count" -Actual (Read-U16 $bytes 56) -Expected 5
+    Assert-Equal -Name "ELF section-header offset" -Actual (Read-U64 $bytes 40) -Expected 0
+    Assert-Equal -Name "ELF section-header count" -Actual (Read-U16 $bytes 60) -Expected 0
 
-    Test-Elf64Payload -Path $Path -ExpectedText $expectedText -ExpectedTrailingPayloadLength 85
+    [UInt64]$programHeaderOffset = Read-U64 $bytes 32
+    [UInt64]$programHeaderSize = Read-U16 $bytes 54
+    [UInt64]$programHeaderCount = Read-U16 $bytes 56
+    Assert-True -Condition (
+        $programHeaderOffset + $programHeaderSize * $programHeaderCount -le [UInt64]$bytes.Length
+    ) -Message "ELF program-header table is out of bounds"
 
-    Write-Host "==> component metadata payload check"
+    $headers = @()
+    for ($index = 0; $index -lt $programHeaderCount; $index++) {
+        [UInt64]$offset = $programHeaderOffset + [UInt64]$index * $programHeaderSize
+        $header = [PSCustomObject]@{
+            Kind = [UInt32](Read-U32 $bytes $offset)
+            Flags = [UInt32](Read-U32 $bytes ($offset + 4))
+            Offset = [UInt64](Read-U64 $bytes ($offset + 8))
+            Vaddr = [UInt64](Read-U64 $bytes ($offset + 16))
+            Paddr = [UInt64](Read-U64 $bytes ($offset + 24))
+            FileSize = [UInt64](Read-U64 $bytes ($offset + 32))
+            MemorySize = [UInt64](Read-U64 $bytes ($offset + 40))
+            Alignment = [UInt64](Read-U64 $bytes ($offset + 48))
+        }
+        Assert-True -Condition ($header.FileSize -le $header.MemorySize) `
+            -Message "ELF segment $index has file size greater than memory size"
+        Assert-True -Condition ($header.Offset + $header.FileSize -le [UInt64]$bytes.Length) `
+            -Message "ELF segment $index extends beyond the file"
+        if ($header.Kind -eq 1) {
+            Assert-True -Condition (Test-PowerOfTwo $header.Alignment) `
+                -Message "ELF PT_LOAD $index has invalid alignment"
+            Assert-Equal -Name "ELF PT_LOAD $index offset/vaddr congruence" `
+                -Actual ($header.Offset % $header.Alignment) `
+                -Expected ($header.Vaddr % $header.Alignment)
+        }
+        Assert-True -Condition (($header.Flags -band 3) -ne 3) `
+            -Message "ELF segment $index is writable and executable"
+        $headers += $header
+    }
 
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Path))
-    $offset = 120 + $expectedText.Length
+    Assert-True -Condition (@($headers | Where-Object { $_.Kind -eq 2 }).Count -eq 0) `
+        -Message "static PIE unexpectedly has PT_DYNAMIC"
+    Assert-True -Condition (@($headers | Where-Object { $_.Kind -eq 3 }).Count -eq 0) `
+        -Message "static PIE unexpectedly has PT_INTERP"
 
-    $magic = [System.Text.Encoding]::ASCII.GetString($bytes, $offset, 8)
-    $offset += 8
-    Assert-StringEqual -Name "component metadata magic" -Actual $magic -Expected "ARCHECMP"
+    $loads = @($headers | Where-Object { $_.Kind -eq 1 })
+    $headerLoads = @($loads | Where-Object { $_.Flags -eq 4 -and $_.Offset -eq 0 })
+    $textLoads = @($loads | Where-Object { $_.Flags -eq 5 })
+    $dataLoads = @($loads | Where-Object { $_.Flags -eq 6 })
+    $metadataLoads = @($loads | Where-Object { $_.Flags -eq 4 -and $_.Offset -ne 0 })
+    $stackHeaders = @($headers | Where-Object { $_.Kind -eq 0x6474e551 })
+    Assert-Equal -Name "ELF PT_LOAD count" -Actual $loads.Count -Expected 4
+    Assert-Equal -Name "ELF header R-- segment count" -Actual $headerLoads.Count -Expected 1
+    Assert-Equal -Name "ELF text R-X segment count" -Actual $textLoads.Count -Expected 1
+    Assert-Equal -Name "ELF data RW- segment count" -Actual $dataLoads.Count -Expected 1
+    Assert-Equal -Name "ELF metadata R-- segment count" -Actual $metadataLoads.Count -Expected 1
+    Assert-Equal -Name "ELF GNU-stack count" -Actual $stackHeaders.Count -Expected 1
+    Assert-Equal -Name "ELF GNU-stack flags" -Actual $stackHeaders[0].Flags -Expected 6
+    Assert-Equal -Name "ELF GNU-stack file size" -Actual $stackHeaders[0].FileSize -Expected 0
+    Assert-Equal -Name "ELF GNU-stack memory size" -Actual $stackHeaders[0].MemorySize -Expected 0
 
-    Assert-Equal -Name "component metadata version" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
-    Assert-Equal -Name "component metadata count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
-    Assert-Equal -Name "component metadata id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected 0x002202c6aeb4f27b
-    Assert-StringEqual -Name "component metadata qualified name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Position"
-    Assert-Equal -Name "component metadata size" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 8
-    Assert-Equal -Name "component metadata align" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
-    Assert-Equal -Name "component metadata field count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
+    $orderedLoads = @($loads | Sort-Object Offset)
+    for ($index = 1; $index -lt $orderedLoads.Count; $index++) {
+        [UInt64]$priorEnd = $orderedLoads[$index - 1].Offset + $orderedLoads[$index - 1].FileSize
+        Assert-True -Condition ($orderedLoads[$index].Offset -ge $priorEnd) `
+            -Message "ELF load segments overlap in the file"
+    }
+    $orderedMemoryLoads = @($loads | Sort-Object Vaddr)
+    for ($index = 1; $index -lt $orderedMemoryLoads.Count; $index++) {
+        [UInt64]$priorEnd = $orderedMemoryLoads[$index - 1].Vaddr + $orderedMemoryLoads[$index - 1].MemorySize
+        Assert-True -Condition ($orderedMemoryLoads[$index].Vaddr -ge $priorEnd) `
+            -Message "ELF load segments overlap in memory"
+    }
 
-    Assert-StringEqual -Name "component metadata field 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "x"
-    Assert-StringEqual -Name "component metadata field 0 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
-    Assert-Equal -Name "component metadata field 0 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 0
+    [UInt64]$entry = Read-U64 $bytes 24
+    Assert-True -Condition (
+        $entry -ge $textLoads[0].Vaddr -and
+        $entry -lt $textLoads[0].Vaddr + $textLoads[0].MemorySize
+    ) -Message "ELF entrypoint is outside the R-X text segment"
+    Assert-Equal -Name "ELF metadata is trailing" `
+        -Actual ($metadataLoads[0].Offset + $metadataLoads[0].FileSize) `
+        -Expected ([UInt64]$bytes.Length)
 
-    Assert-StringEqual -Name "component metadata field 1 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "y"
-    Assert-StringEqual -Name "component metadata field 1 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
-    Assert-Equal -Name "component metadata field 1 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
-    Assert-Equal -Name "component metadata end offset" -Actual $offset -Expected $bytes.Length
-
-    Write-Host "PASS: component metadata payload check"
+    Write-Host "PASS: segmented ET_DYN static PIE $Path"
+    return [PSCustomObject]@{
+        Path = $resolvedPath
+        Bytes = $bytes
+        Headers = $headers
+        Header = $headerLoads[0]
+        Text = $textLoads[0]
+        Data = $dataLoads[0]
+        Metadata = $metadataLoads[0]
+        Entry = $entry
+    }
 }
 
-function Assert-EcsSection {
+function Get-ArcheEcsV2 {
     param(
         [Parameter(Mandatory = $true)]
-        [byte[]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [int] $MetadataStart,
-
-        [Parameter(Mandatory = $true)]
-        [int] $Index,
-
-        [Parameter(Mandatory = $true)]
-        [UInt32] $ExpectedKind,
-
-        [Parameter(Mandatory = $true)]
-        [UInt32] $ExpectedOffset,
-
-        [Parameter(Mandatory = $true)]
-        [UInt32] $ExpectedByteLength,
-
-        [Parameter(Mandatory = $true)]
-        [UInt32] $ExpectedRecordCount
+        $Layout
     )
 
-    $offset = $MetadataStart + 16 + ($Index * 16)
+    [byte[]]$bytes = $Layout.Bytes
+    [UInt64]$base = $Layout.Metadata.Offset
+    [UInt64]$segmentLength = $Layout.Metadata.FileSize
+    Assert-True -Condition ($segmentLength -ge 64) -Message "ARCHEECS metadata header is truncated"
+    Assert-Equal -Name "ARCHEECS magic" `
+        -Actual ([Text.Encoding]::ASCII.GetString($bytes, [int]$base, 8)) `
+        -Expected "ARCHEECS"
+    Assert-Equal -Name "ARCHEECS version" -Actual (Read-U32 $bytes ($base + 8)) -Expected 2
+    Assert-Equal -Name "ARCHEECS header size" -Actual (Read-U32 $bytes ($base + 12)) -Expected 64
+    Assert-Equal -Name "ARCHEECS header flags" -Actual (Read-U64 $bytes ($base + 16)) -Expected 0
+    [UInt64]$totalLength = Read-U64 $bytes ($base + 24)
+    [UInt64]$directoryOffset = Read-U64 $bytes ($base + 32)
+    [UInt64]$directoryCount = Read-U64 $bytes ($base + 40)
+    [UInt64]$directoryStride = Read-U64 $bytes ($base + 48)
+    Assert-Equal -Name "ARCHEECS total length" -Actual $totalLength -Expected $segmentLength
+    Assert-Equal -Name "ARCHEECS directory offset" -Actual $directoryOffset -Expected 64
+    Assert-Equal -Name "ARCHEECS directory count" -Actual $directoryCount -Expected 14
+    Assert-Equal -Name "ARCHEECS directory row size" -Actual $directoryStride -Expected 64
+    Assert-Equal -Name "ARCHEECS reserved header" -Actual (Read-U64 $bytes ($base + 56)) -Expected 0
+    Assert-True -Condition (
+        $directoryOffset + $directoryCount * $directoryStride -le $totalLength
+    ) -Message "ARCHEECS directory is out of bounds"
 
-    Assert-Equal -Name "ECS metadata section $Index kind" -Actual (Read-U32 -Bytes $Bytes -Offset ([ref]$offset)) -Expected $ExpectedKind
-    Assert-Equal -Name "ECS metadata section $Index offset" -Actual (Read-U32 -Bytes $Bytes -Offset ([ref]$offset)) -Expected $ExpectedOffset
-    Assert-Equal -Name "ECS metadata section $Index byte length" -Actual (Read-U32 -Bytes $Bytes -Offset ([ref]$offset)) -Expected $ExpectedByteLength
-    Assert-Equal -Name "ECS metadata section $Index record count" -Actual (Read-U32 -Bytes $Bytes -Offset ([ref]$offset)) -Expected $ExpectedRecordCount
+    [UInt64[]]$expectedStrides = @(0, 64, 96, 64, 128, 64, 80, 64, 64, 48, 64, 0, 96, 64)
+    [UInt64]$cursor = $directoryOffset + $directoryCount * $directoryStride
+    $sections = @()
+    for ([UInt64]$index = 0; $index -lt $directoryCount; $index++) {
+        [UInt64]$row = $base + $directoryOffset + $index * $directoryStride
+        [UInt64]$kind = Read-U64 $bytes $row
+        [UInt64]$flags = Read-U64 $bytes ($row + 8)
+        [UInt64]$offset = Read-U64 $bytes ($row + 16)
+        [UInt64]$byteLength = Read-U64 $bytes ($row + 24)
+        [UInt64]$recordCount = Read-U64 $bytes ($row + 32)
+        [UInt64]$recordStride = Read-U64 $bytes ($row + 40)
+        [UInt64]$alignment = Read-U64 $bytes ($row + 48)
+        [UInt64]$reserved = Read-U64 $bytes ($row + 56)
+
+        Assert-Equal -Name "ARCHEECS section $index kind" -Actual $kind -Expected ($index + 1)
+        Assert-Equal -Name "ARCHEECS section $kind flags" -Actual $flags -Expected 0
+        Assert-Equal -Name "ARCHEECS section $kind reserved" -Actual $reserved -Expected 0
+        Assert-Equal -Name "ARCHEECS section $kind alignment" -Actual $alignment -Expected 8
+        Assert-Equal -Name "ARCHEECS section $kind stride" `
+            -Actual $recordStride -Expected $expectedStrides[[int]$index]
+        [UInt64]$expectedOffset = Align-Up $cursor $alignment
+        Assert-Equal -Name "ARCHEECS section $kind canonical offset" `
+            -Actual $offset -Expected $expectedOffset
+        Assert-True -Condition ($offset + $byteLength -le $totalLength) `
+            -Message "ARCHEECS section $kind is out of bounds"
+        for ([UInt64]$padding = $cursor; $padding -lt $offset; $padding++) {
+            Assert-Equal -Name "ARCHEECS zero padding at $padding" `
+                -Actual $bytes[[int]($base + $padding)] -Expected 0
+        }
+        if ($recordStride -eq 0) {
+            Assert-Equal -Name "ARCHEECS raw section $kind record count" `
+                -Actual $recordCount -Expected 0
+        }
+        else {
+            Assert-True -Condition ($recordCount -le [UInt64]::MaxValue / $recordStride) `
+                -Message "ARCHEECS section $kind record shape overflows"
+            Assert-Equal -Name "ARCHEECS section $kind fixed byte length" `
+                -Actual $byteLength -Expected ($recordCount * $recordStride)
+        }
+        $sections += [PSCustomObject]@{
+            Kind = $kind
+            Offset = $offset
+            ByteLength = $byteLength
+            RecordCount = $recordCount
+            RecordStride = $recordStride
+            Alignment = $alignment
+        }
+        $cursor = $offset + $byteLength
+    }
+    Assert-Equal -Name "ARCHEECS canonical total length" -Actual $cursor -Expected $totalLength
+    Assert-Equal -Name "ARCHEECS world record count" -Actual $sections[1].RecordCount -Expected 1
+
+    foreach ($rawKind in @(1, 12)) {
+        $section = @($sections | Where-Object { $_.Kind -eq $rawKind })[0]
+        Assert-True -Condition ($section.ByteLength -ge 16) `
+            -Message "ARCHEECS raw section $rawKind is shorter than its header"
+        [UInt64]$rawBase = $base + $section.Offset
+        [UInt64]$itemCount = Read-U64 $bytes $rawBase
+        [UInt64]$dataLength = Read-U64 $bytes ($rawBase + 8)
+        [UInt64]$rawRecordSize = if ($rawKind -eq 1) { 16 } else { 32 }
+        Assert-True -Condition ($itemCount -le [UInt64]::MaxValue / $rawRecordSize) `
+            -Message "ARCHEECS raw section $rawKind record range overflows"
+        Assert-Equal -Name "ARCHEECS raw section $rawKind internal length" `
+            -Actual $section.ByteLength `
+            -Expected (16 + $itemCount * $rawRecordSize + $dataLength)
+    }
+
+    Write-Host "PASS: canonical ARCHEECS v2 envelope with 14 sections"
+    return [PSCustomObject]@{
+        Base = $base
+        TotalLength = $totalLength
+        DirectoryOffset = $directoryOffset
+        Sections = $sections
+    }
 }
 
-function Assert-EcsQueryTerms {
+function Assert-CanonicalPayload {
+    param(
+        [Parameter(Mandatory = $true)]
+        [UInt64] $Length,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Payload,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Context
+    )
+
+    if ($Length -eq 0) {
+        Assert-Equal -Name "$Context empty payload" -Actual $Payload -Expected "-"
+        return
+    }
+    Assert-True -Condition ($Length -le [int]::MaxValue) `
+        -Message "$Context is too large for the proof host"
+    Assert-True -Condition ($Payload -match '^[0-9A-F]+$') `
+        -Message "$Context is not uppercase hexadecimal"
+    Assert-Equal -Name "$Context hexadecimal length" `
+        -Actual $Payload.Length -Expected ([int]$Length * 2)
+}
+
+function Test-ArcheObs2 {
+    param(
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyString()]
+        [string] $Text,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Name
+    )
+
+    $normalized = $Text.Replace("`r`n", "`n").Replace("`r", "`n")
+    Assert-True -Condition ($normalized.EndsWith("`n")) `
+        -Message "$Name observation does not end with a newline"
+    $lines = @($normalized.Substring(0, $normalized.Length - 1).Split([char]10))
+    Assert-True -Condition ($lines.Count -ge 2) -Message "$Name observation is truncated"
+    Assert-Equal -Name "$Name observation header" -Actual $lines[0] -Expected "ARCHEOBS2"
+    Assert-Equal -Name "$Name observation terminator" -Actual $lines[$lines.Count - 1] -Expected "END"
+
+    $lineIndex = 1
+    $resourceCount = 0
+    $initializedResourceCount = 0
+    $uninitializedResourceCount = 0
+    $zeroLengthPayloadCount = 0
+    $priorResource = $null
+    while ($lineIndex -lt $lines.Count - 1 -and $lines[$lineIndex].StartsWith("RESOURCE ")) {
+        $line = $lines[$lineIndex]
+        $uninitialized = [regex]::Match($line, '^RESOURCE ([0-9A-F]{32}) UNINITIALIZED$')
+        $initialized = [regex]::Match(
+            $line,
+            '^RESOURCE ([0-9A-F]{32}) INITIALIZED ([0-9]+) (-|[0-9A-F]+)$'
+        )
+        Assert-True -Condition ($uninitialized.Success -or $initialized.Success) `
+            -Message "$Name has invalid resource record: $line"
+        $id = if ($uninitialized.Success) {
+            $uninitialized.Groups[1].Value
+        }
+        else {
+            $initialized.Groups[1].Value
+        }
+        if ($null -ne $priorResource) {
+            Assert-True -Condition ([StringComparer]::Ordinal.Compare($priorResource, $id) -lt 0) `
+                -Message "$Name resources are not in strict schema-ID order"
+        }
+        $priorResource = $id
+        if ($uninitialized.Success) {
+            $uninitializedResourceCount++
+        }
+        else {
+            [UInt64]$length = [UInt64]::Parse($initialized.Groups[2].Value)
+            Assert-CanonicalPayload -Length $length `
+                -Payload $initialized.Groups[3].Value -Context "$Name resource $id"
+            $initializedResourceCount++
+            if ($length -eq 0) {
+                $zeroLengthPayloadCount++
+            }
+        }
+        $resourceCount++
+        $lineIndex++
+    }
+
+    $tableCount = 0
+    $rowCount = 0
+    $columnCount = 0
+    $priorTableKey = $null
+    while ($lineIndex -lt $lines.Count - 1) {
+        $parts = @($lines[$lineIndex].Split([char]32))
+        Assert-True -Condition ($parts.Count -ge 3 -and $parts[0] -eq "TABLE") `
+            -Message "$Name expected TABLE at line $($lineIndex + 1)"
+        [UInt64]$keyCount = [UInt64]::Parse($parts[1])
+        Assert-Equal -Name "$Name table token count" `
+            -Actual $parts.Count -Expected ([int]$keyCount + 3)
+        $keyIds = @()
+        for ($keyIndex = 0; $keyIndex -lt $keyCount; $keyIndex++) {
+            $id = $parts[2 + $keyIndex]
+            Assert-True -Condition ($id -match '^[0-9A-F]{32}$') `
+                -Message "$Name has invalid table schema ID '$id'"
+            if ($keyIndex -gt 0) {
+                Assert-True -Condition (
+                    [StringComparer]::Ordinal.Compare($keyIds[$keyIndex - 1], $id) -lt 0
+                ) -Message "$Name table key is not sorted"
+            }
+            $keyIds += $id
+        }
+        [UInt64]$declaredRows = [UInt64]::Parse($parts[$parts.Count - 1])
+        $tableKey = $keyIds -join ":"
+        if ($null -ne $priorTableKey) {
+            Assert-True -Condition ([StringComparer]::Ordinal.Compare($priorTableKey, $tableKey) -lt 0) `
+                -Message "$Name tables are not in canonical key order"
+        }
+        $priorTableKey = $tableKey
+        $lineIndex++
+
+        $priorSpawn = $null
+        for ([UInt64]$expectedRow = 0; $expectedRow -lt $declaredRows; $expectedRow++) {
+            Assert-True -Condition ($lineIndex -lt $lines.Count - 1) `
+                -Message "$Name table row list is truncated"
+            $rowParts = @($lines[$lineIndex].Split([char]32))
+            Assert-True -Condition ($rowParts.Count -eq 4 -and $rowParts[0] -eq "ROW") `
+                -Message "$Name has invalid row record '$($lines[$lineIndex])'"
+            Assert-Equal -Name "$Name row index" `
+                -Actual ([UInt64]::Parse($rowParts[1])) -Expected $expectedRow
+            [UInt64]$spawnOrdinal = [UInt64]::Parse($rowParts[2])
+            if ($null -ne $priorSpawn) {
+                Assert-True -Condition ($spawnOrdinal -gt $priorSpawn) `
+                    -Message "$Name row spawn ordinals are not committed-order increasing"
+            }
+            $priorSpawn = $spawnOrdinal
+            [UInt64]$declaredColumns = [UInt64]::Parse($rowParts[3])
+            Assert-Equal -Name "$Name row column count" -Actual $declaredColumns -Expected $keyCount
+            $lineIndex++
+
+            for ([UInt64]$columnIndex = 0; $columnIndex -lt $declaredColumns; $columnIndex++) {
+                Assert-True -Condition ($lineIndex -lt $lines.Count - 1) `
+                    -Message "$Name row column list is truncated"
+                $column = [regex]::Match(
+                    $lines[$lineIndex],
+                    '^COLUMN ([0-9A-F]{32}) ([0-9]+) (-|[0-9A-F]+)$'
+                )
+                Assert-True -Condition $column.Success `
+                    -Message "$Name has invalid column record '$($lines[$lineIndex])'"
+                Assert-Equal -Name "$Name column schema order" `
+                    -Actual $column.Groups[1].Value -Expected $keyIds[[int]$columnIndex]
+                [UInt64]$length = [UInt64]::Parse($column.Groups[2].Value)
+                Assert-CanonicalPayload -Length $length `
+                    -Payload $column.Groups[3].Value `
+                    -Context "$Name column $($column.Groups[1].Value)"
+                if ($length -eq 0) {
+                    $zeroLengthPayloadCount++
+                }
+                $columnCount++
+                $lineIndex++
+            }
+            $rowCount++
+        }
+        $tableCount++
+    }
+
+    Assert-Equal -Name "$Name complete observation consumption" `
+        -Actual $lineIndex -Expected ($lines.Count - 1)
+    Write-Host "PASS: canonical ARCHEOBS2 $Name"
+    return [PSCustomObject]@{
+        Resources = $resourceCount
+        InitializedResources = $initializedResourceCount
+        UninitializedResources = $uninitializedResourceCount
+        Tables = $tableCount
+        Rows = $rowCount
+        Columns = $columnCount
+        ZeroLengthPayloads = $zeroLengthPayloadCount
+    }
+}
+
+function ConvertTo-WslPath {
+    param([string] $Path)
+    $resolved = (Resolve-Path -LiteralPath $Path).Path
+    Assert-True -Condition ($resolved -match '^([A-Za-z]):\\(.*)$') `
+        -Message "cannot translate path to WSL: $resolved"
+    return "/mnt/$($matches[1].ToLowerInvariant())/$($matches[2].Replace('\', '/'))"
+}
+
+function Invoke-LinuxArtifact {
     param(
         [Parameter(Mandatory = $true)]
         [string] $Name,
 
         [Parameter(Mandatory = $true)]
-        [byte[]] $Bytes,
-
-        [Parameter(Mandatory = $true)]
-        [ref] $Offset
-    )
-
-    Assert-Equal -Name "$Name query term count" -Actual (Read-U32 -Bytes $Bytes -Offset $Offset) -Expected 2
-    Assert-Equal -Name "$Name query term 0 access" -Actual (Read-U32 -Bytes $Bytes -Offset $Offset) -Expected 2
-    Assert-Equal -Name "$Name query term 0 component id" -Actual (Read-U64 -Bytes $Bytes -Offset $Offset) -Expected (ConvertFrom-HexUInt64 "002202c6aeb4f27b")
-    Assert-StringEqual -Name "$Name query term 0 component name" -Actual (Read-MetadataString -Bytes $Bytes -Offset $Offset) -Expected "Demo.Position"
-    Assert-Equal -Name "$Name query term 1 access" -Actual (Read-U32 -Bytes $Bytes -Offset $Offset) -Expected 1
-    Assert-Equal -Name "$Name query term 1 component id" -Actual (Read-U64 -Bytes $Bytes -Offset $Offset) -Expected (ConvertFrom-HexUInt64 "2cf8a68bcb7f913b")
-    Assert-StringEqual -Name "$Name query term 1 component name" -Actual (Read-MetadataString -Bytes $Bytes -Offset $Offset) -Expected "Demo.Velocity"
-}
-
-function Test-EcsMetadataPayload {
-    param(
-        [Parameter(Mandatory = $true)]
         [string] $Path
     )
-
-    Test-Elf64TrailingPayload -Path $Path -ExpectedTrailingPayloadLength 717
-
-    Write-Host "==> ECS metadata payload check"
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $Path))
-    $metadataStart = $bytes.Length - 717
-    $offset = $metadataStart
-
-    $magic = [System.Text.Encoding]::ASCII.GetString($bytes, $offset, 8)
-    $offset += 8
-    Assert-StringEqual -Name "ECS metadata magic" -Actual $magic -Expected "ARCHEECS"
-    Assert-Equal -Name "ECS metadata version" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
-    Assert-Equal -Name "ECS metadata section count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 6
-
-    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 0 -ExpectedKind 1 -ExpectedOffset 112 -ExpectedByteLength 138 -ExpectedRecordCount 2
-    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 1 -ExpectedKind 2 -ExpectedOffset 250 -ExpectedByteLength 53 -ExpectedRecordCount 1
-    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 2 -ExpectedKind 3 -ExpectedOffset 303 -ExpectedByteLength 134 -ExpectedRecordCount 1
-    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 3 -ExpectedKind 4 -ExpectedOffset 437 -ExpectedByteLength 90 -ExpectedRecordCount 1
-    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 4 -ExpectedKind 5 -ExpectedOffset 527 -ExpectedByteLength 50 -ExpectedRecordCount 1
-    Assert-EcsSection -Bytes $bytes -MetadataStart $metadataStart -Index 5 -ExpectedKind 6 -ExpectedOffset 577 -ExpectedByteLength 140 -ExpectedRecordCount 3
-
-    $offset = $metadataStart + 112
-    Assert-Equal -Name "ECS Position id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "002202c6aeb4f27b")
-    Assert-StringEqual -Name "ECS Position name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Position"
-    Assert-Equal -Name "ECS Position size" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 8
-    Assert-Equal -Name "ECS Position align" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
-    Assert-Equal -Name "ECS Position field count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
-    Assert-StringEqual -Name "ECS Position field 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "x"
-    Assert-StringEqual -Name "ECS Position field 0 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
-    Assert-Equal -Name "ECS Position field 0 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 0
-    Assert-StringEqual -Name "ECS Position field 1 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "y"
-    Assert-StringEqual -Name "ECS Position field 1 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
-    Assert-Equal -Name "ECS Position field 1 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
-
-    Assert-Equal -Name "ECS Velocity id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "2cf8a68bcb7f913b")
-    Assert-StringEqual -Name "ECS Velocity name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Velocity"
-    Assert-Equal -Name "ECS Velocity size" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 8
-    Assert-Equal -Name "ECS Velocity align" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
-    Assert-Equal -Name "ECS Velocity field count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
-    Assert-StringEqual -Name "ECS Velocity field 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "x"
-    Assert-StringEqual -Name "ECS Velocity field 0 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
-    Assert-Equal -Name "ECS Velocity field 0 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 0
-    Assert-StringEqual -Name "ECS Velocity field 1 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "y"
-    Assert-StringEqual -Name "ECS Velocity field 1 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
-    Assert-Equal -Name "ECS Velocity field 1 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
-    Assert-Equal -Name "ECS component section end" -Actual $offset -Expected ($metadataStart + 250)
-
-    Assert-Equal -Name "ECS Time id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "7924ce11db524521")
-    Assert-StringEqual -Name "ECS Time name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Time"
-    Assert-Equal -Name "ECS Time size" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
-    Assert-Equal -Name "ECS Time align" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 4
-    Assert-Equal -Name "ECS Time field count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
-    Assert-StringEqual -Name "ECS Time field 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "delta"
-    Assert-StringEqual -Name "ECS Time field 0 type" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "f32"
-    Assert-Equal -Name "ECS Time field 0 offset" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 0
-    Assert-Equal -Name "ECS resource section end" -Actual $offset -Expected ($metadataStart + 303)
-
-    Assert-Equal -Name "ECS Move id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "723b6b52df270ed5")
-    Assert-StringEqual -Name "ECS Move name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Move"
-    Assert-Equal -Name "ECS Move param count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
-    Assert-StringEqual -Name "ECS Move param 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "time"
-    Assert-Equal -Name "ECS Move param 0 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
-    Assert-Equal -Name "ECS Move param 0 resource id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "7924ce11db524521")
-    Assert-StringEqual -Name "ECS Move param 0 resource name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Time"
-    Assert-StringEqual -Name "ECS Move param 1 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "movers"
-    Assert-Equal -Name "ECS Move param 1 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
-    Assert-EcsQueryTerms -Name "ECS Move param 1" -Bytes $bytes -Offset ([ref]$offset)
-    Assert-Equal -Name "ECS system section end" -Actual $offset -Expected ($metadataStart + 437)
-
-    Assert-Equal -Name "ECS movers query id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "f4004232b85cef9f")
-    Assert-StringEqual -Name "ECS movers query name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Move.movers"
-    Assert-EcsQueryTerms -Name "ECS movers" -Bytes $bytes -Offset ([ref]$offset)
-    Assert-Equal -Name "ECS query section end" -Actual $offset -Expected ($metadataStart + 527)
-
-    Assert-Equal -Name "ECS Main schedule id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "ed3d905325519b05")
-    Assert-StringEqual -Name "ECS Main schedule name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Main"
-    Assert-Equal -Name "ECS Main schedule item count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
-    Assert-Equal -Name "ECS Main schedule item 0 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
-    Assert-Equal -Name "ECS Main schedule item 0 system id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "723b6b52df270ed5")
-    Assert-StringEqual -Name "ECS Main schedule item 0 system name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Move"
-    Assert-Equal -Name "ECS schedule section end" -Actual $offset -Expected ($metadataStart + 577)
-
-    Assert-Equal -Name "ECS startup op 0 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 1
-    Assert-Equal -Name "ECS startup op 0 resource id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "7924ce11db524521")
-    Assert-StringEqual -Name "ECS startup op 0 resource name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Time"
-    Assert-BytesEqual -Name "ECS startup op 0 payload" -Actual (Read-MetadataBytes -Bytes $bytes -Offset ([ref]$offset)) -Expected ([byte[]]@(0x00, 0x00, 0x80, 0x3f))
-
-    Assert-Equal -Name "ECS startup op 1 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
-    Assert-Equal -Name "ECS startup op 1 component count" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 2
-    Assert-Equal -Name "ECS startup op 1 component 0 id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "002202c6aeb4f27b")
-    Assert-StringEqual -Name "ECS startup op 1 component 0 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Position"
-    Assert-BytesEqual -Name "ECS startup op 1 component 0 payload" -Actual (Read-MetadataBytes -Bytes $bytes -Offset ([ref]$offset)) -Expected ([byte[]]@(0x00, 0x00, 0x80, 0x3f, 0x00, 0x00, 0x00, 0x40))
-    Assert-Equal -Name "ECS startup op 1 component 1 id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "2cf8a68bcb7f913b")
-    Assert-StringEqual -Name "ECS startup op 1 component 1 name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Velocity"
-    Assert-BytesEqual -Name "ECS startup op 1 component 1 payload" -Actual (Read-MetadataBytes -Bytes $bytes -Offset ([ref]$offset)) -Expected ([byte[]]@(0x00, 0x00, 0x40, 0x40, 0x00, 0x00, 0x80, 0x40))
-
-    Assert-Equal -Name "ECS startup op 2 kind" -Actual (Read-U32 -Bytes $bytes -Offset ([ref]$offset)) -Expected 3
-    Assert-Equal -Name "ECS startup op 2 schedule id" -Actual (Read-U64 -Bytes $bytes -Offset ([ref]$offset)) -Expected (ConvertFrom-HexUInt64 "ed3d905325519b05")
-    Assert-StringEqual -Name "ECS startup op 2 schedule name" -Actual (Read-MetadataString -Bytes $bytes -Offset ([ref]$offset)) -Expected "Demo.Main"
-    Assert-Equal -Name "ECS metadata end offset" -Actual $offset -Expected $bytes.Length
-
-    Write-Host "PASS: ECS metadata payload check"
-}
-
-function Test-CorruptEcsMetadataMagic {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_metadata"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $bytes[$metadataStart] = 0x58
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsComponentDescriptorRecord {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_component_descriptor"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $descriptorSizeOffset = $metadataStart + 137
-    Assert-Equal -Name "ECS Position descriptor size before corruption" -Actual $bytes[$descriptorSizeOffset] -Expected 0x08
-    $bytes[$descriptorSizeOffset] = 0x0c
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsResourceDescriptorRecord {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_resource_descriptor"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $fieldOffsetOffset = $metadataStart + 299
-    Assert-Equal -Name "ECS Time.delta field offset before corruption" -Actual $bytes[$fieldOffsetOffset] -Expected 0x00
-    $bytes[$fieldOffsetOffset] = 0x04
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsSystemDescriptorRecord {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_system_descriptor"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $paramCountOffset = $metadataStart + 324
-    Assert-Equal -Name "ECS Demo.Move param count before corruption" -Actual $bytes[$paramCountOffset] -Expected 0x02
-    $bytes[$paramCountOffset] = 0x03
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsQueryDescriptorRecord {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_query_descriptor"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $termCountOffset = $metadataStart + 465
-    Assert-Equal -Name "ECS Demo.Move.movers term count before corruption" -Actual $bytes[$termCountOffset] -Expected 0x02
-    $bytes[$termCountOffset] = 0x03
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsScheduleDescriptorRecord {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_schedule_descriptor"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $scheduleItemKindOffset = $metadataStart + 552
-    Assert-Equal -Name "ECS Demo.Main schedule item kind before corruption" -Actual $bytes[$scheduleItemKindOffset] -Expected 0x01
-    $bytes[$scheduleItemKindOffset] = 0x09
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsPositionDescriptorName {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_position_descriptor_name"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $nameByteOffset = $metadataStart + 124
-    Assert-Equal -Name "ECS Demo.Position first name byte before corruption" -Actual $bytes[$nameByteOffset] -Expected 0x44
-    $bytes[$nameByteOffset] = 0x58
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsMoversQueryDescriptorNameLength {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_movers_query_descriptor_name_len"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $nameLenOffset = $metadataStart + 445
-    Assert-Equal -Name "ECS Demo.Move.movers name length before corruption" -Actual $bytes[$nameLenOffset] -Expected 0x10
-    $bytes[$nameLenOffset] = 0x11
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsMainScheduleDescriptorName {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_main_schedule_descriptor_name"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $nameByteOffset = $metadataStart + 539
-    Assert-Equal -Name "ECS Demo.Main first name byte before corruption" -Actual $bytes[$nameByteOffset] -Expected 0x44
-    $bytes[$nameByteOffset] = 0x58
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsStartupResourceId {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_startup_resource_id"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $resourceIdOffset = $metadataStart + 581
-    Assert-Equal -Name "ECS startup resource id first byte before corruption" -Actual $bytes[$resourceIdOffset] -Expected 0x21
-    $bytes[$resourceIdOffset] = 0x22
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsStartupSpawnComponentCount {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_startup_spawn_count"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $componentCountOffset = $metadataStart + 614
-    Assert-Equal -Name "ECS startup spawn component count before corruption" -Actual $bytes[$componentCountOffset] -Expected 0x02
-    $bytes[$componentCountOffset] = 0x03
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsStartupOperationKind {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_startup_operation_kind"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $operationKindOffset = $metadataStart + 577
-    Assert-Equal -Name "ECS startup op 0 kind before corruption" -Actual $bytes[$operationKindOffset] -Expected 0x01
-    $bytes[$operationKindOffset] = 0x09
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsStartupSpawnOperationKind {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_startup_spawn_operation_kind"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $operationKindOffset = $metadataStart + 610
-    Assert-Equal -Name "ECS startup op 1 kind before corruption" -Actual $bytes[$operationKindOffset] -Expected 0x02
-    $bytes[$operationKindOffset] = 0x09
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsStartupRunOperationKind {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_startup_run_operation_kind"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $operationKindOffset = $metadataStart + 692
-    Assert-Equal -Name "ECS startup op 2 kind before corruption" -Actual $bytes[$operationKindOffset] -Expected 0x03
-    $bytes[$operationKindOffset] = 0x09
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsResourcePayload {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_resource_payload"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $payloadHighByteOffset = $metadataStart + 609
-    Assert-Equal -Name "ECS resource payload high byte before corruption" -Actual $bytes[$payloadHighByteOffset] -Expected 0x3f
-    $bytes[$payloadHighByteOffset] = 0x40
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsSpawnPayload {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_spawn_payload"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $payloadHighByteOffset = $metadataStart + 691
-    Assert-Equal -Name "ECS spawn payload high byte before corruption" -Actual $bytes[$payloadHighByteOffset] -Expected 0x40
-    $bytes[$payloadHighByteOffset] = 0x41
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-CorruptEcsRunSchedule {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $corruptPath = Join-Path (Split-Path -Parent $Path) "move_system_bad_run_schedule"
-    Copy-Item -LiteralPath $Path -Destination $corruptPath -Force
-
-    $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $corruptPath))
-    $metadataStart = $bytes.Length - 717
-    $scheduleIdOffset = $metadataStart + 696
-    Assert-Equal -Name "ECS startup run schedule id first byte before corruption" -Actual $bytes[$scheduleIdOffset] -Expected 0x05
-    $bytes[$scheduleIdOffset] = 0x06
-    [System.IO.File]::WriteAllBytes((Resolve-Path -LiteralPath $corruptPath), $bytes)
-
-    Test-LinuxExitCode -Path $corruptPath -ExpectedExitCode 1
-}
-
-function Test-Elf64Executable {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path,
-
-        [Parameter(Mandatory = $true)]
-        [UInt64] $ExpectedExitCode
-    )
-
-    $expectedText = New-ImmediateRuntimeText -ExpectedExitCode $ExpectedExitCode
-
-    Test-Elf64Payload -Path $Path -ExpectedText $expectedText
-}
-
-function ConvertTo-WslPath {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $resolved = (Resolve-Path -LiteralPath $Path).Path
-
-    if ($resolved -notmatch '^([A-Za-z]):\\(.*)$') {
-        Write-Error "Cannot convert non-drive path to WSL path: $resolved"
-        exit 1
-    }
-
-    $drive = $matches[1].ToLowerInvariant()
-    $rest = $matches[2] -replace '\\', '/'
-    return "/mnt/$drive/$rest"
-}
-
-function Test-LinuxExitCode {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path,
-
-        [Parameter(Mandatory = $true)]
-        [UInt64] $ExpectedExitCode
-    )
-
-    Write-Host "==> Linux execution check"
 
     if ($SkipGeneratedLinuxExecution) {
-        Write-Host "SKIP: generated Linux execution for $Path (-SkipGeneratedLinuxExecution)"
+        Write-Host "SKIP: $Name generated Linux execution was explicitly disabled"
+        return $null
+    }
+    if ($isLinuxPlatform) {
+        return Invoke-CapturedProcess -Name $Name `
+            -Executable (Resolve-Path -LiteralPath $Path).Path
+    }
+    if ($isWindowsPlatform) {
+        Assert-True -Condition ($null -ne (Get-Command wsl.exe -ErrorAction SilentlyContinue)) `
+            -Message "WSL is required unless -SkipGeneratedLinuxExecution is supplied"
+        return Invoke-CapturedProcess -Name $Name -Executable "wsl.exe" `
+            -Arguments @((ConvertTo-WslPath $Path))
+    }
+    throw "generated Linux execution requires Linux or WSL; use -SkipGeneratedLinuxExecution"
+}
+
+function Test-RepeatedArtifactExecution {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Name,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Path,
+
+        [Parameter(Mandatory = $true)]
+        [int] $ExpectedStatus,
+
+        [Parameter(Mandatory = $false)]
+        [switch] $ExpectTrap
+    )
+
+    $first = Invoke-LinuxArtifact -Name "$Name execution 1" -Path $Path
+    if ($null -eq $first) {
+        return $null
+    }
+    Assert-ProcessStatus -Result $first -Expected $ExpectedStatus
+    $summary = Test-ArcheObs2 -Text $first.Stdout -Name $Name
+    if (!$ExpectTrap) {
+        Assert-Equal -Name "$Name stderr" -Actual $first.Stderr -Expected ""
+    }
+
+    for ($attempt = 2; $attempt -le 3; $attempt++) {
+        $next = Invoke-LinuxArtifact -Name "$Name execution $attempt" -Path $Path
+        Assert-ProcessStatus -Result $next -Expected $ExpectedStatus
+        Assert-Equal -Name "$Name ASLR stdout $attempt" -Actual $next.Stdout -Expected $first.Stdout
+        Assert-Equal -Name "$Name ASLR stderr $attempt" -Actual $next.Stderr -Expected $first.Stderr
+    }
+    Write-Host "PASS: $Name is byte-stable across repeated ASLR executions"
+    return [PSCustomObject]@{ Result = $first; Summary = $summary }
+}
+
+function Assert-NoCompleteObservation {
+    param([string] $Name, [string] $Stdout)
+    $normalized = Normalize-LineEndings $Stdout
+    Assert-True -Condition ($normalized -notmatch '(?m)^ARCHEOBS2$') `
+        -Message "$Name emitted an observation header before metadata rejection"
+    Assert-True -Condition ($normalized -notmatch '(?m)^END$') `
+        -Message "$Name emitted an END record before metadata rejection"
+}
+
+function Ensure-ExecutableCopy {
+    param([string] $Path)
+    if ($isLinuxPlatform) {
+        $chmod = Invoke-CapturedProcess -Name "mark corrupt fixture executable" `
+            -Executable "chmod" -Arguments @("u+x", $Path)
+        Assert-ProcessStatus -Result $chmod -Expected 0
+    }
+}
+
+function Test-MetadataRejections {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Artifact,
+
+        [Parameter(Mandatory = $true)]
+        $Layout,
+
+        [Parameter(Mandatory = $true)]
+        $Package
+    )
+
+    if ($SkipGeneratedLinuxExecution) {
+        Write-Host "SKIP: metadata rejection execution was explicitly disabled"
         return
     }
 
-    if ($isWindowsPlatform) {
-        if (!(Get-Command wsl -ErrorAction SilentlyContinue)) {
-            Write-Error "wsl.exe is required to run the generated Linux ELF; use -SkipGeneratedLinuxExecution to skip explicitly"
-            exit 1
-        }
+    $cases = @()
 
-        $wslPath = ConvertTo-WslPath -Path $Path
-        & wsl $wslPath
-    } elseif ($isLinuxPlatform) {
-        $resolvedPath = (Resolve-Path -LiteralPath $Path).Path
-        & $resolvedPath
-    } else {
-        Write-Error "Generated Linux ELF execution is supported only on Windows through WSL or directly on Linux; use -SkipGeneratedLinuxExecution to skip explicitly"
-        exit 1
+    $v1Path = Join-Path $proofRoot "m26-v1"
+    [byte[]]$v1Bytes = [System.IO.File]::ReadAllBytes($Layout.Path)
+    Write-U32 -Bytes $v1Bytes -Offset ($Package.Base + 8) -Value 1
+    [System.IO.File]::WriteAllBytes($v1Path, $v1Bytes)
+    Ensure-ExecutableCopy $v1Path
+    $cases += [PSCustomObject]@{
+        Name = "ARCHEECS version 1"
+        Path = $v1Path
+        Diagnostic = "arche: unsupported ARCHEECS version 1; rebuild with archec0"
     }
 
-    $actualExitCode = $LASTEXITCODE
+    $componentPath = Join-Path $proofRoot "m26-archecmp"
+    [byte[]]$componentBytes = [System.IO.File]::ReadAllBytes($Layout.Path)
+    [Text.Encoding]::ASCII.GetBytes("ARCHECMP").CopyTo($componentBytes, [int]$Package.Base)
+    [System.IO.File]::WriteAllBytes($componentPath, $componentBytes)
+    Ensure-ExecutableCopy $componentPath
+    $cases += [PSCustomObject]@{
+        Name = "ARCHECMP artifact"
+        Path = $componentPath
+        Diagnostic = "arche: unsupported ARCHECMP artifact; rebuild with archec0"
+    }
 
-    Assert-Equal -Name "Linux executable exit code" -Actual $actualExitCode -Expected $ExpectedExitCode
-    Write-Host "PASS: Linux execution check"
+    $directoryPath = Join-Path $proofRoot "m26-bad-directory"
+    [byte[]]$directoryBytes = [System.IO.File]::ReadAllBytes($Layout.Path)
+    Write-U64 -Bytes $directoryBytes `
+        -Offset ($Package.Base + $Package.DirectoryOffset + 8) -Value 1
+    [System.IO.File]::WriteAllBytes($directoryPath, $directoryBytes)
+    Ensure-ExecutableCopy $directoryPath
+    $cases += [PSCustomObject]@{
+        Name = "ARCHEECS nonzero directory flags"
+        Path = $directoryPath
+        Diagnostic = $null
+    }
+
+    $functionSection = @($Package.Sections | Where-Object { $_.Kind -eq 13 })[0]
+    Assert-True -Condition ($functionSection.RecordCount -gt 0) `
+        -Message "fixture has no function link to corrupt"
+    $functionPath = Join-Path $proofRoot "m26-bad-function-link"
+    [byte[]]$functionBytes = [System.IO.File]::ReadAllBytes($Layout.Path)
+    Write-U64 -Bytes $functionBytes `
+        -Offset ($Package.Base + $functionSection.Offset + 56) `
+        -Value ([UInt64]::MaxValue)
+    [System.IO.File]::WriteAllBytes($functionPath, $functionBytes)
+    Ensure-ExecutableCopy $functionPath
+    $cases += [PSCustomObject]@{
+        Name = "ARCHEECS invalid function offset"
+        Path = $functionPath
+        Diagnostic = $null
+    }
+
+    foreach ($case in $cases) {
+        $result = Invoke-LinuxArtifact -Name $case.Name -Path $case.Path
+        Assert-ProcessStatus -Result $result -Expected 1
+        Assert-NoCompleteObservation -Name $case.Name -Stdout $result.Stdout
+        if ($null -ne $case.Diagnostic) {
+            $diagnostic = Normalize-LineEndings $result.Stderr
+            Assert-Equal -Name "$($case.Name) rebuild diagnostic" -Actual $diagnostic `
+                -Expected "$($case.Diagnostic)`n"
+        }
+    }
+    Write-Host "PASS: malformed v2 links, ARCHEECS v1, and ARCHECMP fail before world mutation without END"
+}
+
+function Test-NoSiblingTemporaries {
+    param([string] $Directory)
+    $temporaries = @(Get-ChildItem -LiteralPath $Directory -Force -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name.Contains(".archec0-tmp-") })
+    Assert-Equal -Name "sibling temporary cleanup" -Actual $temporaries.Count -Expected 0
+}
+
+function Test-PublicationContracts {
+    param([string] $Compiler)
+
+    $publicationRoot = Join-Path $proofRoot "publication"
+    [System.IO.Directory]::CreateDirectory($publicationRoot) | Out-Null
+    $source = Join-Path $publicationRoot "source.arc"
+    [System.IO.File]::Copy((Join-Path $repoRoot "examples/exit42.arc"), $source, $true)
+    [byte[]]$original = [System.IO.File]::ReadAllBytes($source)
+
+    $alias = Invoke-Compiler -Compiler $Compiler -Name "reject exact source/output alias" `
+        -Arguments @($source, "-o", $source)
+    Assert-ProcessStatus -Result $alias -Expected 2
+    Assert-Equal -Name "source alias diagnostic" `
+        -Actual (Normalize-LineEndings $alias.Stderr) `
+        -Expected "archec0: refusing to overwrite input source with output $source`n"
+    Assert-Equal -Name "source/output alias preserves source" `
+        -Actual ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($source))) `
+        -Expected ([Convert]::ToBase64String($original))
+
+    $hardLink = Join-Path $publicationRoot "source-hard-link.arc"
+    New-Item -ItemType HardLink -Path $hardLink -Target $source | Out-Null
+    $hardAlias = Invoke-Compiler -Compiler $Compiler -Name "reject hard-link source alias" `
+        -Arguments @($source, "-o", $hardLink)
+    Assert-ProcessStatus -Result $hardAlias -Expected 2
+    Assert-Equal -Name "hard-link source alias diagnostic" `
+        -Actual (Normalize-LineEndings $hardAlias.Stderr) `
+        -Expected "archec0: refusing to overwrite input source with output $hardLink`n"
+    Remove-Item -LiteralPath $hardLink -Force
+
+    if ($isLinuxPlatform) {
+        $symbolicLink = Join-Path $publicationRoot "source-symbolic-link.arc"
+        New-Item -ItemType SymbolicLink -Path $symbolicLink -Target $source | Out-Null
+        $symbolicAlias = Invoke-Compiler -Compiler $Compiler `
+            -Name "reject symbolic-link source alias" `
+            -Arguments @($source, "-o", $symbolicLink)
+        Assert-ProcessStatus -Result $symbolicAlias -Expected 2
+        Assert-Equal -Name "symbolic-link source alias diagnostic" `
+            -Actual (Normalize-LineEndings $symbolicAlias.Stderr) `
+            -Expected "archec0: refusing to overwrite input source with output $symbolicLink`n"
+        Remove-Item -LiteralPath $symbolicLink -Force
+    }
+    else {
+        Write-Host "SKIP: black-box symbolic-link alias creation is Unix-only; Rust unit coverage remains required"
+    }
+
+    $replace = Join-Path $publicationRoot "replace"
+    [System.IO.File]::WriteAllText($replace, "old artifact", $utf8NoBom)
+    $replaceResult = Invoke-Compiler -Compiler $Compiler -Name "atomic replacement publication" `
+        -Arguments @($source, "-o", $replace)
+    Assert-ProcessStatus -Result $replaceResult -Expected 0
+    [byte[]]$replaceBytes = [System.IO.File]::ReadAllBytes($replace)
+    Assert-Equal -Name "atomic replacement ELF prefix" -Actual $replaceBytes[0] -Expected 0x7f
+
+    $blocked = Join-Path $publicationRoot "existing-directory"
+    [System.IO.Directory]::CreateDirectory($blocked) | Out-Null
+    $sentinel = Join-Path $blocked "sentinel"
+    [System.IO.File]::WriteAllText($sentinel, "preserved", $utf8NoBom)
+    $blockedResult = Invoke-Compiler -Compiler $Compiler `
+        -Name "publication failure preserves directory target" `
+        -Arguments @($source, "-o", $blocked)
+    Assert-ProcessStatus -Result $blockedResult -Expected 1
+    Assert-Equal -Name "publication failure sentinel" `
+        -Actual ([System.IO.File]::ReadAllText($sentinel)) -Expected "preserved"
+    Test-NoSiblingTemporaries $publicationRoot
+
+    if ($isLinuxPlatform) {
+        $mode = Invoke-CapturedProcess -Name "published executable permission" `
+            -Executable "stat" -Arguments @("-c", "%a", $replace)
+        Assert-ProcessStatus -Result $mode -Expected 0
+        $modeText = $mode.Stdout.Trim()
+        Assert-True -Condition ($modeText -match '^[1357][0-7][0-7]$') `
+            -Message "published output lacks the owner execute bit"
+    }
+    else {
+        Write-Host "SKIP: Unix executable-mode black-box check on Windows host"
+    }
+    Write-Host "PASS: alias, atomic replacement, permission, and cleanup contracts"
+}
+
+function Test-CliModes {
+    param([string] $Compiler)
+
+    $help = Invoke-Compiler -Compiler $Compiler -Name "CLI help" -Arguments @("--help")
+    Assert-ProcessStatus $help 0
+    Assert-Contains -Name "CLI help bare/check alias" -Actual $help.Stdout `
+        -Expected "Source-only invocation is equivalent to --check."
+    $version = Invoke-Compiler -Compiler $Compiler -Name "CLI version" -Arguments @("--version")
+    Assert-ProcessStatus $version 0
+    Assert-Contains -Name "CLI version" -Actual $version.Stdout -Expected "archec0 "
+    $noInput = Invoke-Compiler $Compiler "CLI no input" @()
+    Assert-ProcessStatus $noInput 2
+    Assert-Equal -Name "CLI no-input diagnostic" `
+        -Actual (Normalize-LineEndings $noInput.Stderr) `
+        -Expected "archec0: no input provided`nrun ``archec0 --help`` for usage`n"
+    $unsupported = Invoke-Compiler $Compiler "CLI unsupported arguments" `
+        @("one", "two", "three", "four")
+    Assert-ProcessStatus $unsupported 2
+    Assert-Equal -Name "CLI unsupported-arguments diagnostic" `
+        -Actual (Normalize-LineEndings $unsupported.Stderr) `
+        -Expected "archec0: command not implemented yet`nrun ``archec0 --help`` for usage`n"
+    $missingSource = Invoke-Compiler $Compiler "CLI missing source" `
+        @("does-not-exist.arc", "--check")
+    Assert-ProcessStatus $missingSource 2
+    Assert-Equal -Name "CLI missing-source diagnostic" `
+        -Actual (Normalize-LineEndings $missingSource.Stderr) `
+        -Expected "archec0: source file not found: does-not-exist.arc`n"
+
+    $exit42 = Join-Path $repoRoot "examples/exit42.arc"
+    $bare = Invoke-Compiler $Compiler "bare executable check" @($exit42)
+    $explicit = Invoke-Compiler $Compiler "explicit executable check" @($exit42, "--check")
+    Assert-ProcessStatus $bare 0
+    Assert-ProcessStatus $explicit 0
+    $expectedCheck = "archec0: check passed $exit42`n"
+    Assert-Equal -Name "bare check result" `
+        -Actual (Normalize-LineEndings $bare.Stdout) -Expected $expectedCheck
+    Assert-Equal -Name "explicit check result" `
+        -Actual (Normalize-LineEndings $explicit.Stdout) -Expected $expectedCheck
+    Assert-Equal -Name "bare check stderr" -Actual $bare.Stderr -Expected ""
+    Assert-Equal -Name "explicit check stderr" -Actual $explicit.Stderr -Expected ""
+
+    $declarations = Join-Path $proofRoot "declaration-only.arc"
+    Write-Utf8File $declarations @"
+world DeclarationOnly
+component Marker {}
+tag Visible
+resource Config { enabled: bool }
+"@
+    Assert-ProcessStatus (Invoke-Compiler $Compiler "syntax-only AST mode" @($declarations, "--emit-ast")) 0
+    Assert-ProcessStatus (Invoke-Compiler $Compiler "syntax-only token mode" @($declarations, "--emit-tokens")) 0
+    Assert-ProcessStatus (Invoke-Compiler $Compiler "declaration-only inspection" @($declarations, "--inspect-components")) 0
+    $expectedMissingStartup = "${declarations}:4:34: error[CHECK001]: executable program requires a ``startup`` block`n"
+    $bareMissingStartup = Invoke-Compiler $Compiler "bare mode requires startup" @($declarations)
+    $checkMissingStartup = Invoke-Compiler $Compiler "check mode requires startup" `
+        @($declarations, "--check")
+    $coreMissingStartup = Invoke-Compiler $Compiler "Core mode requires startup" `
+        @($declarations, "--emit-core")
+    $machineMissingStartup = Invoke-Compiler $Compiler "Machine mode requires startup" `
+        @($declarations, "--emit-machine")
+    foreach ($result in @(
+        $bareMissingStartup,
+        $checkMissingStartup,
+        $coreMissingStartup,
+        $machineMissingStartup
+    )) {
+        Assert-ProcessStatus $result 1
+        Assert-Equal -Name "$($result.Name) diagnostic" `
+            -Actual (Normalize-LineEndings $result.Stderr) `
+            -Expected $expectedMissingStartup
+    }
+    $missingOutput = Join-Path $proofRoot "declaration-only-output"
+    $outputMissingStartup = Invoke-Compiler $Compiler "output mode requires startup" `
+        @($declarations, "-o", $missingOutput)
+    Assert-ProcessStatus $outputMissingStartup 1
+    Assert-Equal -Name "output mode missing-startup diagnostic" `
+        -Actual (Normalize-LineEndings $outputMissingStartup.Stderr) `
+        -Expected $expectedMissingStartup
+    Assert-True -Condition (!(Test-Path -LiteralPath $missingOutput)) `
+        -Message "failed executable check published an output"
+
+    $duplicateStartup = Join-Path $proofRoot "duplicate-startup.arc"
+    Write-Utf8File $duplicateStartup @"
+world DuplicateStartup
+startup { exit 0 }
+component Marker {}
+startup { exit 1 }
+"@
+    $duplicateAst = Invoke-Compiler $Compiler "duplicate startup syntax-only AST" `
+        @($duplicateStartup, "--emit-ast")
+    Assert-ProcessStatus $duplicateAst 0
+    Assert-Equal -Name "syntax-only AST retains both startup blocks" `
+        -Actual ([regex]::Matches($duplicateAst.Stdout, "(?m)^  startup$").Count) -Expected 2
+    Assert-ProcessStatus `
+        (Invoke-Compiler $Compiler "duplicate startup declaration inspection" `
+            @($duplicateStartup, "--inspect-components")) 0
+
+    $expectedDuplicateStartup = "${duplicateStartup}:4:1: error[CHECK001]: multiple ``startup`` blocks are not allowed`n"
+    foreach ($result in @(
+        (Invoke-Compiler $Compiler "bare mode rejects duplicate startup" @($duplicateStartup)),
+        (Invoke-Compiler $Compiler "check mode rejects duplicate startup" `
+            @($duplicateStartup, "--check")),
+        (Invoke-Compiler $Compiler "Core mode rejects duplicate startup" `
+            @($duplicateStartup, "--emit-core")),
+        (Invoke-Compiler $Compiler "Machine mode rejects duplicate startup" `
+            @($duplicateStartup, "--emit-machine"))
+    )) {
+        Assert-ProcessStatus $result 1
+        Assert-Equal -Name "$($result.Name) diagnostic" `
+            -Actual (Normalize-LineEndings $result.Stderr) `
+            -Expected $expectedDuplicateStartup
+    }
+    $duplicateOutput = Join-Path $proofRoot "duplicate-startup-output"
+    $duplicateOutputResult = Invoke-Compiler $Compiler "output mode rejects duplicate startup" `
+        @($duplicateStartup, "-o", $duplicateOutput)
+    Assert-ProcessStatus $duplicateOutputResult 1
+    Assert-Equal -Name "output mode duplicate-startup diagnostic" `
+        -Actual (Normalize-LineEndings $duplicateOutputResult.Stderr) `
+        -Expected $expectedDuplicateStartup
+    Assert-True -Condition (!(Test-Path -LiteralPath $duplicateOutput)) `
+        -Message "duplicate-startup executable check published an output"
+
+    $badSyntax = Join-Path $repoRoot "tests/e2e/bad_syntax.arc"
+    $syntaxFailure = Invoke-Compiler $Compiler "parse failure status" @($badSyntax, "--emit-ast")
+    Assert-ProcessStatus $syntaxFailure 1
+    Assert-Equal -Name "parse failure diagnostic" `
+        -Actual (Normalize-LineEndings $syntaxFailure.Stderr) `
+        -Expected "${badSyntax}:5:1: error[PARSE001]: expected expression after ``exit```n"
+
+    foreach ($fixture in @(
+        "bad_i32_arithmetic.arc",
+        "bad_unknown_schedule_run.arc",
+        "bad_unknown_resource_param.arc",
+        "bad_unknown_query_component.arc",
+        "bad_conflicting_query_access.arc"
+    )) {
+        $path = Join-Path $repoRoot "tests/e2e/$fixture"
+        $failure = Invoke-Compiler $Compiler "semantic rejection $fixture" @($path, "--check")
+        Assert-ProcessStatus $failure 1
+        Assert-Contains -Name "$fixture diagnostic path" -Actual $failure.Stderr -Expected $fixture
+        Assert-Contains -Name "$fixture diagnostic code" -Actual $failure.Stderr `
+            -Expected "error[CHECK001]"
+    }
+    Write-Host "PASS: CLI mode and status boundaries"
+}
+
+function Assert-ProofTestInventory {
+    param($TestList)
+
+    foreach ($portable in @(
+        "parser::tests::reports_an_incomplete_startup_literal_at_captured_eof",
+        "checker::tests::rejects_executable_without_startup",
+        "checker::tests::rejects_startup_without_final_exit",
+        "reference_executor_v2::tests::executes_the_primary_m26_closure_fixture_from_decoded_v2_metadata",
+        "reference_executor_v2::tests::executes_the_external_m26_trap_fixture_with_committed_state",
+        "reference_executor_v2::tests::source_exit_uses_the_low_eight_bits_without_a_trap_diagnostic",
+        "reference_executor_v2::tests::every_integer_trap_edge_preserves_prior_commits_and_skips_the_trapping_spawn",
+        "output::tests::rejects_exact_and_relative_source_aliases",
+        "output::tests::rejects_hard_link_source_alias",
+        "output::tests::producer_failure_preserves_existing_artifact_and_cleans_temporary"
+    )) {
+        Assert-Contains -Name "required Rust proof" -Actual $TestList.Stdout -Expected $portable
+    }
+    if ($isLinuxPlatform) {
+        Assert-Contains -Name "closure reference/native proof" -Actual $TestList.Stdout `
+            -Expected "aot_v2::tests::rich_m26_native_matches_direct_core_reference"
+        Assert-True -Condition ($TestList.Stdout -match '(?im)^.*arena.*native.*reference.*: test$|^.*native.*arena.*reference.*: test$') `
+            -Message "M26 red gate: no Arena direct-Core/native parity test is registered"
+        Assert-Contains -Name "trap reference/native proof" -Actual $TestList.Stdout `
+            -Expected "aot_v2::tests::trap_native_matches_exact_direct_core_observation_and_diagnostic"
+    }
+    Write-Host "PASS: M26 reference/native proof inventory"
 }
 
 Push-Location $repoRoot
 try {
     Write-Host "PowerShell host: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+    if (Test-Path -LiteralPath $proofRoot) {
+        Remove-Item -LiteralPath $proofRoot -Recurse -Force
+    }
+    [System.IO.Directory]::CreateDirectory($proofRoot) | Out-Null
 
-    Invoke-CheckedCommand `
-        -Name "archec0 discovered Rust test suite" `
+    $tests = Invoke-CapturedProcess -Name "locked debug all-target Rust tests" `
         -Executable "cargo" `
         -Arguments @("test", "--locked", "--all-targets", "--manifest-path", $manifestPath)
-
-    Invoke-CheckedCommand `
-        -Name "archec0 --help" `
+    Assert-ProcessStatus $tests 0
+    $build = Invoke-CapturedProcess -Name "locked debug compiler build" `
         -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "--help")
-
-    Invoke-CheckedCommand `
-        -Name "archec0 --version" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "--version")
-
-    Invoke-CheckedCommand `
-        -Name "archec0 examples/exit42.arc" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit42.arc")
-
-    $tokenOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/exit42.arc --emit-tokens" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit42.arc", "--emit-tokens"))
-
-    Assert-LinesEqual `
-        -Name "exit42 token stream" `
-        -Actual $tokenOutput `
-        -Expected @(
-            "Keyword(world)",
-            "Identifier(Main)",
-            "Keyword(startup)",
-            "LeftBrace",
-            "Keyword(exit)",
-            "Integer(42)",
-            "RightBrace",
-            "Eof"
-        )
-
-    $astOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/exit42.arc --emit-ast" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit42.arc", "--emit-ast"))
-
-    Assert-LinesEqual `
-        -Name "exit42 AST" `
-        -Actual $astOutput `
-        -Expected @(
-            "Program",
-            "  world Main",
-            "  startup",
-            "    exit",
-            "      integer 42"
-        )
-
-    $exit007AstOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/exit007.arc --emit-ast" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit007.arc", "--emit-ast"))
-
-    Assert-LinesEqual `
-        -Name "exit007 AST" `
-        -Actual $exit007AstOutput `
-        -Expected @(
-            "Program",
-            "  world Main",
-            "  startup",
-            "    exit",
-            "      integer 7"
-        )
-
-    $let40AstOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/let40.arc --emit-ast" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/let40.arc", "--emit-ast"))
-
-    Assert-LinesEqual `
-        -Name "let40 AST" `
-        -Actual $let40AstOutput `
-        -Expected @(
-            "Program",
-            "  world Main",
-            "  startup",
-            "    let x: i32",
-            "      integer 40",
-            "    exit",
-            "      integer 0"
-        )
-
-    $mathAstOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/math.arc --emit-ast" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/math.arc", "--emit-ast"))
-
-    Assert-LinesEqual `
-        -Name "math AST" `
-        -Actual $mathAstOutput `
-        -Expected @(
-            "Program",
-            "  world Main",
-            "  startup",
-            "    let x: i32",
-            "      binary +",
-            "        integer 40",
-            "        integer 2",
-            "    exit",
-            "      identifier x"
-        )
-
-    $sub42AstOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/sub42.arc --emit-ast" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/sub42.arc", "--emit-ast"))
-
-    Assert-LinesEqual `
-        -Name "sub42 AST" `
-        -Actual $sub42AstOutput `
-        -Expected @(
-            "Program",
-            "  world Main",
-            "  startup",
-            "    let x: i32",
-            "      binary -",
-            "        integer 50",
-            "        integer 8",
-            "    exit",
-            "      identifier x"
-        )
-
-    $mul42AstOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/mul42.arc --emit-ast" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/mul42.arc", "--emit-ast"))
-
-    Assert-LinesEqual `
-        -Name "mul42 AST" `
-        -Actual $mul42AstOutput `
-        -Expected @(
-            "Program",
-            "  world Main",
-            "  startup",
-            "    let x: i32",
-            "      binary *",
-            "        integer 6",
-            "        integer 7",
-            "    exit",
-            "      identifier x"
-        )
-
-    $positionAstOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/position.arc --emit-ast" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/position.arc", "--emit-ast"))
-
-    Assert-LinesEqual `
-        -Name "position AST" `
-        -Actual $positionAstOutput `
-        -Expected @(
-            "Program",
-            "  world Demo",
-            "  component Position",
-            "    field x: f32",
-            "    field y: f32",
-            "  startup",
-            "    exit",
-            "      integer 0"
-        )
-
-    $spawnPositionAstOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/spawn_position.arc --emit-ast" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/spawn_position.arc", "--emit-ast"))
-
-    Assert-LinesEqual `
-        -Name "spawn_position AST" `
-        -Actual $spawnPositionAstOutput `
-        -Expected @(
-            "Program",
-            "  world Demo",
-            "  component Position",
-            "    field x: f32",
-            "    field y: f32",
-            "  startup",
-            "    spawn",
-            "      component Position",
-            "        field x",
-            "          float 1.0",
-            "        field y",
-            "          float 2.0",
-            "    exit",
-            "      integer 0"
-        )
-
-    $timeDeltaAstOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/time_delta.arc --emit-ast" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/time_delta.arc", "--emit-ast"))
-
-    Assert-LinesEqual `
-        -Name "time_delta AST" `
-        -Actual $timeDeltaAstOutput `
-        -Expected @(
-            "Program",
-            "  world Demo",
-            "  resource Time",
-            "    field delta: f32",
-            "  startup",
-            "    resource Time",
-            "      field delta",
-            "        float 1.0",
-            "    exit",
-            "      integer 0"
-        )
-
-    $moveSystemAstOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/move_system.arc --emit-ast" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/move_system.arc", "--emit-ast"))
-
-    Assert-LinesEqual `
-        -Name "move_system AST" `
-        -Actual $moveSystemAstOutput `
-        -Expected @(
-            "Program",
-            "  world Demo",
-            "  component Position",
-            "    field x: f32",
-            "    field y: f32",
-            "  component Velocity",
-            "    field x: f32",
-            "    field y: f32",
-            "  resource Time",
-            "    field delta: f32",
-            "  system Move",
-            "    param time: read Time",
-            "    param movers: query",
-            "      mut Position",
-            "      read Velocity",
-            "    body",
-            "      for",
-            "        bindings",
-            "          binding pos",
-            "          binding vel",
-            "        in movers",
-            "        body",
-            "          add_assign",
-            "            target",
-            "              field x",
-            "                identifier pos",
-            "            value",
-            "              binary *",
-            "                field x",
-            "                  identifier vel",
-            "                field delta",
-            "                  identifier time",
-            "          add_assign",
-            "            target",
-            "              field y",
-            "                identifier pos",
-            "            value",
-            "              binary *",
-            "                field y",
-            "                  identifier vel",
-            "                field delta",
-            "                  identifier time",
-            "  schedule Main",
-            "    run Move",
-            "  startup",
-            "    resource Time",
-            "      field delta",
-            "        float 1.0",
-            "    spawn",
-            "      component Position",
-            "        field x",
-            "          float 1.0",
-            "        field y",
-            "          float 2.0",
-            "      component Velocity",
-            "        field x",
-            "          float 3.0",
-            "        field y",
-            "          float 4.0",
-            "    run Main",
-            "    exit",
-            "      integer 0"
-        )
-
-    $positionInspectOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/position.arc --inspect-components" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/position.arc", "--inspect-components"))
-
-    Assert-LinesEqual `
-        -Name "position component inspection" `
-        -Actual $positionInspectOutput `
-        -Expected @(
-            "component Demo.Position",
-            "  size: 8",
-            "  align: 4",
-            "  fields:",
-            "    x: f32 @ 0",
-            "    y: f32 @ 4"
-        )
-
-    Invoke-CheckedCommand `
-        -Name "archec0 examples/math.arc --check" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/math.arc", "--check")
-
-    $mathMachineOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/math.arc --emit-machine" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/math.arc", "--emit-machine"))
-
-    Assert-LinesEqual `
-        -Name "math machine" `
-        -Actual $mathMachineOutput `
-        -Expected @(
-            "function startup",
-            "  local x: i32 slot 0",
-            "  %0 = i32.const 40",
-            "  %1 = i32.const 2",
-            "  %2 = i32.add %0, %1",
-            "  store slot 0, %2",
-            "  %3 = load slot 0",
-            "  exit %3"
-        )
-
-    $mathCoreOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/math.arc --emit-core" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/math.arc", "--emit-core"))
-
-    Assert-LinesEqual `
-        -Name "math Core" `
-        -Actual $mathCoreOutput `
-        -Expected @(
-            "world Main",
-            "",
-            "function startup {",
-            "  local x: i32",
-            "  %0 = i32.const 40",
-            "  %1 = i32.const 2",
-            "  %2 = i32.add %0, %1",
-            "  local.store x, %2",
-            "  %3 = local.load x",
-            "  exit %3",
-            "}"
-        )
-
-    $moveSystemCoreOutput = @(Invoke-CheckedCommandWithOutput `
-        -Name "archec0 examples/move_system.arc --emit-core" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/move_system.arc", "--emit-core"))
-
-    Assert-LinesEqual `
-        -Name "move_system Core" `
-        -Actual $moveSystemCoreOutput `
-        -Expected @(
-            "world Demo",
-            "",
-            "system Move {",
-            "  param time: read Demo.Time id 0x7924ce11db524521",
-            "  param movers: query",
-            "    mut Demo.Position id 0x002202c6aeb4f27b",
-            "    read Demo.Velocity id 0x2cf8a68bcb7f913b",
-            "  for movers {",
-            "    bind pos: mut Demo.Position id 0x002202c6aeb4f27b",
-            "    bind vel: read Demo.Velocity id 0x2cf8a68bcb7f913b",
-            "    add_assign pos.x, f32.mul vel.x, time.delta",
-            "    add_assign pos.y, f32.mul vel.y, time.delta",
-            "  }",
-            "}",
-            "",
-            "function startup {",
-            "  spawn",
-            "    component Demo.Position id 0x002202c6aeb4f27b",
-            "      field x = f32.bits 0x3f800000",
-            "      field y = f32.bits 0x40000000",
-            "    component Demo.Velocity id 0x2cf8a68bcb7f913b",
-            "      field x = f32.bits 0x40400000",
-            "      field y = f32.bits 0x40800000",
-            "  %0 = i32.const 0",
-            "  exit %0",
-            "}"
-        )
-
-    $sourceAliasDirectory = "./build/source-output-alias"
-    $sourceAliasPath = Join-Path $sourceAliasDirectory "source.arc"
-    Remove-Item -LiteralPath $sourceAliasDirectory -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Path $sourceAliasDirectory -Force | Out-Null
-    Copy-Item -LiteralPath "./examples/exit42.arc" -Destination $sourceAliasPath
-    $sourceAliasBefore = [System.IO.File]::ReadAllBytes(
-        (Resolve-Path -LiteralPath $sourceAliasPath)
-    )
-    $sourceAliasOutput = @(Invoke-CommandExpectFailure `
-        -Name "archec0 rejects source/output alias" `
-        -Executable $debugExecutablePath `
-        -Arguments @($sourceAliasPath, "-o", $sourceAliasPath) `
-        -ExpectedExitCode 2)
-    Assert-OutputContains `
-        -Name "source/output alias diagnostic" `
-        -Output $sourceAliasOutput `
-        -ExpectedText "refusing to overwrite input source"
-    Assert-BytesEqual `
-        -Name "source/output alias preserves source" `
-        -Actual ([System.IO.File]::ReadAllBytes((Resolve-Path -LiteralPath $sourceAliasPath))) `
-        -Expected $sourceAliasBefore
-    Remove-Item -LiteralPath $sourceAliasDirectory -Recurse -Force
-
-    Remove-Item -LiteralPath "./build/exit42" -Force -ErrorAction SilentlyContinue
-
-    Invoke-CheckedCommand `
-        -Name "archec0 examples/exit42.arc -o build/exit42" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit42.arc", "-o", "./build/exit42")
-
-    Test-Elf64Executable -Path "./build/exit42" -ExpectedExitCode 42
-    Test-LinuxExitCode -Path "./build/exit42" -ExpectedExitCode 42
-
-    Remove-Item -LiteralPath "./build/exit7" -Force -ErrorAction SilentlyContinue
-
-    Invoke-CheckedCommand `
-        -Name "archec0 examples/exit7.arc -o build/exit7" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/exit7.arc", "-o", "./build/exit7")
-
-    Test-Elf64Executable -Path "./build/exit7" -ExpectedExitCode 7
-    Test-LinuxExitCode -Path "./build/exit7" -ExpectedExitCode 7
-
-    Remove-Item -LiteralPath "./build/math" -Force -ErrorAction SilentlyContinue
-
-    Invoke-CheckedCommand `
-        -Name "archec0 examples/math.arc -o build/math" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/math.arc", "-o", "./build/math")
-
-    $mathExpectedText = New-AddRuntimeText -Left 40 -Right 2
-
-    Test-Elf64Payload -Path "./build/math" -ExpectedText $mathExpectedText
-    Test-LinuxExitCode -Path "./build/math" -ExpectedExitCode 42
-
-    Remove-Item -LiteralPath "./build/position" -Force -ErrorAction SilentlyContinue
-
-    Invoke-CheckedCommand `
-        -Name "archec0 examples/position.arc -o build/position" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/position.arc", "-o", "./build/position")
-
-    Test-PositionComponentMetadata -Path "./build/position"
-
-    Remove-Item -LiteralPath "./build/move_system" -Force -ErrorAction SilentlyContinue
-
-    Invoke-CheckedCommand `
-        -Name "archec0 examples/move_system.arc -o build/move_system" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/move_system.arc", "-o", "./build/move_system")
-
-    Test-EcsMetadataPayload -Path "./build/move_system"
-    Test-LinuxExitCode -Path "./build/move_system" -ExpectedExitCode 47
-    Test-CorruptEcsMetadataMagic -Path "./build/move_system"
-    Test-CorruptEcsComponentDescriptorRecord -Path "./build/move_system"
-    Test-CorruptEcsResourceDescriptorRecord -Path "./build/move_system"
-    Test-CorruptEcsSystemDescriptorRecord -Path "./build/move_system"
-    Test-CorruptEcsQueryDescriptorRecord -Path "./build/move_system"
-    Test-CorruptEcsScheduleDescriptorRecord -Path "./build/move_system"
-    Test-CorruptEcsPositionDescriptorName -Path "./build/move_system"
-    Test-CorruptEcsMoversQueryDescriptorNameLength -Path "./build/move_system"
-    Test-CorruptEcsMainScheduleDescriptorName -Path "./build/move_system"
-    Test-CorruptEcsStartupResourceId -Path "./build/move_system"
-    Test-CorruptEcsStartupSpawnComponentCount -Path "./build/move_system"
-    Test-CorruptEcsStartupOperationKind -Path "./build/move_system"
-    Test-CorruptEcsStartupSpawnOperationKind -Path "./build/move_system"
-    Test-CorruptEcsStartupRunOperationKind -Path "./build/move_system"
-    Test-CorruptEcsResourcePayload -Path "./build/move_system"
-    Test-CorruptEcsSpawnPayload -Path "./build/move_system"
-    Test-CorruptEcsRunSchedule -Path "./build/move_system"
-
-    Remove-Item -LiteralPath "./build/move_system_two_rows" -Force -ErrorAction SilentlyContinue
-
-    Invoke-CheckedCommand `
-        -Name "archec0 examples/move_system_two_rows.arc -o build/move_system_two_rows" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./examples/move_system_two_rows.arc", "-o", "./build/move_system_two_rows")
-
-    Test-LinuxExitCode -Path "./build/move_system_two_rows" -ExpectedExitCode 47
-
-    Remove-Item -LiteralPath "./build/bad" -Force -ErrorAction SilentlyContinue
-
-    $badSyntaxOutput = @(Invoke-CommandExpectFailure `
-        -Name "archec0 tests/e2e/bad_syntax.arc rejects syntax" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_syntax.arc", "-o", "./build/bad"))
-
-    Assert-OutputContains -Name "bad syntax diagnostic path" -Output $badSyntaxOutput -ExpectedText "bad_syntax.arc"
-    Assert-OutputContains -Name "bad syntax diagnostic location" -Output $badSyntaxOutput -ExpectedText "5:1"
-    Assert-OutputContains -Name "bad syntax diagnostic code" -Output $badSyntaxOutput -ExpectedText "error[PARSE001]"
-    Assert-OutputContains -Name "bad syntax diagnostic message" -Output $badSyntaxOutput -ExpectedText "expected expression after"
-
-    $badArithmeticOutput = @(Invoke-CommandExpectFailure `
-        -Name "archec0 tests/e2e/bad_i32_arithmetic.arc rejects type check" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_i32_arithmetic.arc", "--check"))
-
-    Assert-OutputContains -Name "bad arithmetic diagnostic path" -Output $badArithmeticOutput -ExpectedText "bad_i32_arithmetic.arc"
-    Assert-OutputContains -Name "bad arithmetic diagnostic location" -Output $badArithmeticOutput -ExpectedText "4:12"
-    Assert-OutputContains -Name "bad arithmetic diagnostic code" -Output $badArithmeticOutput -ExpectedText "error[CHECK001]"
-    Assert-OutputContains -Name "bad arithmetic diagnostic message" -Output $badArithmeticOutput -ExpectedText 'unknown local type `bool`'
-
-    $badUnknownScheduleRunOutput = @(Invoke-CommandExpectFailure `
-        -Name "archec0 tests/e2e/bad_unknown_schedule_run.arc rejects unknown schedule run target" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_unknown_schedule_run.arc", "--check"))
-
-    Assert-OutputContains -Name "bad unknown schedule run diagnostic path" -Output $badUnknownScheduleRunOutput -ExpectedText "bad_unknown_schedule_run.arc"
-    Assert-OutputContains -Name "bad unknown schedule run diagnostic location" -Output $badUnknownScheduleRunOutput -ExpectedText "7:9"
-    Assert-OutputContains -Name "bad unknown schedule run diagnostic code" -Output $badUnknownScheduleRunOutput -ExpectedText "error[CHECK001]"
-    Assert-OutputContains -Name "bad unknown schedule run diagnostic message" -Output $badUnknownScheduleRunOutput -ExpectedText 'unknown system `Missing` in schedule'
-
-    $badUnknownResourceParamOutput = @(Invoke-CommandExpectFailure `
-        -Name "archec0 tests/e2e/bad_unknown_resource_param.arc rejects unknown system resource parameter" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_unknown_resource_param.arc", "--check"))
-
-    Assert-OutputContains -Name "bad unknown resource param diagnostic path" -Output $badUnknownResourceParamOutput -ExpectedText "bad_unknown_resource_param.arc"
-    Assert-OutputContains -Name "bad unknown resource param diagnostic location" -Output $badUnknownResourceParamOutput -ExpectedText "3:24"
-    Assert-OutputContains -Name "bad unknown resource param diagnostic code" -Output $badUnknownResourceParamOutput -ExpectedText "error[CHECK001]"
-    Assert-OutputContains -Name "bad unknown resource param diagnostic message" -Output $badUnknownResourceParamOutput -ExpectedText 'unknown resource `MissingTime` in system parameter'
-
-    $badUnknownQueryComponentOutput = @(Invoke-CommandExpectFailure `
-        -Name "archec0 tests/e2e/bad_unknown_query_component.arc rejects unknown query component" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_unknown_query_component.arc", "--check"))
-
-    Assert-OutputContains -Name "bad unknown query component diagnostic path" -Output $badUnknownQueryComponentOutput -ExpectedText "bad_unknown_query_component.arc"
-    Assert-OutputContains -Name "bad unknown query component diagnostic location" -Output $badUnknownQueryComponentOutput -ExpectedText "3:27"
-    Assert-OutputContains -Name "bad unknown query component diagnostic code" -Output $badUnknownQueryComponentOutput -ExpectedText "error[CHECK001]"
-    Assert-OutputContains -Name "bad unknown query component diagnostic message" -Output $badUnknownQueryComponentOutput -ExpectedText 'unknown component `MissingComponent` in query'
-
-    $badConflictingQueryAccessOutput = @(Invoke-CommandExpectFailure `
-        -Name "archec0 tests/e2e/bad_conflicting_query_access.arc rejects conflicting query access" `
-        -Executable "cargo" `
-        -Arguments @("run", "--manifest-path", $manifestPath, "--", "./tests/e2e/bad_conflicting_query_access.arc", "--check"))
-
-    Assert-OutputContains -Name "bad conflicting query access diagnostic path" -Output $badConflictingQueryAccessOutput -ExpectedText "bad_conflicting_query_access.arc"
-    Assert-OutputContains -Name "bad conflicting query access diagnostic location" -Output $badConflictingQueryAccessOutput -ExpectedText "10:14"
-    Assert-OutputContains -Name "bad conflicting query access diagnostic code" -Output $badConflictingQueryAccessOutput -ExpectedText "error[CHECK001]"
-    Assert-OutputContains -Name "bad conflicting query access diagnostic message" -Output $badConflictingQueryAccessOutput -ExpectedText 'conflicting query access for component `Position`'
-
-    $e2eTests = @(Get-ChildItem -LiteralPath $e2eDir -Filter "*.ps1" -File | Sort-Object FullName)
-    Write-Host "$($e2eTests.Count) e2e tests discovered"
-
-    foreach ($test in $e2eTests) {
-        $testArguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $test.FullName)
-        if ($SkipGeneratedLinuxExecution) {
-            $testArguments += "-SkipGeneratedLinuxExecution"
-        }
-
-        Invoke-CheckedCommand `
-            -Name "e2e $($test.Name)" `
-            -Executable $powerShellExecutable `
-            -Arguments $testArguments
+        -Arguments @("build", "--locked", "--manifest-path", $manifestPath)
+    Assert-ProcessStatus $build 0
+
+    $compilerName = if ($isWindowsPlatform) { "archec0.exe" } else { "archec0" }
+    $compiler = Join-Path $repoRoot "bootstrap/archec0/target/debug/$compilerName"
+    Assert-True -Condition (Test-Path -LiteralPath $compiler -PathType Leaf) `
+        -Message "compiler was not built at $compiler"
+
+    Test-CliModes $compiler
+    Test-PublicationContracts $compiler
+
+    $exit42Artifact = Join-Path $proofRoot "exit42"
+    $exit42Compile = Invoke-Compiler $compiler "compile exit42 v2 PIE" `
+        @((Join-Path $repoRoot "examples/exit42.arc"), "-o", $exit42Artifact)
+    Assert-ProcessStatus $exit42Compile 0
+    $exit42Layout = Get-StaticPieLayout $exit42Artifact
+    $null = Get-ArcheEcsV2 $exit42Layout
+    $exit42Run = Test-RepeatedArtifactExecution "exit42" $exit42Artifact 42
+    if ($null -ne $exit42Run) {
+        Assert-Equal -Name "exit42 resources" -Actual $exit42Run.Summary.Resources -Expected 0
+        Assert-Equal -Name "exit42 tables" -Actual $exit42Run.Summary.Tables -Expected 0
     }
 
-    Write-Host "All checks passed"
+    $exit70Source = Join-Path $proofRoot "exit70.arc"
+    Write-Utf8File $exit70Source @"
+world ExitSeventy
+startup { exit 70 }
+"@
+    $exit70Artifact = Join-Path $proofRoot "exit70"
+    Assert-ProcessStatus (Invoke-Compiler $compiler "compile source exit 70" `
+        @($exit70Source, "-o", $exit70Artifact)) 0
+    $exit70Layout = Get-StaticPieLayout $exit70Artifact
+    $null = Get-ArcheEcsV2 $exit70Layout
+    $exit70Run = Test-RepeatedArtifactExecution "source_exit_70" $exit70Artifact 70
+    if ($null -ne $exit70Run) {
+        Assert-Equal -Name "source exit 70 resources" `
+            -Actual $exit70Run.Summary.Resources -Expected 0
+        Assert-Equal -Name "source exit 70 tables" `
+            -Actual $exit70Run.Summary.Tables -Expected 0
+        Assert-Equal -Name "source exit 70 trap diagnostic absence" `
+            -Actual $exit70Run.Result.Stderr -Expected ""
+    }
+
+    $closureSource = Join-Path $repoRoot "examples/m26_closure.arc"
+    $closureAstGolden = [System.IO.File]::ReadAllText(
+        (Join-Path $repoRoot "tests/golden/m26_closure.ast")
+    )
+    $closureCoreGolden = [System.IO.File]::ReadAllText(
+        (Join-Path $repoRoot "tests/golden/m26_closure.core")
+    )
+    $closureMachineGolden = [System.IO.File]::ReadAllText(
+        (Join-Path $repoRoot "tests/golden/m26_closure.machine")
+    )
+    $closureAst = Invoke-Compiler $compiler "M26 closure AST emission" @($closureSource, "--emit-ast")
+    Assert-ProcessStatus $closureAst 0
+    Assert-Equal -Name "M26 closure exact AST golden" `
+        -Actual (Normalize-LineEndings $closureAst.Stdout) `
+        -Expected (Normalize-LineEndings $closureAstGolden)
+    $closureCore1 = Invoke-Compiler $compiler "M26 closure Core emission 1" @($closureSource, "--emit-core")
+    $closureCore2 = Invoke-Compiler $compiler "M26 closure Core emission 2" @($closureSource, "--emit-core")
+    Assert-ProcessStatus $closureCore1 0
+    Assert-ProcessStatus $closureCore2 0
+    Assert-Equal -Name "M26 closure deterministic Core" -Actual $closureCore2.Stdout -Expected $closureCore1.Stdout
+    Assert-Equal -Name "M26 closure exact Core golden" `
+        -Actual (Normalize-LineEndings $closureCore1.Stdout) `
+        -Expected (Normalize-LineEndings $closureCoreGolden)
+    Assert-Contains -Name "M26 closure Core world" -Actual $closureCore1.Stdout -Expected "world M26Closure"
+    Assert-Contains -Name "M26 closure Core system" -Actual $closureCore1.Stdout -Expected "system Advance"
+    $closureMachine = Invoke-Compiler $compiler "M26 closure Machine emission" @($closureSource, "--emit-machine")
+    Assert-ProcessStatus $closureMachine 0
+    Assert-Equal -Name "M26 closure exact Machine golden" `
+        -Actual (Normalize-LineEndings $closureMachine.Stdout) `
+        -Expected (Normalize-LineEndings $closureMachineGolden)
+    Assert-Contains -Name "M26 closure Machine startup" -Actual $closureMachine.Stdout -Expected "function startup"
+
+    $closureArtifact = Join-Path $proofRoot "m26-closure"
+    Assert-ProcessStatus (Invoke-Compiler $compiler "compile primary M26 closure" `
+        @($closureSource, "-o", $closureArtifact)) 0
+    $closureLayout = Get-StaticPieLayout $closureArtifact
+    $closurePackage = Get-ArcheEcsV2 $closureLayout
+    $closureRun = Test-RepeatedArtifactExecution "m26_closure" $closureArtifact 47
+    if ($null -ne $closureRun) {
+        Assert-Equal -Name "M26 closure resources" -Actual $closureRun.Summary.Resources -Expected 5
+        Assert-Equal -Name "M26 closure initialized resources" -Actual $closureRun.Summary.InitializedResources -Expected 3
+        Assert-Equal -Name "M26 closure uninitialized resources" -Actual $closureRun.Summary.UninitializedResources -Expected 2
+        Assert-Equal -Name "M26 closure tables" -Actual $closureRun.Summary.Tables -Expected 4
+        Assert-Equal -Name "M26 closure rows" -Actual $closureRun.Summary.Rows -Expected 4
+        Assert-True -Condition ($closureRun.Summary.ZeroLengthPayloads -gt 0) `
+            -Message "M26 closure observation omitted tags, ZSTs, or the initialized empty resource"
+    }
+
+    $arenaSource = Join-Path $repoRoot "examples/arena_recovery.arc"
+    $arenaArtifact = Join-Path $proofRoot "arena-recovery"
+    Assert-ProcessStatus (Invoke-Compiler $compiler "compile structurally distinct Arena" `
+        @($arenaSource, "-o", $arenaArtifact)) 0
+    $arenaLayout = Get-StaticPieLayout $arenaArtifact
+    $null = Get-ArcheEcsV2 $arenaLayout
+    $arenaRun = Test-RepeatedArtifactExecution "arena_recovery" $arenaArtifact 0
+    if ($null -ne $arenaRun) {
+        Assert-Equal -Name "Arena resources" -Actual $arenaRun.Summary.Resources -Expected 1
+        Assert-Equal -Name "Arena tables" -Actual $arenaRun.Summary.Tables -Expected 2
+        Assert-Equal -Name "Arena rows" -Actual $arenaRun.Summary.Rows -Expected 5
+        Assert-Equal -Name "Arena columns" -Actual $arenaRun.Summary.Columns -Expected 13
+    }
+
+    $trapSource = Join-Path $repoRoot "examples/m26_trap.arc"
+    $trapArtifact = Join-Path $proofRoot "m26-trap"
+    Assert-ProcessStatus (Invoke-Compiler $compiler "compile M26 trap fixture" `
+        @($trapSource, "-o", $trapArtifact)) 0
+    $trapLayout = Get-StaticPieLayout $trapArtifact
+    $null = Get-ArcheEcsV2 $trapLayout
+    $trapRun = Test-RepeatedArtifactExecution "m26_trap" $trapArtifact 70 -ExpectTrap
+    if ($null -ne $trapRun) {
+        $trapDiagnostic = Normalize-LineEndings $trapRun.Result.Stderr
+        $trapText = [System.IO.File]::ReadAllText($trapSource)
+        $trapExpression = "counter.value / denominator.value"
+        $trapCharacterStart = $trapText.IndexOf(
+            $trapExpression,
+            [StringComparison]::Ordinal
+        )
+        Assert-True -Condition ($trapCharacterStart -ge 0) `
+            -Message "M26 trap fixture does not contain its expected expression"
+        $trapPrefix = $trapText.Substring(0, $trapCharacterStart)
+        $trapLine = [regex]::Matches($trapPrefix, "`r`n|`r|`n").Count + 1
+        $trapLineStart = [Math]::Max(
+            $trapPrefix.LastIndexOf("`r"),
+            $trapPrefix.LastIndexOf("`n")
+        ) + 1
+        $trapColumn = $trapPrefix.Length - $trapLineStart + 1
+        $trapByteStart = $utf8NoBom.GetByteCount($trapPrefix)
+        $trapByteEnd = $trapByteStart + $utf8NoBom.GetByteCount($trapExpression)
+        $expectedTrapDiagnostic = "arche: trap[I32_DIVIDE_BY_ZERO] m26_trap.arc:${trapLine}:${trapColumn} bytes ${trapByteStart}..${trapByteEnd}`n"
+        Assert-Equal -Name "M26 exact trap diagnostic" `
+            -Actual $trapDiagnostic -Expected $expectedTrapDiagnostic
+        Assert-Contains -Name "M26 trap committed current value" `
+            -Actual $trapRun.Result.Stdout -Expected " 4 2A000000"
+    }
+
+    Test-MetadataRejections -Artifact $closureArtifact `
+        -Layout $closureLayout -Package $closurePackage
+
+    $testList = Invoke-CapturedProcess -Name "enumerate registered M26 proofs" `
+        -Executable "cargo" `
+        -Arguments @("test", "--locked", "--bin", "archec0", "--manifest-path", $manifestPath, "--", "--list")
+    Assert-ProcessStatus $testList 0
+    Assert-ProofTestInventory $testList
+
+    $powerShellExecutable = (Get-Process -Id $PID).Path
+    $e2eRoot = Join-Path $repoRoot "tests/e2e"
+    $e2eScripts = @(Get-ChildItem -LiteralPath $e2eRoot -Filter "*.ps1" -File |
+        Where-Object { !$_.Name.StartsWith("_", [StringComparison]::Ordinal) } |
+        Sort-Object Name)
+    Assert-True -Condition ($e2eScripts.Count -gt 0) `
+        -Message "no executable e2e PowerShell scripts were discovered"
+    foreach ($script in $e2eScripts) {
+        $scriptName = $script.Name
+        $scriptPath = $script.FullName
+        $arguments = @(
+            "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $scriptPath,
+            "-CompilerPath", $compiler,
+            "-BuildDirectory", (Join-Path $proofRoot ([IO.Path]::GetFileNameWithoutExtension($scriptName)))
+        )
+        if ($SkipGeneratedLinuxExecution) {
+            $arguments += "-SkipGeneratedLinuxExecution"
+        }
+        $e2e = Invoke-CapturedProcess -Name "e2e $scriptName" `
+            -Executable $powerShellExecutable -Arguments $arguments
+        Assert-ProcessStatus $e2e 0
+    }
+    Write-Host "PASS: dynamically discovered $($e2eScripts.Count) e2e scripts"
+
+    Test-NoSiblingTemporaries $proofRoot
+    Write-Host "All M26 proof checks passed"
 }
 finally {
     Pop-Location
+    if (Test-Path -LiteralPath $proofRoot) {
+        Remove-Item -LiteralPath $proofRoot -Recurse -Force
+    }
 }

@@ -1,0 +1,326 @@
+Program
+  world M26Closure
+  tag Enemy
+  tag Frozen
+  component Position
+    field x: i32
+    field weight: f32
+    field active: bool
+  component Velocity
+    field dx: i32
+    field factor: f32
+  component Empty
+  resource Config
+    field step: i32
+    field scale: f32
+    field enabled: bool
+  resource Counter
+    field value: i32
+  resource EmptyReady
+  resource EmptyPending
+  resource Scratch
+    field value: i32
+  system Advance
+    param config: read Config
+    param counter: mut Counter
+    param moving: query
+      mut Position
+      read Velocity
+      read Enemy
+      exclude Frozen
+    body
+      let mut pass: i32
+        integer 0
+      let mut gate: bool
+        field enabled
+          identifier config
+      while
+        binary <
+          identifier pass
+          field step
+            identifier config
+        if
+          binary &&
+            identifier gate
+            binary <
+              identifier pass
+              integer 2
+          for
+            bindings
+              binding position
+              binding velocity
+              binding _
+            in moving
+            body
+              assign
+                target
+                  field x
+                    identifier position
+                value
+                  binary +
+                    field x
+                      identifier position
+                    parenthesized
+                      binary <<
+                        field dx
+                          identifier velocity
+                        parenthesized
+                          binary &
+                            identifier pass
+                            integer 31
+              assign
+                target
+                  field weight
+                    identifier position
+                value
+                  binary +
+                    field weight
+                      identifier position
+                    binary *
+                      field factor
+                        identifier velocity
+                      field scale
+                        identifier config
+              assign
+                target
+                  field active
+                    identifier position
+                value
+                  binary ==
+                    field active
+                      identifier position
+                    bool true
+              assign
+                target
+                  field value
+                    identifier counter
+                value
+                  binary +
+                    field value
+                      identifier counter
+                    integer 1
+        else
+          assign
+            target
+              field value
+                identifier counter
+            value
+              binary +
+                field value
+                  identifier counter
+                integer 10
+        assign
+          target
+            identifier pass
+          value
+            binary +
+              identifier pass
+              integer 1
+        assign
+          target
+            identifier gate
+          value
+            binary ||
+              unary !
+                identifier gate
+              binary ==
+                identifier pass
+                field step
+                  identifier config
+      for
+        bindings
+          binding position
+          binding velocity
+          binding _
+        in moving
+        body
+          if
+            binary >=
+              field weight
+                identifier position
+              field factor
+                identifier velocity
+            add_assign
+              target
+                field x
+                  identifier position
+              value
+                binary &
+                  field value
+                    identifier counter
+                  integer 3
+          else
+            assign
+              target
+                field x
+                  identifier position
+              value
+                binary -
+                  field x
+                    identifier position
+                  integer 1
+  system Normalize
+    param first: read Counter
+    param second: read Counter
+    param candidates: query
+      mut Position
+      exclude Enemy
+    body
+      let mut visits: i32
+        integer 0
+      for
+        bindings
+          binding position
+        in candidates
+        body
+          block
+            assign
+              target
+                field x
+                  identifier position
+              value
+                binary ^
+                  field x
+                    identifier position
+                  parenthesized
+                    binary |
+                      field value
+                        identifier first
+                      field value
+                        identifier second
+            assign
+              target
+                field weight
+                  identifier position
+              value
+                binary /
+                  unary -
+                    field weight
+                      identifier position
+                  float 2.0
+            assign
+              target
+                field active
+                  identifier position
+              value
+                binary &&
+                  field active
+                    identifier position
+                  bool true
+            assign
+              target
+                identifier visits
+              value
+                binary +
+                  identifier visits
+                  integer 1
+      if
+        binary ==
+          identifier visits
+          integer 0
+        assign
+          target
+            identifier visits
+          value
+            unary ~
+              identifier visits
+      else
+        assign
+          target
+            identifier visits
+          value
+            binary %
+              identifier visits
+              integer 4
+  schedule Warmup
+    run Advance
+    run Normalize
+  schedule Reverse
+    run Normalize
+    run Advance
+    run Advance
+  startup
+    let mut base: i32
+      integer 1
+    assign
+      target
+        identifier base
+      value
+        binary <<
+          parenthesized
+            binary +
+              identifier base
+              integer 1
+          integer 1
+    resource Config
+      field enabled
+        unary !
+          bool false
+      field scale
+        binary +
+          float 0.25
+          float 0.75
+      field step
+        binary -
+          identifier base
+          integer 2
+    resource Counter
+      field value
+        integer 0
+    resource EmptyReady
+    spawn
+    spawn
+      component Position
+        field active
+          bool true
+        field weight
+          float 1.5
+        field x
+          binary +
+            integer 4
+            integer 1
+      component Velocity
+        field factor
+          float 0.5
+        field dx
+          integer 2
+      component Enemy
+      component Empty
+    spawn
+      component Position
+        field x
+          integer 9
+        field weight
+          float 2.0
+        field active
+          bool false
+      component Velocity
+        field dx
+          integer 3
+        field factor
+          float 1.0
+      component Enemy
+      component Frozen
+    spawn
+      component Position
+        field x
+          integer 7
+        field weight
+          unary -
+            float 4.0
+        field active
+          bool true
+      component Empty
+    run Warmup
+    run Reverse
+    let mut status: i32
+      integer 40
+    assign
+      target
+        identifier status
+      value
+        binary +
+          identifier status
+          integer 7
+    exit
+      identifier status

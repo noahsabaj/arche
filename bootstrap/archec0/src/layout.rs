@@ -1,35 +1,31 @@
-#![allow(dead_code)]
-
 use crate::parser::ComponentDecl;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PrimitiveType {
     I32,
     F32,
+    Bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TypeLayout {
-    pub size: u32,
-    pub align: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ComponentFieldOffset {
-    pub name: String,
-    pub type_name: String,
-    pub offset: u32,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ComponentLayout {
-    pub fields: Vec<ComponentFieldOffset>,
-    pub size: u32,
-    pub align: u32,
+    pub size: u64,
+    pub align: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ComponentId(pub u64);
+pub struct ComponentFieldOffset<'a> {
+    pub name: &'a str,
+    pub type_name: &'a str,
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComponentLayout<'a> {
+    pub fields: Vec<ComponentFieldOffset<'a>>,
+    pub size: u64,
+    pub align: u64,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayoutError {
@@ -41,134 +37,94 @@ impl PrimitiveType {
         match name {
             "i32" => Some(Self::I32),
             "f32" => Some(Self::F32),
+            "bool" => Some(Self::Bool),
             _ => None,
         }
     }
 
-    pub fn layout(self) -> TypeLayout {
+    pub const fn layout(self) -> TypeLayout {
         match self {
-            Self::I32 => TypeLayout { size: 4, align: 4 },
-            Self::F32 => TypeLayout { size: 4, align: 4 },
+            Self::I32 | Self::F32 => TypeLayout { size: 4, align: 4 },
+            Self::Bool => TypeLayout { size: 1, align: 1 },
         }
     }
 }
 
-pub fn primitive_type_layout(name: &str) -> Option<TypeLayout> {
-    PrimitiveType::from_name(name).map(PrimitiveType::layout)
-}
-
-pub fn component_qualified_name(world_name: &str, component_name: &str) -> String {
-    format!("{world_name}.{component_name}")
-}
-
-pub fn stable_component_id(world_name: &str, component_name: &str) -> ComponentId {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-
-    let mut hash = FNV_OFFSET_BASIS;
-    for byte in component_qualified_name(world_name, component_name).bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-
-    ComponentId(hash)
-}
-
-pub fn compute_component_field_offsets(
+pub fn compute_component_layout(
     component: &ComponentDecl,
-) -> Result<Vec<ComponentFieldOffset>, LayoutError> {
-    compute_component_layout(component).map(|layout| layout.fields)
-}
-
-pub fn compute_component_layout(component: &ComponentDecl) -> Result<ComponentLayout, LayoutError> {
+) -> Result<ComponentLayout<'_>, LayoutError> {
     let mut fields = Vec::new();
-    let mut cursor = 0;
-    let mut component_align = 1;
+    fields
+        .try_reserve_exact(component.fields.len())
+        .map_err(|_| layout_error("could not allocate component field layout"))?;
+    let mut cursor = 0u64;
+    let mut component_align = 1u64;
 
     for field in &component.fields {
-        let layout = primitive_type_layout(&field.type_name.name).ok_or_else(|| LayoutError {
-            message: format!(
+        let primitive = PrimitiveType::from_name(&field.type_name.name).ok_or_else(|| {
+            layout_error(format!(
                 "unknown primitive type `{}` for component field `{}`",
                 field.type_name.name, field.name
-            ),
+            ))
         })?;
-
-        cursor = align_to(cursor, layout.align);
+        let layout = primitive.layout();
+        cursor = align_to(cursor, layout.align)?;
         component_align = component_align.max(layout.align);
         fields.push(ComponentFieldOffset {
-            name: field.name.clone(),
-            type_name: field.type_name.name.clone(),
+            name: &field.name,
+            type_name: &field.type_name.name,
             offset: cursor,
         });
-        cursor += layout.size;
+        cursor = cursor
+            .checked_add(layout.size)
+            .ok_or_else(|| layout_error("component field layout overflows u64"))?;
     }
 
     Ok(ComponentLayout {
         fields,
-        size: align_to(cursor, component_align),
+        size: align_to(cursor, component_align)?,
         align: component_align,
     })
 }
 
-fn align_to(value: u32, align: u32) -> u32 {
-    debug_assert!(align > 0);
-    let remainder = value % align;
-    if remainder == 0 {
-        value
-    } else {
-        value + (align - remainder)
+fn align_to(value: u64, align: u64) -> Result<u64, LayoutError> {
+    debug_assert!(align.is_power_of_two());
+    value
+        .checked_add(align - 1)
+        .map(|padded| padded & !(align - 1))
+        .ok_or_else(|| layout_error("component alignment overflows u64"))
+}
+
+fn layout_error(message: impl Into<String>) -> LayoutError {
+    LayoutError {
+        message: message.into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer;
-    use crate::parser;
+    use crate::{lexer, parser};
 
     #[test]
     fn primitive_type_layouts() {
         assert_eq!(
-            primitive_type_layout("i32"),
+            PrimitiveType::from_name("i32").map(PrimitiveType::layout),
             Some(TypeLayout { size: 4, align: 4 })
         );
         assert_eq!(
-            primitive_type_layout("f32"),
+            PrimitiveType::from_name("f32").map(PrimitiveType::layout),
             Some(TypeLayout { size: 4, align: 4 })
         );
-        assert_eq!(primitive_type_layout("unknown"), None);
-    }
-
-    #[test]
-    fn computes_position_field_offsets() {
-        let source = include_str!("../../../examples/position.arc");
-        let tokens = lexer::lex(source).expect("position.arc lexes");
-        let program = parser::parse_program(&tokens).expect("position.arc parses");
-        let component = program
-            .components
-            .iter()
-            .find(|component| component.name == "Position")
-            .expect("Position component exists");
-
         assert_eq!(
-            compute_component_field_offsets(component).expect("Position layout computes"),
-            vec![
-                ComponentFieldOffset {
-                    name: "x".to_string(),
-                    type_name: "f32".to_string(),
-                    offset: 0,
-                },
-                ComponentFieldOffset {
-                    name: "y".to_string(),
-                    type_name: "f32".to_string(),
-                    offset: 4,
-                },
-            ]
+            PrimitiveType::from_name("bool").map(PrimitiveType::layout),
+            Some(TypeLayout { size: 1, align: 1 })
         );
+        assert_eq!(PrimitiveType::from_name("unknown"), None);
     }
 
     #[test]
-    fn computes_position_component_layout() {
+    fn computes_position_component_layout_with_u64_offsets() {
         let source = include_str!("../../../examples/position.arc");
         let tokens = lexer::lex(source).expect("position.arc lexes");
         let program = parser::parse_program(&tokens).expect("position.arc parses");
@@ -183,13 +139,13 @@ mod tests {
             ComponentLayout {
                 fields: vec![
                     ComponentFieldOffset {
-                        name: "x".to_string(),
-                        type_name: "f32".to_string(),
+                        name: "x",
+                        type_name: "f32",
                         offset: 0,
                     },
                     ComponentFieldOffset {
-                        name: "y".to_string(),
-                        type_name: "f32".to_string(),
+                        name: "y",
+                        type_name: "f32",
                         offset: 4,
                     },
                 ],
@@ -200,17 +156,18 @@ mod tests {
     }
 
     #[test]
-    fn stable_component_ids() {
+    fn zero_field_components_have_zero_size_and_alignment_one() {
+        let tokens = lexer::lex("world Demo component Empty {} startup { exit 0 }")
+            .expect("empty component lexes");
+        let program = parser::parse_program(&tokens).expect("empty component parses");
         assert_eq!(
-            component_qualified_name("Demo", "Position"),
-            "Demo.Position"
+            compute_component_layout(&program.components[0])
+                .expect("empty component layout computes"),
+            ComponentLayout {
+                fields: vec![],
+                size: 0,
+                align: 1,
+            }
         );
-
-        let first = stable_component_id("Demo", "Position");
-        let second = stable_component_id("Demo", "Position");
-
-        assert_eq!(first, second);
-        assert_eq!(first, ComponentId(0x002202c6aeb4f27b));
-        assert_ne!(first, stable_component_id("Demo", "Velocity"));
     }
 }

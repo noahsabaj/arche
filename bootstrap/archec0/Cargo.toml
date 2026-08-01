@@ -6,4 +6,5 @@ rust-version = "1.95.0"
 publish = false
 
 [dependencies]
+blake3 = { version = "=1.8.5", features = ["pure"] }
 same-file = "=1.0.6"

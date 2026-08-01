@@ -27,11 +27,14 @@ jobs:
       - name: Check formatting
         run: cargo fmt --manifest-path ./bootstrap/archec0/Cargo.toml -- --check
 
+      - name: Run locked debug tests
+        run: cargo test --locked --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+
       - name: Run locked release tests
         run: cargo test --locked --release --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
 
-      - name: Run Clippy
-        run: cargo clippy --locked --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+      - name: Run strict Clippy
+        run: cargo clippy --locked --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml -- -D warnings
 
       - name: Install cargo-audit 0.22.2
         run: cargo install cargo-audit --version 0.22.2 --locked
@@ -42,8 +45,29 @@ jobs:
       - name: Run complete native proof suite
         run: pwsh -NoLogo -NoProfile -File ./tools/test.ps1
 
+      - name: Verify static PIE with readelf
+        shell: bash
+        run: |
+          set -euo pipefail
+          artifact="$RUNNER_TEMP/m26-readelf-proof"
+          ./bootstrap/archec0/target/debug/archec0 \
+            ./examples/m26_closure.arc -o "$artifact"
+          readelf -hW "$artifact" | tee "$RUNNER_TEMP/m26-elf-header.txt"
+          readelf -lW "$artifact" | tee "$RUNNER_TEMP/m26-program-headers.txt"
+          readelf -dW "$artifact" | tee "$RUNNER_TEMP/m26-dynamic.txt"
+          readelf -rW "$artifact" | tee "$RUNNER_TEMP/m26-relocations.txt"
+          grep -Eq 'Type:[[:space:]]+DYN' "$RUNNER_TEMP/m26-elf-header.txt"
+          test "$(grep -c 'LOAD' "$RUNNER_TEMP/m26-program-headers.txt")" -eq 4
+          grep -Eq 'GNU_STACK[[:space:]].*RW[[:space:]]' "$RUNNER_TEMP/m26-program-headers.txt"
+          ! grep -Eq 'INTERP|DYNAMIC|RWE' "$RUNNER_TEMP/m26-program-headers.txt"
+          grep -Fq 'There is no dynamic section in this file.' "$RUNNER_TEMP/m26-dynamic.txt"
+          grep -Fq 'There are no relocations in this file.' "$RUNNER_TEMP/m26-relocations.txt"
+
       - name: Verify no tracked files changed
-        run: git diff --exit-code
+        run: |
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=no)"
 
   windows:
     name: Proof / Windows
@@ -57,11 +81,14 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
           rustup override set 1.95.0
 
+      - name: Run locked debug tests
+        run: cargo test --locked --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+
       - name: Run locked release tests
         run: cargo test --locked --release --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
 
-      - name: Run Clippy
-        run: cargo clippy --locked --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+      - name: Run strict Clippy
+        run: cargo clippy --locked --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml -- -D warnings
 
       - name: Run proof suite under PowerShell Core
         run: pwsh -NoLogo -NoProfile -File .\tools\test.ps1 -SkipGeneratedLinuxExecution
@@ -70,4 +97,289 @@ jobs:
         run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -SkipGeneratedLinuxExecution
 
       - name: Verify no tracked files changed
-        run: git diff --exit-code
+        shell: pwsh
+        run: |
+          git diff --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ((git status --porcelain --untracked-files=no).Count -ne 0) { exit 1 }
+
+  physical-large-source:
+    name: Proof / Physical >4-GiB Source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup override set 1.95.0
+
+      - name: Build release compiler before measurement
+        run: cargo build --locked --release --manifest-path ./bootstrap/archec0/Cargo.toml
+
+      - name: Compile and execute a physically allocated >4-GiB source
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/archec0-physical-large-source"
+          mkdir -p "$scratch"
+          export TMPDIR="$scratch"
+          source_file="$scratch/physical-large.arc"
+          artifact="$scratch/physical-large"
+          baseline_artifact="$scratch/baseline"
+          expected_observation="$scratch/expected-observation.txt"
+          observation="$scratch/observation.txt"
+          runtime_stderr="$scratch/runtime-stderr.txt"
+          metrics="$scratch/compiler-time.txt"
+          peak_file="$scratch/peak-bytes.txt"
+
+          ./bootstrap/archec0/target/release/archec0 \
+            ./examples/m26_closure.arc -o "$baseline_artifact"
+          set +e
+          "$baseline_artifact" > "$expected_observation" 2> "$runtime_stderr"
+          baseline_status=$?
+          set -e
+          test "$baseline_status" -eq 47
+          test ! -s "$runtime_stderr"
+          test "$(head -n 1 "$expected_observation")" = "ARCHEOBS2"
+          test "$(tail -n 1 "$expected_observation")" = "END"
+
+          program_offset=4294967296
+          status_assignment='status = status + 7'
+          status_assignment_offset=$(LC_ALL=C grep -abo -m1 \
+            "$status_assignment" ./examples/m26_closure.arc | cut -d: -f1)
+          test -n "$status_assignment_offset"
+          status_digit_offset=$((
+            program_offset + status_assignment_offset + ${#status_assignment} - 1
+          ))
+          test "$status_digit_offset" -gt 4294967295
+          dd if=/dev/zero bs=8M count=512 status=progress |
+            tr '\0' ' ' > "$source_file"
+          cat ./examples/m26_closure.arc >> "$source_file"
+
+          source_size=$(stat -c %s "$source_file")
+          allocated_blocks=$(stat -c %b "$source_file")
+          allocated_bytes=$(( allocated_blocks * 512 ))
+          test "$source_size" -gt 4294967295
+          test "$allocated_bytes" -gt 4294967295
+          cmp ./examples/m26_closure.arc "$source_file" 0 "$program_offset"
+
+          collect_process_tree() {
+            local process_id="$1"
+            printf '%s\n' "$process_id"
+            local children
+            children=$(cat "/proc/$process_id/task/$process_id/children" \
+              2>/dev/null || true)
+            for child in $children; do
+              collect_process_tree "$child"
+            done
+          }
+
+          sample_scratch() {
+            declare -A counted_allocations=()
+            current_blocks=0
+            while read -r entry_stats; do
+              entry_key=${entry_stats%:*}
+              entry_blocks=${entry_stats##*:}
+              if [[ -n "$entry_key" && \
+                    -z "${counted_allocations[$entry_key]:-}" && \
+                    "$entry_blocks" =~ ^[0-9]+$ ]]; then
+                current_blocks=$(( current_blocks + entry_blocks ))
+                counted_allocations[$entry_key]=1
+              fi
+            done < <(find "$scratch" -xdev -printf '%D:%i:%b\n' 2>/dev/null)
+            if [[ -n "${compiler_pid:-}" ]]; then
+              while read -r process_id; do
+                [[ -d "/proc/$process_id/fd" ]] || continue
+                for descriptor in "/proc/$process_id/fd/"*; do
+                  target=$(readlink "$descriptor" 2>/dev/null || true)
+                  if [[ "$target" == *"/.archec0-source-"*' (deleted)' ]]; then
+                    descriptor_stats=$(stat -Lc '%d:%i:%b' "$descriptor" \
+                      2>/dev/null || true)
+                    descriptor_key=${descriptor_stats%:*}
+                    descriptor_blocks=${descriptor_stats##*:}
+                    if [[ -n "$descriptor_key" && \
+                          -z "${counted_allocations[$descriptor_key]:-}" && \
+                          "$descriptor_blocks" =~ ^[0-9]+$ ]]; then
+                      current_blocks=$(( current_blocks + descriptor_blocks ))
+                      counted_allocations[$descriptor_key]=1
+                    fi
+                  fi
+                done
+              done < <(collect_process_tree "$compiler_pid")
+            fi
+            current_bytes=$(( current_blocks * 512 ))
+            peak_bytes=$(cat "$peak_file")
+            if (( current_bytes > peak_bytes )); then
+              printf '%s\n' "$current_bytes" > "$peak_file"
+            fi
+          }
+
+          printf '0\n' > "$peak_file"
+          spool_seen=0
+          source_mutated_after_snapshot=0
+          compiler_started_at=$(date +%s)
+          /usr/bin/time -v -o "$metrics" \
+            ./bootstrap/archec0/target/release/archec0 \
+            "$source_file" -o "$artifact" &
+          compiler_pid=$!
+          while kill -0 "$compiler_pid" 2>/dev/null; do
+            sample_scratch
+            while read -r process_id; do
+              [[ -d "/proc/$process_id/fd" ]] || continue
+              for descriptor in "/proc/$process_id/fd/"*; do
+                target=$(readlink "$descriptor" 2>/dev/null || true)
+                if [[ "$target" == *"/.archec0-source-"*' (deleted)' ]]; then
+                  spool_seen=1
+                  spool_size=$(stat -Lc %s "$descriptor" 2>/dev/null || true)
+                  if [[ "$spool_size" == "$source_size" && \
+                        "$source_mutated_after_snapshot" -eq 0 ]]; then
+                    printf '6' | dd of="$source_file" bs=1 \
+                      seek="$status_digit_offset" count=1 conv=notrunc status=none
+                    source_mutated_after_snapshot=1
+                  fi
+                fi
+              done
+            done < <(collect_process_tree "$compiler_pid")
+            sleep 0.01
+          done
+          sample_scratch
+          wait "$compiler_pid"
+          compiler_elapsed_seconds=$(( $(date +%s) - compiler_started_at ))
+          test "$spool_seen" -eq 1
+          test "$source_mutated_after_snapshot" -eq 1
+          test "$(dd if="$source_file" bs=1 skip="$status_digit_offset" \
+            count=1 status=none)" = "6"
+          test -z "$(find "$scratch" -maxdepth 1 -type f \
+            -name '.archec0-source-*' -print -quit)"
+
+          peak_rss_kib=$(awk -F: \
+            '/Maximum resident set size/ { gsub(/^[ \t]+/, "", $2); print $2 }' \
+            "$metrics")
+          peak_scratch_bytes=$(cat "$peak_file")
+          [[ "$peak_rss_kib" =~ ^[0-9]+$ ]]
+          [[ "$peak_scratch_bytes" =~ ^[0-9]+$ ]]
+          test "$peak_rss_kib" -lt 1048576
+          test "$peak_scratch_bytes" -lt 12884901888
+          test "$compiler_elapsed_seconds" -lt 1200
+          test "$(stat -c %s "$artifact")" -lt 16777216
+
+          set +e
+          "$artifact" > "$observation" 2> "$runtime_stderr"
+          status=$?
+          set -e
+          test "$status" -eq 47
+          test ! -s "$runtime_stderr"
+          cmp "$expected_observation" "$observation"
+
+          printf 'logical_source_bytes=%s\n' "$source_size"
+          printf 'allocated_source_blocks=%s\n' "$allocated_blocks"
+          printf 'allocated_source_bytes=%s\n' "$allocated_bytes"
+          printf 'immutable_spool_observed=%s\n' "$spool_seen"
+          printf 'post_boundary_mutation_offset=%s\n' "$status_digit_offset"
+          printf 'compiler_peak_rss_kib=%s\n' "$peak_rss_kib"
+          printf 'task_peak_scratch_bytes=%s\n' "$peak_scratch_bytes"
+          printf 'compiler_elapsed_seconds=%s\n' "$compiler_elapsed_seconds"
+          grep 'Elapsed (wall clock) time' "$metrics"
+
+      - name: Verify no tracked files changed
+        run: |
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=no)"
+
+  sparse-large-executable:
+    name: Proof / Sparse >4-GiB Executable
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust 1.95.0
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup override set 1.95.0
+
+      - name: Build release proof before measurement
+        run: |
+          cargo test --locked --release --bin archec0 \
+            --manifest-path ./bootstrap/archec0/Cargo.toml --no-run
+
+      - name: Run production sparse-writer execution proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/archec0-sparse-large-executable"
+          mkdir -p "$scratch"
+          export TMPDIR="$scratch"
+          metrics="$scratch/proof-time.txt"
+          peak_file="$scratch/peak-bytes.txt"
+
+          sample_scratch() {
+            current_bytes=$(du -s -B1 "$scratch" | awk '{ print $1 }')
+            peak_bytes=$(cat "$peak_file")
+            if (( current_bytes > peak_bytes )); then
+              printf '%s\n' "$current_bytes" > "$peak_file"
+            fi
+          }
+
+          printf '0\n' > "$peak_file"
+          proof_started_at=$(date +%s)
+          /usr/bin/time -v -o "$metrics" \
+            env ARCHEC0_KEEP_SPARSE_PROOF=1 \
+            cargo test --locked --release --bin archec0 \
+              --manifest-path ./bootstrap/archec0/Cargo.toml \
+              elf64::tests::executes_sparse_pie_with_real_v2_metadata_beyond_four_gib \
+              -- --ignored --exact --nocapture &
+          proof_pid=$!
+          while kill -0 "$proof_pid" 2>/dev/null; do
+            sample_scratch
+            sleep 0.01
+          done
+          sample_scratch
+          wait "$proof_pid"
+          proof_elapsed_seconds=$(( $(date +%s) - proof_started_at ))
+
+          mapfile -t sparse_artifacts < <(find "$scratch" -maxdepth 1 -type f \
+            -name 'archec0-sparse-v2-*.elf' -print)
+          test "${#sparse_artifacts[@]}" -eq 1
+          sparse_artifact=${sparse_artifacts[0]}
+          read -r sparse_logical_bytes sparse_allocated_blocks \
+            < <(stat -c '%s %b' "$sparse_artifact")
+          sparse_allocated_bytes=$(( sparse_allocated_blocks * 512 ))
+
+          peak_rss_kib=$(awk -F: \
+            '/Maximum resident set size/ { gsub(/^[ \t]+/, "", $2); print $2 }' \
+            "$metrics")
+          peak_scratch_bytes=$(cat "$peak_file")
+          [[ "$peak_rss_kib" =~ ^[0-9]+$ ]]
+          [[ "$peak_scratch_bytes" =~ ^[0-9]+$ ]]
+          test "$peak_rss_kib" -lt 1048576
+          test "$peak_scratch_bytes" -lt 12884901888
+          test "$proof_elapsed_seconds" -lt 1200
+          test "$sparse_logical_bytes" -gt 4294967295
+          test "$sparse_allocated_bytes" -gt 0
+          test "$sparse_allocated_bytes" -lt 16777216
+          test "$sparse_allocated_bytes" -lt "$sparse_logical_bytes"
+          rm -- "$sparse_artifact"
+          test -z "$(find "$scratch" -maxdepth 1 -type f \
+            -name 'archec0-sparse-v2-*.elf' -print -quit)"
+
+          printf 'proof_peak_rss_kib=%s\n' "$peak_rss_kib"
+          printf 'task_peak_scratch_bytes=%s\n' "$peak_scratch_bytes"
+          printf 'sparse_logical_bytes=%s\n' "$sparse_logical_bytes"
+          printf 'sparse_allocated_blocks=%s\n' "$sparse_allocated_blocks"
+          printf 'sparse_allocated_bytes=%s\n' "$sparse_allocated_bytes"
+          printf 'proof_elapsed_seconds=%s\n' "$proof_elapsed_seconds"
+          grep 'Elapsed (wall clock) time' "$metrics"
+
+      - name: Verify no tracked files changed
+        run: |
+          git diff --check
+          git diff --exit-code
+          test -z "$(git status --porcelain --untracked-files=no)"
