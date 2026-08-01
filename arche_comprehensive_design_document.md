@@ -1,9 +1,11 @@
 # Arche Comprehensive Design Document
 
-**Document version:** 0.1  
-**Date:** 2026-05-17  
-**Status:** Foundational design draft  
+**Document version:** 0.2
+**Date:** 2026-08-01
+**Status:** Foundational design plus normative M26 closure contract; implementation locally verified, milestone open
 **Primary goal:** Define Arche as an independent, native, ECS-first programming language and software platform.
+
+The broad platform design in this document remains directional. The M26 clauses are normative for the current bootstrap milestone and override older "initial," example, or future-facing sketches where they conflict. This document defines the contract; `WORK_LOG.md` alone records implementation and acceptance evidence. Documentation or local proof is not evidence that M26 or exact-head CI has completed. The metadata-authoritative native physical-storage path has local reference/native parity evidence; M26 remains open until both required hosted greater-than-4-GiB jobs and required exact-head CI pass and are recorded there.
 
 ---
 
@@ -60,7 +62,7 @@
 49. [Bootstrap and Self-Hosting](#49-bootstrap-and-self-hosting)
 50. [Risks and Mitigations](#50-risks-and-mitigations)
 51. [Open Design Questions](#51-open-design-questions)
-52. [Appendix A: Initial Grammar Sketch](#52-appendix-a-initial-grammar-sketch)
+52. [Appendix A: M26 Grammar Boundary](#52-appendix-a-m26-grammar-boundary)
 53. [Appendix B: Initial Runtime Structs](#53-appendix-b-initial-runtime-structs)
 54. [Appendix C: Initial Arche Core Example](#54-appendix-c-initial-arche-core-example)
 55. [Appendix D: Milestone Acceptance Tests](#55-appendix-d-milestone-acceptance-tests)
@@ -158,7 +160,8 @@ Arche should produce native executables. The first target is deliberately narrow
 
 ```text
 x86-64 Linux
-static ELF64 executable
+static ELF64 position-independent executable (PIE)
+ET_DYN with no interpreter or dynamic relocations
 no required libc dependency
 _start entrypoint
 syscall-based process exit
@@ -280,7 +283,7 @@ schedule Main {
 }
 
 startup {
-    insert Time { delta: 1.0 }
+    resource Time { delta: 1.0 }
 
     spawn {
         Position { x: 0.0, y: 0.0 }
@@ -388,62 +391,121 @@ profile metadata generation
 
 # 6. First Target Platform
 
-The first platform should be intentionally narrow:
+The M26 output target is intentionally narrow:
 
 ```text
 Architecture: x86-64
 Operating system: Linux
-Executable format: ELF64
-Linking model: static
+Executable format: static ELF64 PIE (ET_DYN)
 Entry point: _start
-Runtime dependency: Arche runtime kernel
-C library dependency: none initially
+Runtime dependency: linked Arche runtime kernel only
+Interpreter/dynamic relocation dependency: none
+C library dependency: none
 ```
 
-This target allows Arche to prove independence quickly:
+Windows is a compiler and test host, not an M26 executable target. PE/COFF, Mach-O, AArch64, WebAssembly, native Windows output, and dynamic linking are later work.
 
-```bash
-archec main.arc -o main
-./main
-echo $?
-```
+## 6.1 M26 authority boundary
 
-The first executable milestone:
+Executable semantic checking has one branded result: `VerifiedExecutableCore`. Only the executable verifier can construct it. Bare `archec0 SOURCE` and `archec0 SOURCE --check` both require a buildable executable and emit no artifact. `--emit-core`, `--emit-machine`, and `-o` use the same executable checker; `--emit-ast` remains syntax-only and `--inspect-components` remains declaration-only.
 
-```arche
-world Main
+The syntax-only AST view contains no derived identity. Core and Machine diagnostic output displays every schema, system, query, and schedule ID as 32 uppercase hexadecimal digits alongside the separate checked `u64` Core index. Machine links also display the distinct ABI and Core-body hashes used by AOT dispatch. These views expose linkage for testing and inspection without making a dense index into stable identity.
 
-startup {
-    exit 42
-}
-```
+Compiler status is `0` for success, `1` for parse, semantic, or build failure, and `2` for usage or unsafe output-target errors. Lexer-captured EOF and closing-brace positions give missing startup, missing final exit, and incomplete literals stable, precise spans.
 
-Expected behavior:
+Verified Core is authoritative for program semantics and represents ordered resource initialization, spawn, schedule dispatch, scalar operations, blocks, branches, loops, query iteration, resource and component access, and exit. Machine IR is a generalized AOT lowering detail derived from verified Core, not a second semantic authority.
 
-```bash
-./main
-echo $?
-# 42
-```
+The reference executor interprets Core directly and independently of native lowering. Reference and native execution both consume metadata decoded and linked through the same ARCHEECS v2 contract. Metadata selects and orders schemas, startup operations, payloads, schedules, query bindings, and native functions. AOT machine code remains authoritative for system-body instructions. Separate ABI and verified-Core-body hashes bind each metadata function link to its body.
 
-The emitted machine code can initially be equivalent to:
+No production behavior may depend on fixture names, declaration ordinals, fixed descriptor, term, or lane counts, whole-blob equality, a compiler-side execution-shape recognizer, or a source-derived host-only plan.
 
-```asm
-_start:
-    mov rax, 60      ; Linux exit syscall
-    mov rdi, 42      ; exit code
-    syscall
-```
+## 6.2 M26 language boundary
 
-After this works, Arche can expand to:
+Stored fields and locals support only `i32`, `f32`, and `bool`. They have layouts 4/4, 4/4, and 1/1 respectively. Integers use little-endian two's-complement bits, floats use IEEE binary32 bits, and booleans encode only as `0` or `1`. There are no implicit numeric or boolean conversions.
+
+Components and resources may contain zero fields. `tag Name` is a zero-sized, alignment-one schema whose v2 flags field is exactly `TAG = 0x1`; component and resource schema flags are `0`. Tags and other zero-sized schemas participate in archetype signatures and query matching without payload allocation. M26 accepts `{}` literals, initialized and uninitialized empty resources, tag attachment such as `Enemy {}`, and `spawn {}` for an empty-archetype entity.
+
+Every component or resource literal names each declared field exactly once. Unknown, duplicate, and omitted fields are errors. Named fields can appear in any order; initializer expressions evaluate in source order and payload bytes are stored in declaration order.
+
+Startup and systems share the same typed scalar expression semantics:
 
 ```text
-x86-64 Windows PE/COFF
-x86-64 macOS Mach-O
-AArch64 Linux
-AArch64 macOS
-WebAssembly
+primary
+unary:             - ~ !
+multiplicative:    * / %
+additive:          + -
+shift:             << >>
+relational:        < <= > >=
+equality:          == !=
+bitwise:           & then ^ then |
+logical:           && then ||
 ```
+
+Parentheses, mutable `let` locals, direct assignment, and typed field initialization are supported in both startup and systems; systems additionally support component and resource field reads and writes. `i32` supports arithmetic, remainder, unary negation, shifts, comparisons, equality, and bitwise operations. `f32` supports arithmetic, unary negation, comparisons, and equality. `bool` supports literals, negation, short-circuit conjunction/disjunction, and equality.
+
+Integer addition, subtraction, multiplication, unary negation, left shift, and bitwise operations wrap in two's complement. Right shift is arithmetic and shift counts use the low five RHS bits. Division or remainder by zero, plus `i32::MIN / -1` and `i32::MIN % -1`, trap. `-2147483648` is the one magnitude interpreted after unary negation; all other integer literals must fit after unary interpretation.
+
+At compiler process entry, before semantic folding, and at emitted-program entry, before execution, the floating-point environment is round-to-nearest-even, exceptions are masked, and FTZ/DAZ are disabled. Operations are not fused. Subnormals and signed zero are preserved. Every arithmetic NaN result is canonicalized to bits `0x7FC00000`. Ordered comparisons with NaN are false except `!=`, which is true.
+
+Startup is straight-line and source ordered. It gains the shared expressions and mutable-local assignment, including `+=`, but not `if` or `while`. Systems support lexical blocks, locals, assignment, `if`/`else`, `while`, multiple query loops, and `+=` for mutable numeric locals, resource fields, and query component fields. Query loops can occur inside control flow but cannot nest, and there is no language-level loop iteration cap. Other compound assignments are outside M26.
+
+## 6.3 M26 ECS boundary
+
+System resources use `read Resource` or `mut Resource`. Duplicate read-only aliases are valid; an alias set containing mutable access is rejected conservatively. Queries support required reads `T`, mutable terms `mut T`, and exclusions `!T`. Source term order determines bindings. Exclusions do not bind, so an exclusion-only query uses the empty binding list `for ()`. A required tag or other zero-sized term can bind only `_`; `mut Tag` is invalid. Including and excluding the same schema is invalid.
+
+The executable checker rejects duplicate queryable schemas, resources, systems, schedules, fields, parameters, and active lexical bindings. It also proves before every startup schedule run that every resource read or mutated by each dispatched system has already been initialized. Metadata decoding repeats this resource-flow check before any world mutation.
+
+Entity handles, optional terms, change detection, nested query loops, structural mutation from systems, command buffers, events, relations, and parallel schedules remain deferred.
+
+## 6.4 M26 metadata and identity
+
+The executable carries one hard-cut little-endian metadata format: `ARCHEECS` version 2. Earlier ARCHEECS versions and ARCHECMP are not executable compatibility paths. Both legacy forms exit `1` before world mutation. Their exact diagnostics are `arche: unsupported ARCHEECS version 1; rebuild with archec0` and `arche: unsupported ARCHECMP artifact; rebuild with archec0`.
+
+The v2 header is 64 bytes and records magic, version, header size, flags, total length, directory offset/count/row size, and zeroed reserved fields. Each directory row is 64 bytes and records kind, flags, offset, byte length, record count, record stride, alignment, and zeroed reserved fields. Canonical sections contain strings, world, schemas, fields, systems, parameters, queries, terms, schedules, items, startup operations, payloads, function links, and source spans.
+
+All offsets, counts, sizes, lengths, strides, slice references, layout values, dense indexes, and Core IDs are checked `u64`. IDs remain raw 16-byte values; variable data lives in strings or payloads. The decoder validates the complete directory and all cross-references before world creation: checked arithmetic, bounds, alignment, overlap, stride, UTF-8, canonical and required section policy, unique IDs, dense-index bounds, layouts, payloads, query access, schedule targets, startup/resource flow, spans, function offsets, ABI hashes, and body hashes. Structural validation is not a signature or authenticity guarantee.
+
+Schemas use `SchemaId([u8; 16])`; systems, queries, and schedules use separate domain-separated 128-bit declaration IDs; function linking uses distinct 128-bit ABI and Core-body hashes. Dense runtime indexes are assigned only after canonical ID sorting and are not stable identity.
+
+Stable identifiers and link hashes use pinned pure-Rust BLAKE3 1.8.5. Every preimage starts with its NUL-terminated domain bytes and fingerprint version `1` encoded as a little-endian `u32`; this is distinct from the little-endian `u64` canonical-Core encoding version inside ABI/body payloads. Schema, declaration, ABI, and body payloads are specified byte-for-byte in Section 23.1. The first 16 digest bytes are stored verbatim and displayed as 32 uppercase hexadecimal digits.
+
+## 6.5 M26 observation and failure behavior
+
+After a source exit or semantic trap, successful world observation is streamed to stdout as canonical uppercase ASCII `ARCHEOBS2`. Resources sort by schema ID; tables sort lexicographically by sorted schema-ID signatures; rows retain committed spawn order; columns follow signature order. Observation includes initialized and uninitialized resources, initialized empty payloads, tag and zero-sized membership, empty-archetype rows, and zero-length columns. Empty payloads print as `-`; allocator capacity is not semantic state.
+
+The record grammar is:
+
+```text
+ARCHEOBS2
+RESOURCE <ID32> UNINITIALIZED
+RESOURCE <ID32> INITIALIZED <LEN> <HEX-or-->
+TABLE <KEY_COUNT> <IDS...> <ROW_COUNT>
+ROW <ROW_INDEX> <SPAWN_ORDINAL> <COLUMN_COUNT>
+COLUMN <ID32> <LEN> <HEX-or-->
+END
+```
+
+On an integer trap, prior committed effects remain and the trapping write is not applied. The process emits and flushes the full observation, writes `arche: trap[<KIND>] <basename>:<line>:<column> bytes <start>..<end>` to stderr, and exits `70`. Metadata, link, allocation, or observation-I/O failure exits `1` without claiming a complete observation. A source `exit 70` remains distinguishable because it has no trap diagnostic. Normal source exit uses the low eight bits of its `i32` value.
+
+## 6.6 M26 source and publication boundary
+
+`SourceSpan` carries checked `u64` byte boundaries and lexer-captured `u64` line/column endpoints. Compilation first snapshots the complete input into a private temporary spool, retains the original `SourceIdentity`, and then reads only the immutable snapshot. The lexer is incremental over `BufRead`; the parser keeps two-token lookahead; diagnostic snippets are bounded; the spool is cleaned on every outcome. AST/Core storage is proportional to semantic content and identifiers are interned instead of copying source slices.
+
+Formatters and encoders accept streaming `Write`; metadata and ELF writers accept `Write + Seek`. Conversion to `usize` occurs only at a host allocation or slice boundary and can fail explicitly for overflow, address-space, filesystem, or allocation limits. There is no fixed product cap.
+
+Output publication calls a producer on a unique sibling temporary, synchronizes it, preserves executable permissions, repeats exact-path, relative/canonical, symlink, and hard-link source/output alias defenses, cleans failures, and atomically replaces the target. The promise is atomic visibility only, not parent-directory synchronization or power-loss durability.
+
+## 6.7 M26 ELF contract
+
+The emitted static PIE is `ET_DYN` with no interpreter, dynamic relocations, or text relocations. It has distinct read-only header, read-execute text, read-write non-executable data/BSS/world-state, and read-only metadata `PT_LOAD` segments, plus a read-write non-executable `PT_GNU_STACK`. Page alignment and file-offset/virtual-address congruence are preserved and no segment is writable and executable.
+
+Native code establishes a RIP anchor and represents metadata, function, and data targets as checked 64-bit image-relative deltas. Calls and jumps use far-safe indirect sequences. Conditional branches invert over a local short skip before the far transfer, eliminating late `rel32` range failures. ELF output is streamed and backpatched; sparse holes are created with seeking instead of zero-filled buffers.
+
+## 6.8 M26 closure boundary
+
+M26 is not complete merely because these requirements are documented or local tests pass. Closure requires byte-identical ARCHEOBS2 and equal status from the independent Core reference path and native PIE for the primary multi-system fixture and structurally different Arena fixture, plus an exact trap proof. Both greater-than-4-GiB Linux job contexts must be registered as required checks, and those jobs, strict Linux and Windows Clippy, the complete proof suite, dependency audit, and exact-head CI must pass and be recorded in `WORK_LOG.md`.
+
+The large-source contract covers a semantically ordinary program with very large input bytes; it does not promise that billions of declarations fit under the CI memory bound. Host address-space, filesystem, allocation, and kernel limits are explicit failures. M26 adds no signing, sandboxing, or crash-durability guarantee.
 
 ---
 
@@ -563,7 +625,7 @@ Resources are singleton world-level data.
 ```arche
 resource Time {
     delta: f32
-    elapsed: f64
+    elapsed: f32
 }
 ```
 
@@ -592,7 +654,7 @@ query[Position]
 query[mut Position, Velocity]
 query[Player, mut Health]
 query[Position, !Frozen]
-query[entity, Enemy, Position]
+query[entity, Enemy, Position] // post-M26 entity handles
 ```
 
 ## 8.7 Schedules
@@ -604,7 +666,7 @@ schedule Main {
     run Input
     run Move
     run ApplyDamage
-    flush
+    flush // post-M26 command-buffer barrier
     run Render
 }
 ```
@@ -689,8 +751,8 @@ The entity store maps an entity index to its current location:
 typedef struct ArcheEntityLocation {
     uint32_t generation;
     uint32_t alive;
-    uint32_t archetype_index;
-    uint32_t row;
+    uint64_t archetype_index;
+    uint64_t row;
 } ArcheEntityLocation;
 ```
 
@@ -738,22 +800,17 @@ component Position {
 }
 ```
 
-## 11.2 Component restrictions for early versions
+## 11.2 M26 component field types
 
-Early Arche components should be plain data only:
+M26 components and resources are plain data with this complete field-type set:
 
 ```text
 bool
 i32
-u32
-i64
-u64
 f32
-f64
-entity
-fixed-size arrays later
-nested plain structs later
 ```
+
+Other integer widths, `f64`, entity handles, arrays, and nested plain structs are later additions.
 
 Delay:
 
@@ -777,13 +834,13 @@ Each component emits metadata:
 ```c
 typedef struct ArcheComponentDesc {
     uint128_t stable_id;
-    uint32_t dense_id;
+    uint64_t dense_id;
     const char* name;
-    uint32_t size;
-    uint32_t align;
-    uint32_t field_count;
+    uint64_t size;
+    uint64_t align;
+    uint64_t field_count;
     const ArcheFieldDesc* fields;
-    uint32_t flags;
+    uint64_t flags;
 } ArcheComponentDesc;
 ```
 
@@ -792,10 +849,10 @@ Field descriptor:
 ```c
 typedef struct ArcheFieldDesc {
     const char* name;
-    uint32_t type_kind;
-    uint32_t offset;
-    uint32_t size;
-    uint32_t align;
+    uint64_t type_kind;
+    uint64_t offset;
+    uint64_t size;
+    uint64_t align;
 } ArcheFieldDesc;
 ```
 
@@ -842,7 +899,7 @@ Resources are singleton values stored in the world.
 ```arche
 resource Time {
     delta: f32
-    elapsed: f64
+    elapsed: f32
 }
 ```
 
@@ -877,11 +934,11 @@ Resource descriptor:
 ```c
 typedef struct ArcheResourceDesc {
     uint128_t stable_id;
-    uint32_t dense_id;
+    uint64_t dense_id;
     const char* name;
-    uint32_t size;
-    uint32_t align;
-    uint32_t field_count;
+    uint64_t size;
+    uint64_t align;
+    uint64_t field_count;
     const ArcheFieldDesc* fields;
 } ArcheResourceDesc;
 ```
@@ -966,6 +1023,8 @@ structural write: false
 queries: Move.q0
 ```
 
+M26 also permits `mut Resource` parameters. Duplicate aliases are accepted only when all aliases are read-only; any alias set containing mutable access is rejected conservatively across the system.
+
 System ABI:
 
 ```c
@@ -1000,7 +1059,7 @@ query[mut Position]
 query[Position, Velocity]
 query[mut Position, Velocity]
 query[Position, !Frozen]
-query[entity, Enemy, Position]
+query[entity, Enemy, Position]  // future entity binding
 query[?Velocity, Position]       // future optional term
 query[Changed<Position>]         // future change detection
 query[Added<Enemy>]              // future added detection
@@ -1014,7 +1073,7 @@ query[Removed<Health>]           // future removed detection
 | `T` | Required read access to component/tag `T` |
 | `mut T` | Required write access to component `T` |
 | `!T` | Entity must not have component/tag `T` |
-| `entity` | Include entity handle in iteration |
+| `entity` | Include entity handle in iteration, post-M26 |
 | `?T` | Optional component, future |
 | `Changed<T>` | Component changed since last run, future |
 | `Added<T>` | Component recently added, future |
@@ -1033,16 +1092,18 @@ typedef enum ArcheQueryAccess {
 
 typedef struct ArcheQueryTerm {
     uint128_t stable_component_id;
-    uint32_t dense_component_id;
+    uint64_t dense_component_id;
     uint8_t access;
 } ArcheQueryTerm;
 
 typedef struct ArcheQueryDesc {
     const char* name;
-    uint32_t term_count;
+    uint64_t term_count;
     const ArcheQueryTerm* terms;
 } ArcheQueryDesc;
 ```
+
+M26 preserves term order for bindings. Exclusions never bind. Tags and other zero-sized required terms can bind only `_`. Mutable tags and simultaneous inclusion and exclusion of one schema are invalid. Query loops may appear in system control flow but cannot nest.
 
 ## 15.4 Query plan
 
@@ -1050,14 +1111,14 @@ At runtime or link time, a query descriptor becomes a query plan:
 
 ```c
 typedef struct ArcheQueryTablePlan {
-    uint32_t archetype_index;
-    uint32_t entity_column_present;
-    uint32_t* component_column_indices;
+    uint64_t archetype_index;
+    uint64_t entity_column_present;
+    uint64_t* component_column_indices;
 } ArcheQueryTablePlan;
 
 typedef struct ArcheQueryPlan {
     const ArcheQueryDesc* desc;
-    uint32_t table_count;
+    uint64_t table_count;
     ArcheQueryTablePlan* tables;
 } ArcheQueryPlan;
 ```
@@ -1102,7 +1163,7 @@ schedule Main {
     run PlayerInput
     run Move
     run ApplyDamage
-    flush
+    flush // post-M26
     run Render
 }
 ```
@@ -1122,20 +1183,20 @@ Schedule descriptor:
 
 ```c
 typedef struct ArcheScheduleNode {
-    uint32_t system_index;
-    uint32_t dependency_count;
-    uint32_t* dependencies;
+    uint64_t system_index;
+    uint64_t dependency_count;
+    uint64_t* dependencies;
 } ArcheScheduleNode;
 
 typedef struct ArcheScheduleBatch {
-    uint32_t node_count;
+    uint64_t node_count;
     ArcheScheduleNode* nodes;
-    uint32_t has_flush_after;
+    uint8_t has_flush_after;
 } ArcheScheduleBatch;
 
 typedef struct ArcheScheduleDesc {
     const char* name;
-    uint32_t batch_count;
+    uint64_t batch_count;
     ArcheScheduleBatch* batches;
 } ArcheScheduleDesc;
 ```
@@ -1186,8 +1247,8 @@ typedef enum ArcheCommandKind {
 
 typedef struct ArcheCommandHeader {
     uint16_t kind;
-    uint16_t align;
-    uint32_t size;
+    uint64_t align;
+    uint64_t size;
 } ArcheCommandHeader;
 ```
 
@@ -1271,10 +1332,10 @@ Event descriptor:
 ```c
 typedef struct ArcheEventDesc {
     uint128_t stable_id;
-    uint32_t dense_id;
+    uint64_t dense_id;
     const char* name;
-    uint32_t size;
-    uint32_t align;
+    uint64_t size;
+    uint64_t align;
     uint32_t lifetime;
 } ArcheEventDesc;
 ```
@@ -1503,14 +1564,14 @@ The runtime API exposed to compiled systems should be minimal.
 ArcheWorld* arche_world_create(void);
 void arche_world_destroy(ArcheWorld* world);
 
-void* arche_resource_get(ArcheWorld* world, uint32_t dense_resource_id);
-void arche_resource_insert(ArcheWorld* world, uint32_t dense_resource_id, const void* value);
+void* arche_resource_get(ArcheWorld* world, uint64_t dense_resource_id);
+void arche_resource_insert(ArcheWorld* world, uint64_t dense_resource_id, const void* value);
 
 ArcheQueryPlan* arche_query_prepare(ArcheWorld* world, const ArcheQueryDesc* desc);
 void arche_query_begin(ArcheWorld* world, ArcheQueryPlan* plan, ArcheQueryIter* out);
 bool arche_query_next_chunk(ArcheQueryIter* iter, ArcheChunkView* out);
 
-void arche_commands_append(ArcheCommandBuffer* buffer, const void* command, uint32_t size);
+void arche_commands_append(ArcheCommandBuffer* buffer, const void* command, uint64_t size);
 void arche_commands_flush(ArcheWorld* world, ArcheCommandBuffer* buffer);
 ```
 
@@ -1526,18 +1587,20 @@ The ABI defines stable binary expectations.
 
 | Arche type | Size | Alignment | Notes |
 |---|---:|---:|---|
-| `bool` | 1 | 1 | Stored as 0 or 1 |
+| `bool` | 1 | 1 | M26, stored only as 0 or 1 |
 | `i8` | 1 | 1 | Future |
 | `u8` | 1 | 1 | Future |
 | `i16` | 2 | 2 | Future |
 | `u16` | 2 | 2 | Future |
-| `i32` | 4 | 4 | Initial |
-| `u32` | 4 | 4 | Initial |
-| `i64` | 8 | 8 | Initial |
-| `u64` | 8 | 8 | Initial |
-| `f32` | 4 | 4 | Initial |
-| `f64` | 8 | 8 | Initial |
-| `entity` | 8 | 8 | Packed index + generation |
+| `i32` | 4 | 4 | M26, little-endian two's-complement bits |
+| `u32` | 4 | 4 | Future source type; metadata uses checked `u64` |
+| `i64` | 8 | 8 | Future |
+| `u64` | 8 | 8 | Future source type; metadata uses checked `u64` |
+| `f32` | 4 | 4 | M26, IEEE binary32 bits |
+| `f64` | 8 | 8 | Future |
+| `entity` | 8 | 8 | Future packed index + generation |
+
+Zero-field components and resources have size zero and alignment one. Tags have the same layout and additionally carry the TAG metadata flag.
 
 ## 22.2 Struct layout
 
@@ -1570,7 +1633,7 @@ struct align: 4
 
 ## 22.3 System ABI
 
-System function signature:
+The long-term public system ABI may expose:
 
 ```c
 typedef void (*ArcheSystemFn)(
@@ -1580,7 +1643,7 @@ typedef void (*ArcheSystemFn)(
 );
 ```
 
-Initial x86-64 internal convention:
+M26 links its internal generated functions through ARCHEECS v2 function records and validates both ABI and Core-body hashes before world mutation. The command-buffer parameter has no language-level operations in M26. A future public ABI can use the following x86-64 convention:
 
 ```text
 rdi = world
@@ -1592,7 +1655,7 @@ rdx = command buffer
 
 ```c
 typedef struct ArcheChunkView {
-    uint32_t len;
+    uint64_t len;
     ArcheEntity* entities;
     void** columns;
 } ArcheChunkView;
@@ -1619,26 +1682,167 @@ linking
 schema comparison
 ```
 
-A stable component ID should be derived from:
+A component, resource, or tag has `SchemaId([u8; 16])`. Systems, schedules, and queries use the same raw 16-byte representation as `DeclId`; native links use raw 16-byte `AbiHash` and `BodyHash` values. All four types use this normative construction:
 
 ```text
-fully qualified name
-kind: component/tag/resource/event
-field names
-field types
-field order
-schema version, if provided
+stable128(domain, payload) = BLAKE3(domain || u32le(1) || payload)[0..16]
 ```
 
-Conceptual:
+The BLAKE3 operation is unkeyed. `domain` includes its trailing NUL byte. `u32le(1)` is the four bytes `01 00 00 00`; it is the fingerprint-format version for every ID and hash domain. The first 16 digest bytes are copied verbatim, without integer reinterpretation, and display in wire order as 32 uppercase hexadecimal digits.
+
+The canonical byte vocabulary is:
+
+| Notation | Bytes |
+|---|---|
+| `u8(x)` | one byte |
+| `bool(x)` | `00` for false or `01` for true |
+| `u32le(x)` | four bytes, least significant first |
+| `u64le(x)` | eight bytes, least significant first |
+| `id128(x)` | the 16 raw bytes of the referenced ID or hash |
+| `str(x)` | `u64le(UTF-8 byte length)` followed by the UTF-8 bytes, with no terminator |
+
+Counts and Core IDs are `u64le`. Sequences are count-prefixed only where the grammar below explicitly shows a count. Records are concatenated with no padding or alignment bytes.
+
+The exact domains are:
+
+| Purpose | ASCII bytes | Hex bytes |
+|---|---|---|
+| schema ID | `ARCHE-SCHEMA-ID\0` | `41 52 43 48 45 2D 53 43 48 45 4D 41 2D 49 44 00` |
+| system ID | `ARCHE-SYSTEM-ID\0` | `41 52 43 48 45 2D 53 59 53 54 45 4D 2D 49 44 00` |
+| schedule ID | `ARCHE-SCHEDULE-ID\0` | `41 52 43 48 45 2D 53 43 48 45 44 55 4C 45 2D 49 44 00` |
+| query ID | `ARCHE-QUERY-ID\0` | `41 52 43 48 45 2D 51 55 45 52 59 2D 49 44 00` |
+| ABI hash | `ARCHE-ABI-HASH\0` | `41 52 43 48 45 2D 41 42 49 2D 48 41 53 48 00` |
+| Core-body hash | `ARCHE-BODY-HASH\0` | `41 52 43 48 45 2D 42 4F 44 59 2D 48 41 53 48 00` |
+
+Declaration-ID payloads are:
+
+| ID | Payload after domain and fingerprint version |
+|---|---|
+| schema | `u8(kind) || str(world) || str(local_name) || u64le(field_count) || field*` |
+| schema field | `str(field_name) || u8(primitive_type)` |
+| system | `str(world) || str(local_name)` |
+| schedule | `str(world) || str(local_name)` |
+| query | `id128(parent_system_id) || str(parameter_name)` |
+
+Schema kinds are component `1`, resource `2`, and tag `3`. Primitive types are `i32 = 1`, `f32 = 2`, and `bool = 3`. Schema fields remain in declaration order; names are encoded separately rather than concatenated into an ambiguous qualified string.
+
+Golden vectors fixed by the implementation are:
+
+| Input | Uppercase wire-order result |
+|---|---|
+| component schema `Demo.Position { x: f32, y: f32 }` | `E6E38FA83F96A32AA6CA26FCD8E29FED` |
+| system `Demo.Move` | `30B49813C21A4FE2AC3AB5EC91762525` |
+| schedule `Demo.Main` | `A84CD595F7D399E6B08123EF5DAA90F5` |
+| query parameter `movers` under the preceding `Demo.Move` ID | `CB0E807161BB02CAB685F0AC9C9BF4DC` |
+| system world/name strings `Δ` and `名` | `F47D45318BA812D92B71FC7CA4C51302` |
+
+For a low-level domain-separation vector, let `S` be the schema ID for resource `Demo.Time { delta: f32 }` and let `P = u8(7) || u64le(0x0102030405060708) || id128(S) || str("Move")`. Then `stable128(ARCHE-ABI-HASH\0, P)` is `9271D60459527794206B07D1568A7D94`, while `stable128(ARCHE-BODY-HASH\0, P)` is `45054B4897A991ABA55F35AEBF36CAF1`.
+
+### Canonical ABI and body encoding
+
+ABI and body hashes use `stable128` with their respective domains. Their payload begins with canonical-Core encoding version `u64le(1)`, the eight bytes `01 00 00 00 00 00 00 00`. This version is independent of the outer fingerprint-format `u32le(1)` and must change if any table or ordering rule in this subsection changes.
+
+The ABI payloads are:
+
+| Function | Payload |
+|---|---|
+| startup | `u64le(1) || u8(1) || u64le(0) || u8(1)`; function kind `1`, zero parameters, result type `i32` |
+| system | `u64le(1) || u8(2) || id128(system_id) || u64le(parameter_count) || parameter*` |
+
+System parameters remain in declaration order. Each parameter begins `str(name) || u8(kind)`: kind `1` (read resource) and kind `2` (mutable resource) append `id128(resource_schema_id)`; kind `3` (query) appends `u64le(term_count)` and each source-ordered term as `u8(access) || id128(schema_id)`. Query access codes are read `1`, mutable `2`, and exclusion `3`.
+
+The startup-body root is:
 
 ```text
-StableComponentId = fingerprint("Demo.Position{x:f32,y:f32}")
+u64le(1) || u8(1) || str(function_name) || u64le(entry_block_id)
+|| u64le(local_count) || local*
+|| u64le(block_count) || block*
 ```
+
+Locals are sorted by ascending Core local ID and encode as `u64le(local_id) || str(name) || u8(type)`. Blocks are sorted by ascending Core block ID and encode as `u64le(block_id) || u64le(instruction_count) || instruction* || terminator`. Instructions within a block retain verified-Core order. The type codes are `i32 = 1`, `f32 = 2`, and `bool = 3`.
+
+A literal is `u8(tag) || value`: `i32` tag `1` plus `u64le(zero_extend_u32(two_complement_bits))`, `f32` tag `2` plus `u64le(zero_extend_u32(binary32_bits))`, or `bool` tag `3` plus `bool(value)`. Thus an `i32` or `f32` scalar contributes eight value bytes even though its semantic representation is four bytes.
+
+Startup instruction encodings, including their leading `u8` discriminant, are:
+
+| Tag | Instruction | Bytes after the tag |
+|---:|---|---|
+| 1 | initialize resource | `id128(resource_schema_id) || u64le(field_count) || field*`; each field is `str(name) || u64le(evaluation_id) || literal` |
+| 2 | spawn | `u64le(component_count) || component*`; each component is `id128(schema_id) || u64le(field_count) || field*`, with fields encoded as above |
+| 3 | run schedule | `id128(schedule_id)` |
+| 4 | `i32` constant | `u64le(result_value_id) || u64le(zero_extend_u32(two_complement_bits))` |
+| 5 | `i32` binary | `u64le(result) || u8(binary_op) || u64le(left) || u64le(right)` |
+| 6 | `i32` unary | `u64le(result) || u8(unary_op) || u64le(operand)` |
+| 7 | `f32` constant | `u64le(result) || u64le(zero_extend_u32(binary32_bits))` |
+| 8 | `f32` unary | `u64le(result) || u8(unary_op) || u64le(operand)` |
+| 9 | `f32` binary | `u64le(result) || u8(binary_op) || u64le(left) || u64le(right)` |
+| 10 | ordered comparison | `u64le(result) || u8(comparison_op) || u64le(left) || u64le(right) || u8(operand_type)` |
+| 11 | `bool` constant | `u64le(result) || bool(value)` |
+| 12 | `bool` not | `u64le(result) || u64le(operand)` |
+| 13 | equality | `u64le(result) || u64le(left) || u64le(right) || u8(operand_type) || bool(negate)` |
+| 14 | local store | `u64le(local_id) || u64le(value_id)` |
+| 15 | local load | `u64le(result_value_id) || u64le(local_id)` |
+
+Startup binary operation codes are add `1`, subtract `2`, multiply `3`, divide `4`, remainder `5`, shift-left `6`, arithmetic shift-right `7`, bitwise-and `8`, bitwise-xor `9`, and bitwise-or `10`. Unary codes are negate `1` and bitwise-not `2`. Ordered-comparison codes are less `1`, less-or-equal `2`, greater `3`, and greater-or-equal `4`.
+
+Startup terminators are `u8(1) || u64le(exit_value_id)`, `u8(2) || u64le(jump_target_block_id)`, or `u8(3) || u64le(condition_value_id) || u64le(then_block_id) || u64le(else_block_id)`.
+
+The system-body root is:
+
+```text
+u64le(1) || u8(2) || u64le(statement_count) || statement*
+```
+
+System statements and all recursively nested statement lists retain verified-Core order:
+
+| Tag | Statement | Bytes after the tag |
+|---:|---|---|
+| 1 | query loop | `str(query_parameter) || u64le(binding_count) || binding* || u64le(body_count) || statement*`; each binding is `str(name) || id128(schema_id) || u8(access)` |
+| 2 | expression | `expression` |
+| 3 | `let` | `str(name) || u8(type) || bool(mutable) || expression` |
+| 4 | assignment | `place || expression` |
+| 5 | add-assignment | `place || expression` |
+| 6 | lexical block | `u64le(statement_count) || statement*` |
+| 7 | `if` | `condition_expression || u64le(then_count) || statement* || u64le(else_count) || statement*` |
+| 8 | `while` | `condition_expression || u64le(body_count) || statement*` |
+
+Places are recursively embedded without a length prefix:
+
+| Tag | Place | Bytes after the tag |
+|---:|---|---|
+| 1 | local | `str(name) || u8(type) || bool(mutable)` |
+| 2 | component field | `str(binding) || id128(component_schema_id) || str(field_name)` |
+| 3 | resource field | `str(parameter) || id128(resource_schema_id) || str(field_name)` |
+
+Expressions are likewise prefix-discriminated and recursive:
+
+| Tag | Expression | Bytes after the tag |
+|---:|---|---|
+| 1 | `i32` constant | `u64le(zero_extend_u32(two_complement_bits))` |
+| 2 | `f32` constant | `u64le(zero_extend_u32(binary32_bits))` |
+| 3 | `bool` constant | `bool(value)` |
+| 4 | local | `str(name) || u8(type)` |
+| 5 | resource field | `str(parameter) || id128(resource_schema_id) || str(field_name)` |
+| 6 | component field | `str(binding) || id128(component_schema_id) || str(field_name)` |
+| 7 | boolean not | `operand_expression` |
+| 8 | unary | `u8(unary_op) || operand_expression` |
+| 9 | binary | `u8(binary_op) || left_expression || right_expression` |
+
+System unary operation codes are `i32` negate `1`, `f32` negate `2`, `i32` bitwise-not `3`, and boolean-not `4`. System binary codes are:
+
+| Codes | Operations |
+|---|---|
+| 1-10 | `i32` add, subtract, multiply, divide, remainder, shift-left, arithmetic shift-right, bitwise-and, bitwise-xor, bitwise-or |
+| 11-14 | `f32` add, subtract, multiply, divide |
+| 15-18 | `i32` less, less-or-equal, greater, greater-or-equal |
+| 19-22 | `f32` less, less-or-equal, greater, greater-or-equal |
+| 23-26 | equality, inequality, logical-and, logical-or |
+
+Schema fields, ABI parameters and terms, startup instruction/component/field vectors, system statements, query bindings, and expression operands are hashed in the order stated above. Source spans, machine offsets, symbol names, and metadata dense indexes are not part of these ABI/body preimages. A system body hash does not repeat the system ID; the function link pairs it with the separately hashed ABI and declaration ID.
 
 ## 23.2 Dense IDs
 
-Dense IDs are assigned during linking or startup:
+Dense `u64` IDs are assigned after canonical stable-ID sorting during linking:
 
 ```text
 Demo.Position -> 0
@@ -1670,11 +1874,13 @@ same stable ID, different declaration: error
 unresolved component reference: error
 ```
 
+Stable 128-bit IDs remain distinct from dense runtime indexes in every format and runtime API.
+
 ---
 
 # 24. Arche Core
 
-Arche Core is the canonical semantic representation of a compiled Arche program.
+Arche Core is the canonical semantic representation of a compiled Arche program. Executable Core becomes usable only after verification and branding as `VerifiedExecutableCore`; unverified Core cannot enter runtime assembly, reference execution, metadata linking, or native lowering.
 
 It is not a temporary high-level IR. It is a permanent contract between:
 
@@ -1772,20 +1978,40 @@ body {
 The Core verifier checks:
 
 ```text
+exactly one startup entry and one reachable final exit
+typed SSA/values and boolean branch conditions
+valid block targets, block terminators, and reachability
+definite local initialization on every path
 all symbols resolve
 all fields exist
 all loads/stores have valid types
 system effects match actual access
 queries do not conflict internally
+query bindings preserve term order and zero-sized binding rules
 component references do not escape
-structural mutations use commands
+no post-startup structural mutation appears in the M26 subset
 query loops only access declared query terms
 resources are accessed with declared mutability
+every scheduled resource access is initialized at that source-ordered run
+payloads are exhaustive and schema/field references are valid
+only the selected M26 feature set appears
 ```
+
+The M26 Core directly represents startup operations, schedule dispatch, scalar operations, lexical blocks, branches, loops, non-nested query iteration, resource/component reads and writes, traps, and exit. Its independent interpreter is the generic semantic reference. Machine IR is derived only after verification.
 
 ---
 
 # 25. Arche Object Format
+
+## 25.0 M26 executable metadata package
+
+M26 executable metadata is one little-endian `ARCHEECS` version 2 package embedded in a read-only ELF load segment. It is not ARCHECMP, ARCHEECS v1, an exact compiler-expected byte blob, or a compatibility envelope. Old artifacts fail before mutation with the rebuild diagnostics fixed in Section 6.4.
+
+The 64-byte header and 64-byte directory rows describe canonical sections for strings, world, schemas, fields, systems, parameters, queries, terms, schedules, schedule items, startup operations, payloads, function links, and source spans. All offsets, lengths, counts, strides, layouts, slice references, dense indexes, and Core IDs are checked `u64`; stable IDs and hashes are raw 16-byte values.
+
+The decoder validates the entire package, cross-references, startup/resource flow, and native links before world mutation. Coherent edits to resource payloads or startup/schedule ordering intentionally change both reference and native behavior. Invalid schema, query, schedule, or function links fail before mutation. This is structural validation, not authenticity.
+
+The `.aco` design below is a later multi-file object interface. It must preserve the v2 authority split when implemented; it is not the M26 executable metadata format.
 
 Arche object files use extension:
 
@@ -1861,21 +2087,27 @@ This is a permanent piece of the platform, not a detour.
 Initial target:
 
 ```text
-ELF64 static executable
+ELF64 static position-independent executable
+ET_DYN
 x86-64 Linux
+no interpreter, dynamic relocations, or text relocations
 ```
 
 The compiler or linker must emit:
 
 ```text
-ELF header
-program headers
-.text segment
-.rodata segment
-.data segment
-.bss segment
-entrypoint address
+read-only header PT_LOAD
+read-execute text PT_LOAD containing the entrypoint
+read-write, non-executable data/BSS/world-state PT_LOAD
+read-only ARCHEECS v2 metadata PT_LOAD
+read-write, non-executable PT_GNU_STACK
+page-aligned offset/vaddr-congruent segments
+no writable-and-executable segment
 ```
+
+Generated code establishes a RIP anchor and reaches metadata, functions, and data using 64-bit image-relative deltas and far-safe indirect calls/jumps. A far conditional branch inverts its condition over a local short skip and then uses the far sequence. No late `rel32` limitation is part of artifact production.
+
+The writer streams and backpatches through `Write + Seek`. Sparse layout tests create holes by seeking, never by allocating or writing a zero-filled multi-gigabyte buffer.
 
 ## 26.2 Long-term executable support
 
@@ -2001,6 +2233,10 @@ machine code range -> source span
 
 This enables diagnostics, debugging, and profiling.
 
+For M26, every `SourceSpan` stores checked `u64` byte boundaries and the lexer-captured `u64` line and column at both endpoints. The compiler first copies the complete input into a private immutable `SourceSnapshot` spool, retains the original `SourceIdentity`, and parses only the spool. The lexer consumes `BufRead` incrementally, the parser holds two-token lookahead, diagnostics load only bounded snippets, and the spool is cleaned on success and failure. Interned identifiers keep AST/Core memory proportional to semantic content rather than raw source size.
+
+Formatters and metadata encoders accept `Write`; metadata and ELF production accept `Write + Seek`. Values convert to `usize` only where a host allocation or slice requires it and report explicit overflow, address-space, filesystem, or allocation failures. No fixed product size cap substitutes for checked arithmetic.
+
 ---
 
 # 28. Frontend
@@ -2039,7 +2275,6 @@ run
 flush
 spawn
 despawn
-insert
 exit
 query
 read
@@ -2081,7 +2316,7 @@ if
 while
 for query
 spawn
-insert resource
+initialize resource
 run schedule
 exit
 expression statement
@@ -2093,11 +2328,14 @@ Initial expressions:
 literals
 variables
 field access
-binary arithmetic
-comparison
+parentheses and unary operations
+typed integer, float, and boolean binary operations
+comparison and equality
+short-circuit boolean logic
 struct literal
-function call, limited
 ```
+
+M26 uses one expression parser and type checker for startup and systems. Its precedence is primary, unary, multiplicative, additive, shifts, relational, equality, bitwise `&`, `^`, `|`, logical `&&`, and logical `||`. Function calls remain later work.
 
 ## 28.3 AST should not be the final semantic form
 
@@ -2137,6 +2375,10 @@ field access
 query variable access
 resource mutability
 exit expression type
+definite initialization of every local on every path
+exactly one startup and one reachable final exit
+complete component/resource literals
+source-ordered resource initialization before schedule use
 ```
 
 ## 29.3 ECS semantic checks
@@ -2150,6 +2392,9 @@ resources are accessed as read or mut
 systems have valid parameter forms
 schedules refer to existing systems
 startup refers to existing schedules
+duplicates are absent from every declaration and active lexical namespace
+tags and other zero-sized query terms bind only `_`
+query loops do not nest
 ```
 
 ---
@@ -2276,7 +2521,7 @@ Example:
 component Transform {
     x: f32
     y: f32
-    id: u64
+    enabled: bool
 }
 ```
 
@@ -2285,13 +2530,12 @@ Layout:
 ```text
 x: offset 0
 y: offset 4
-padding: 0 bytes before id because offset 8 is already aligned to 8
-id: offset 8
-size: 16
-align: 8
+enabled: offset 8
+size: 12
+align: 4
 ```
 
-The layout planner must be deterministic.
+The layout planner must be deterministic. M26 performs alignment and size arithmetic as checked `u64`, including zero-sized alignment-one schemas, and converts to `usize` only at an actual host allocation or slice boundary.
 
 ---
 
@@ -2321,6 +2565,8 @@ which column index holds Position in each table
 which column index holds Velocity in each table
 whether entity column is needed
 ```
+
+Entity columns are post-M26. M26 preserves source term order for required bindings, omits exclusion bindings, represents tag/zero-sized membership without payload allocation, and iterates matching tables and rows in canonical order.
 
 A query matches an archetype if:
 
@@ -2377,7 +2623,7 @@ Batch 0: A, B, D
 Batch 1: C
 ```
 
-Early version can execute sequentially but should still produce batch metadata.
+M26 executes schedule items sequentially and permits repeated system entries, repeated schedule runs, and arbitrary supported system/query shapes. Parallel batches, flush barriers, and command-buffer scheduling are later work.
 
 ---
 
@@ -2413,6 +2659,8 @@ Do not optimize before correctness.
 Emit simple but valid machine code.
 Keep source span mapping.
 Keep ECS hot loops recognizable.
+Derive every machine body from VerifiedExecutableCore.
+Use metadata links for function selection and dispatch.
 ```
 
 Initial supported code:
@@ -2422,12 +2670,16 @@ exit constant
 integer locals
 integer arithmetic
 float arithmetic
+boolean and bitwise operations
 field loads/stores
 while loops
 if statements
-query chunk loops
+multiple non-nested query loops
 system calls into runtime kernel
+source-span-aware integer traps
 ```
+
+The backend must implement the M26 integer wrapping, masked-shift, division/remainder trap, boolean short-circuit, and deterministic `f32` rules exactly. Floating-point operations are not fused; arithmetic NaNs are canonicalized and process entry establishes the required floating-point control state.
 
 ---
 
@@ -2504,8 +2756,11 @@ For runtime calls, Arche can initially use its own internal convention. Later, F
 Initial allocator:
 
 ```text
-simple linear-scan or even stack-heavy allocation
+simple linear scan with bounded stack temporaries
+planned world/resource/table storage in writable data or BSS
 ```
+
+World capacity and metadata reachability are not encoded as `u16` frame plans or signed-32 displacements.
 
 Early correctness matters more than performance.
 
@@ -2552,19 +2807,19 @@ row_done:
 
 # 36. ELF64 Writer
 
-The first executable writer should support static ELF64 output.
+The M26 executable writer emits a segmented x86-64 Linux static PIE.
 
 Required ELF pieces:
 
 ```text
-ELF header
-program headers
-.text segment
-.rodata segment
-.data segment
-.bss segment
-entrypoint address
-page alignment
+ET_DYN ELF header and program headers
+R-- header PT_LOAD
+R-X text PT_LOAD with entrypoint
+RW- data/BSS/world-state PT_LOAD
+R-- ARCHEECS v2 metadata PT_LOAD
+RW- non-executable PT_GNU_STACK
+page alignment and file-offset/virtual-address congruence
+no PT_INTERP, dynamic relocations, text relocations, or RWE segment
 ```
 
 First executable:
@@ -2588,15 +2843,15 @@ syscall
 ELF responsibilities:
 
 ```text
-place .text at executable virtual address
-place .rodata read-only
-place .data writable
-set p_flags appropriately
-set entrypoint to _start
-write file with executable permissions via build tool
+stream and backpatch through Write + Seek
+place the entrypoint in executable text
+keep metadata read-only and world storage non-executable
+seek across sparse holes rather than writing zero buffers
+encode far-safe image-relative native transfers
+publish with executable permissions through an atomic sibling temporary
 ```
 
-The first version may skip relocatable objects and emit full executables directly. However, `.aco` support should be specified early because multi-file compilation depends on it.
+The bootstrap may continue emitting complete executables directly. `.aco` remains a later multi-file interface and must not introduce a second semantic or metadata authority.
 
 ---
 
@@ -2655,14 +2910,17 @@ Boot sequence:
 
 ```text
 _start
-  initialize platform state
+  establish deterministic floating-point state
+  decode and validate all ARCHEECS v2 metadata and links
   initialize allocator
   create world
-  register linked metadata
+  construct descriptors, resources, tables, queries, schedules, and function table
   run startup function
-  destroy world
+  emit and flush ARCHEOBS2 after source exit or semantic trap
   exit
 ```
+
+Metadata decoding and linking completes before allocator/world mutation. Invalid metadata never produces a complete observation.
 
 ## 38.2 Startup block
 
@@ -2670,7 +2928,7 @@ Source:
 
 ```arche
 startup {
-    insert Time { delta: 0.016 }
+    resource Time { delta: 0.016 }
     spawn { Position { x: 0.0, y: 0.0 } }
     run Main
     exit 0
@@ -2680,12 +2938,14 @@ startup {
 Startup code can perform:
 
 ```text
-resource insertion
+resource initialization
 entity spawning
 schedule execution
-basic control flow
+shared scalar expressions, mutable locals, and direct assignment
 exit
 ```
+
+Startup remains straight-line and source ordered; `if`, `while`, and query loops are system-only in M26. Each resource initialization, spawn, and assignment validates/reserves its full operation before commit, so failure publishes no partial current operation while retaining earlier commits.
 
 ## 38.3 Exit
 
@@ -2696,6 +2956,14 @@ rax = 60
 rdi = exit code
 syscall
 ```
+
+The source value is `i32`; the process status uses its low eight bits.
+
+## 38.4 Observation and traps
+
+The M26 runtime streams one canonical `ARCHEOBS2` snapshot after a source exit or semantic trap. It includes every resource state, zero-sized/tag membership, empty-archetype entities, zero-length columns, and committed spawn ordinal in stable ID/table/row order. It does not expose allocator capacity.
+
+An integer trap leaves prior commits intact, suppresses the trapping write, flushes the observation, writes the exact source-span diagnostic `arche: trap[<KIND>] <basename>:<line>:<column> bytes <start>..<end>` to stderr, and exits `70`. Other runtime infrastructure failures exit `1` without claiming a complete observation.
 
 ---
 
@@ -2910,6 +3178,7 @@ component/resource declarations -> size/align/offsets
 ```text
 Core -> machine code bytes
 Core -> ELF executable
+seek-based ELF validation, including segments and >4-GiB offsets
 ```
 
 ## 43.7 Runtime tests
@@ -2921,7 +3190,7 @@ spawn
 despawn
 add component
 remove component
-resource insertion
+resource initialization
 query iteration
 command flush
 ```
@@ -2930,6 +3199,7 @@ command flush
 
 ```text
 .arc source -> executable -> expected exit code/output/state
+decoded ARCHEECS v2 -> direct Core reference and native PIE -> byte-identical ARCHEOBS2/status
 ```
 
 Example:
@@ -2999,18 +3269,19 @@ suggestion when obvious
 
 # 45. Toolchain Commands
 
-## 45.1 `archec`
+## 45.1 `archec0` bootstrap interface
 
 ```bash
-archec check file.arc
-archec build file.arc -o app
-archec build file.arc --emit=ast
-archec build file.arc --emit=core
-archec build file.arc --emit=layout
-archec build file.arc --emit=machine
-archec build file.arc --emit=obj
-archec build file.arc --emit=elf
+archec0 file.arc
+archec0 file.arc --check
+archec0 file.arc --emit-ast
+archec0 file.arc --inspect-components
+archec0 file.arc --emit-core
+archec0 file.arc --emit-machine
+archec0 file.arc -o app
 ```
+
+Bare invocation aliases `--check` and emits no file. `--emit-ast` is syntax-only; component inspection is declaration-only; check, Core, Machine, and output modes require executable verification. Success is status `0`, parse/semantic/build failure is `1`, and usage or unsafe output-target failure is `2`.
 
 ## 45.2 `arche`
 
@@ -3059,7 +3330,7 @@ Schedules:
 
 # 46. Language Surface
 
-Initial syntax should be ECS-first.
+The M26 syntax is ECS-first and limited to the declarations and operations below. Broader examples elsewhere in this document are future design unless marked M26.
 
 ## 46.1 World
 
@@ -3073,7 +3344,15 @@ world Demo
 component Position {
     x: f32
     y: f32
+    visible: bool
 }
+
+component Velocity {
+    x: f32
+    y: f32
+}
+
+component Empty {}
 ```
 
 ## 46.3 Tags
@@ -3089,6 +3368,8 @@ tag Enemy
 resource Time {
     delta: f32
 }
+
+resource Marker {}
 ```
 
 ## 46.5 Systems
@@ -3096,33 +3377,41 @@ resource Time {
 ```arche
 system Move(
     time: read Time,
+    marker: mut Marker,
     movers: query[mut Position, Velocity]
 ) {
+    let enabled: bool = true
     for (pos, vel) in movers {
-        pos.x += vel.x * time.delta
-        pos.y += vel.y * time.delta
+        if enabled {
+            pos.x += vel.x * time.delta
+            pos.y += vel.y * time.delta
+        }
     }
 }
 ```
+
+Systems may use lexical blocks, direct assignment, `if`/`else`, `while`, and multiple non-nested query loops. Startup uses the same scalar expressions and assignment but remains straight-line. The complete scalar operator and trap rules are in Section 6.2.
 
 ## 46.6 Schedules
 
 ```arche
 schedule Main {
     run Move
-    flush
-    run Render
+    run Move
 }
 ```
+
+M26 schedules are sequential. Command-buffer `flush` and parallel batches are post-M26.
 
 ## 46.7 Startup
 
 ```arche
 startup {
-    insert Time { delta: 0.016 }
+    resource Time { delta: 0.016 }
+    resource Marker {}
 
     spawn {
-        Position { x: 0.0, y: 0.0 }
+        Position { x: 0.0, y: 0.0, visible: true }
         Velocity { x: 1.0, y: 0.0 }
     }
 
@@ -3190,7 +3479,7 @@ schedule Main {
 }
 
 startup {
-    insert Time { delta: 1.0 }
+    resource Time { delta: 1.0 }
 
     spawn {
         Position { x: 0.0, y: 0.0 }
@@ -3202,7 +3491,9 @@ startup {
 }
 ```
 
-## 47.4 Health and despawn
+## 47.4 Post-M26 health and despawn direction
+
+This example deliberately uses deferred entity handles, command buffers, despawn, and flush syntax. It is not accepted by the M26 language.
 
 ```arche
 world Combat
@@ -3331,7 +3622,7 @@ Goals:
 ```text
 resource descriptors
 resource storage
-insert resource
+initialize resource
 read resource in system
 ```
 
@@ -3492,116 +3783,104 @@ These need future decisions:
 
 1. Should Arche Core be serialized as text, binary, or both?
 2. Should `.aco` contain machine code directly, Core, or both?
-3. Should the linker assign dense IDs statically, or should runtime startup assign them?
-4. Should tags be true zero-sized components or separate signature bits?
-5. Should optional query terms return nullable references or option-like values?
-6. Should Arche support immediate structural mutation outside query loops?
-7. How should deterministic scheduling be specified?
-8. Should component schema evolution be versioned explicitly?
-9. Should packages be globally named or content-addressed?
-10. What is the first string model?
-11. What error handling model should Arche use?
-12. How much of the runtime kernel should be written in Arche once self-hosting begins?
-13. Should relations be built into the core runtime or layered as indexed components?
-14. Should events be stored as resources, special streams, or command-buffer-like append logs?
-15. Should the first debugger attach to running processes or inspect paused snapshots?
+3. Should optional query terms return nullable references or option-like values?
+4. Should Arche support immediate structural mutation outside query loops?
+5. How should deterministic scheduling extend beyond M26's sequential order?
+6. Should component schema evolution be versioned explicitly?
+7. Should packages be globally named or content-addressed?
+8. What is the first string model?
+9. What error handling model should Arche use?
+10. How much of the runtime kernel should be written in Arche once self-hosting begins?
+11. Should relations be built into the core runtime or layered as indexed components?
+12. Should events be stored as resources, special streams, or command-buffer-like append logs?
+13. Should the first debugger attach to running processes or inspect paused snapshots?
 
 ---
 
-# 52. Appendix A: Initial Grammar Sketch
+# 52. Appendix A: M26 Grammar Boundary
+
+This sketch names the M26 surface only. Semantic rules additionally require one world, one startup block, a reachable final startup exit, exhaustive literals, non-nested query loops, and the access/resource-flow invariants described above.
 
 ```text
-program         := world_decl item*
+program          := world_decl item*
+world_decl       := "world" IDENT
 
-world_decl      := "world" IDENT
+item             := component_decl
+                  | resource_decl
+                  | tag_decl
+                  | system_decl
+                  | schedule_decl
+                  | startup_decl
 
-item            := component_decl
-                 | resource_decl
-                 | tag_decl
-                 | event_decl
-                 | relation_decl
-                 | system_decl
-                 | schedule_decl
-                 | startup_decl
+component_decl   := "component" IDENT "{" field* "}"
+resource_decl    := "resource" IDENT "{" field* "}"
+tag_decl         := "tag" IDENT
+field            := IDENT ":" type
+type             := "i32" | "f32" | "bool"
 
-component_decl  := "component" IDENT "{" field* "}"
-resource_decl   := "resource" IDENT "{" field* "}"
-tag_decl        := "tag" IDENT
+system_decl      := "system" IDENT "(" param_list? ")" system_block
+param_list       := param ("," param)*
+param            := IDENT ":" param_type
+param_type       := "read" IDENT
+                  | "mut" IDENT
+                  | "query" "[" query_terms "]"
+query_terms      := query_term ("," query_term)*
+query_term       := IDENT | "mut" IDENT | "!" IDENT
 
-event_decl      := "event" IDENT "{" field* "}"
-relation_decl   := "relation" IDENT "{" field* "}"
+schedule_decl    := "schedule" IDENT "{" ("run" IDENT)* "}"
 
-field           := IDENT ":" type
+startup_decl     := "startup" "{" startup_stmt* exit_stmt "}"
+startup_stmt     := let_stmt
+                  | assign_stmt
+                  | add_assign_stmt
+                  | resource_stmt
+                  | spawn_stmt
+                  | run_stmt
+resource_stmt    := "resource" IDENT struct_literal_body
+spawn_stmt       := "spawn" "{" component_init* "}"
+component_init   := IDENT struct_literal_body
+run_stmt         := "run" IDENT
+exit_stmt        := "exit" expr
 
-type            := "bool"
-                 | "i32"
-                 | "u32"
-                 | "i64"
-                 | "u64"
-                 | "f32"
-                 | "f64"
-                 | "entity"
-                 | IDENT
+system_block     := "{" system_stmt* "}"
+system_stmt      := let_stmt
+                  | assign_stmt
+                  | add_assign_stmt
+                  | if_stmt
+                  | while_stmt
+                  | query_for_stmt
+                  | system_block
+if_stmt          := "if" expr system_block ("else" system_block)?
+while_stmt       := "while" expr system_block
+query_for_stmt   := "for" "(" binding_list? ")" "in" IDENT system_block
+binding_list     := binding ("," binding)*
+binding          := IDENT | "_"
 
-system_decl     := "system" IDENT "(" param_list? ")" block
-param_list      := param ("," param)*
-param           := IDENT ":" param_type
+let_stmt         := "let" "mut"? IDENT ":" type "=" expr
+assign_stmt      := place "=" expr
+add_assign_stmt  := place "+=" expr
+place            := IDENT ("." IDENT)*
 
-param_type      := "read" IDENT
-                 | "mut" IDENT
-                 | "commands"
-                 | "query" "[" query_terms "]"
-                 | "events" IDENT
-                 | "emit" IDENT
+struct_literal   := IDENT struct_literal_body
+struct_literal_body := "{" field_init_list? "}"
+field_init_list  := field_init ("," field_init)*
+field_init       := IDENT ":" expr
 
-query_terms     := query_term ("," query_term)*
-query_term      := IDENT
-                 | "mut" IDENT
-                 | "!" IDENT
-                 | "entity"
-
-schedule_decl   := "schedule" IDENT "{" schedule_item* "}"
-schedule_item   := "run" IDENT
-                 | "flush"
-
-startup_decl    := "startup" block
-
-block           := "{" stmt* "}"
-
-stmt            := let_stmt
-                 | assign_stmt
-                 | if_stmt
-                 | while_stmt
-                 | for_stmt
-                 | spawn_stmt
-                 | insert_stmt
-                 | run_stmt
-                 | exit_stmt
-                 | expr_stmt
-
-let_stmt        := "let" IDENT (":" type)? "=" expr
-assign_stmt     := place assign_op expr
-assign_op       := "=" | "+=" | "-=" | "*=" | "/="
-
-if_stmt         := "if" expr block ("else" block)?
-while_stmt      := "while" expr block
-for_stmt        := "for" pattern "in" expr block
-
-spawn_stmt      := "spawn" "{" component_init* "}"
-insert_stmt     := "insert" IDENT struct_literal
-run_stmt        := "run" IDENT
-exit_stmt       := "exit" expr
-
-expr            := literal
-                 | IDENT
-                 | field_access
-                 | binary_expr
-                 | call_expr
-                 | struct_literal
-
-field_access    := expr "." IDENT
-struct_literal  := IDENT "{" field_init* "}"
-field_init      := IDENT ":" expr
+expr             := logical_or
+logical_or       := logical_and ("||" logical_and)*
+logical_and      := bitwise_or ("&&" bitwise_or)*
+bitwise_or       := bitwise_xor ("|" bitwise_xor)*
+bitwise_xor      := bitwise_and ("^" bitwise_and)*
+bitwise_and      := equality ("&" equality)*
+equality         := relational (("==" | "!=") relational)*
+relational       := shift (("<" | "<=" | ">" | ">=") shift)*
+shift            := additive (("<<" | ">>") additive)*
+additive         := multiplicative (("+" | "-") multiplicative)*
+multiplicative   := unary (("*" | "/" | "%") unary)*
+unary            := ("-" | "~" | "!") unary | primary
+primary          := atom ("." IDENT)*
+atom             := INTEGER | FLOAT | "true" | "false"
+                  | IDENT | "(" expr ")"
 ```
 
 ---
@@ -3619,57 +3898,57 @@ typedef struct ArcheEntity {
 typedef struct ArcheEntityLocation {
     uint32_t generation;
     uint32_t alive;
-    uint32_t archetype_index;
-    uint32_t row;
+    uint64_t archetype_index;
+    uint64_t row;
 } ArcheEntityLocation;
 
 typedef struct ArcheEntityStore {
     ArcheEntityLocation* locations;
-    uint32_t len;
-    uint32_t cap;
+    uint64_t len;
+    uint64_t cap;
 
-    uint32_t* free_indices;
-    uint32_t free_len;
-    uint32_t free_cap;
+    uint64_t* free_indices;
+    uint64_t free_len;
+    uint64_t free_cap;
 } ArcheEntityStore;
 
 typedef struct ArcheComponentColumn {
-    uint32_t dense_id;
-    uint32_t size;
-    uint32_t align;
-    uint32_t stride;
+    uint64_t dense_id;
+    uint64_t size;
+    uint64_t align;
+    uint64_t stride;
     void* data;
 } ArcheComponentColumn;
 
 typedef struct ArchetypeTable {
-    uint32_t* component_ids;
-    uint32_t component_count;
+    uint64_t* component_ids;
+    uint64_t component_count;
 
     ArcheEntity* entities;
     ArcheComponentColumn* columns;
 
-    uint32_t len;
-    uint32_t cap;
+    uint64_t len;
+    uint64_t cap;
 } ArchetypeTable;
 
 typedef struct ArcheArchetypeStore {
     ArchetypeTable* tables;
-    uint32_t len;
-    uint32_t cap;
+    uint64_t len;
+    uint64_t cap;
 } ArcheArchetypeStore;
 
 typedef struct ArcheResourceSlot {
-    uint32_t dense_id;
+    uint64_t dense_id;
     void* data;
-    uint32_t size;
-    uint32_t align;
-    uint32_t initialized;
+    uint64_t size;
+    uint64_t align;
+    uint8_t initialized;
 } ArcheResourceSlot;
 
 typedef struct ArcheResourceStore {
     ArcheResourceSlot* slots;
-    uint32_t len;
-    uint32_t cap;
+    uint64_t len;
+    uint64_t cap;
 } ArcheResourceStore;
 
 typedef struct ArcheWorld {
@@ -3887,7 +4166,7 @@ system Move(time: read Time, q: query[mut Position, Velocity]) {
 schedule Main { run Move }
 
 startup {
-    insert Time { delta: 1.0 }
+    resource Time { delta: 1.0 }
     spawn {
         Position { x: 0.0, y: 0.0 }
         Velocity { x: 2.0, y: 3.0 }

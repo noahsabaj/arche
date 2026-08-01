@@ -60,8 +60,23 @@ impl From<io::Error> for PublishError {
 /// The repeated identity checks prevent ordinary path, symlink, and hard-link
 /// alias mistakes. They are not a defense against a malicious process racing
 /// namespace replacements between the final check and rename.
+#[cfg(test)]
 pub fn publish(source: &SourceIdentity, output: &Path, bytes: &[u8]) -> Result<(), PublishError> {
-    publish_with_failure(source, output, bytes, FailurePoint::None)
+    publish_with(source, output, |temporary| temporary.write_all(bytes))
+}
+
+/// Publish an artifact produced directly into the sibling temporary file.
+///
+/// The producer may seek as well as write because it receives a real `File`.
+/// This keeps large and sparse artifacts off the heap while preserving the
+/// alias checks, synchronization, permissions, atomic visibility, and cleanup
+/// guarantees of [`publish`].
+pub fn publish_with(
+    source: &SourceIdentity,
+    output: &Path,
+    producer: impl FnOnce(&mut File) -> io::Result<()>,
+) -> Result<(), PublishError> {
+    publish_producer_with_failure(source, output, producer, FailurePoint::None)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -73,10 +88,34 @@ enum FailurePoint {
     BeforeRename,
 }
 
+#[cfg(test)]
 fn publish_with_failure(
     source: &SourceIdentity,
     output: &Path,
     bytes: &[u8],
+    failure: FailurePoint,
+) -> Result<(), PublishError> {
+    publish_producer_with_failure(
+        source,
+        output,
+        |temporary| {
+            #[cfg(test)]
+            if failure == FailurePoint::AfterPartialWrite {
+                let partial_len = bytes.len().div_ceil(2);
+                temporary.write_all(&bytes[..partial_len])?;
+                return Err(io::Error::other("injected partial-write failure"));
+            }
+
+            temporary.write_all(bytes)
+        },
+        failure,
+    )
+}
+
+fn publish_producer_with_failure(
+    source: &SourceIdentity,
+    output: &Path,
+    producer: impl FnOnce(&mut File) -> io::Result<()>,
     _failure: FailurePoint,
 ) -> Result<(), PublishError> {
     ensure_distinct_from_source(source, output)?;
@@ -88,16 +127,7 @@ fn publish_with_failure(
     let (temporary_path, temporary_file) = create_sibling_temporary(output, parent)?;
     let mut temporary = TemporaryOutput::new(temporary_path, temporary_file);
 
-    #[cfg(test)]
-    if _failure == FailurePoint::AfterPartialWrite {
-        let partial_len = bytes.len().div_ceil(2);
-        temporary.file_mut().write_all(&bytes[..partial_len])?;
-        return Err(PublishError::Io(io::Error::other(
-            "injected partial-write failure",
-        )));
-    }
-
-    temporary.file_mut().write_all(bytes)?;
+    producer(temporary.file_mut())?;
     temporary.file_mut().flush()?;
     make_executable(temporary.file())?;
     temporary.file().sync_all()?;
@@ -265,6 +295,7 @@ impl Drop for TemporaryOutput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Seek, SeekFrom};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT_TEST_DIRECTORY: AtomicU64 = AtomicU64::new(0);
@@ -282,6 +313,49 @@ mod tests {
 
         assert_eq!(fs::read(output_path).unwrap(), b"new artifact");
         assert_eq!(fs::read(source_path).unwrap(), b"world Main {}\n");
+        assert_no_temporary_files(directory.path());
+    }
+
+    #[test]
+    fn publishes_seeked_artifact_without_materializing_it_in_memory() {
+        let directory = TestDirectory::new();
+        let source_path = directory.path().join("source.arc");
+        let output_path = directory.path().join("program");
+        fs::write(&source_path, "world Main {}\n").unwrap();
+        let (_source_file, source) = open_source(&source_path);
+
+        publish_with(&source, &output_path, |temporary| {
+            temporary.write_all(b"HEAD")?;
+            temporary.seek(SeekFrom::Start(64 * 1024))?;
+            temporary.write_all(b"TAIL")
+        })
+        .unwrap();
+
+        let mut output = File::open(&output_path).unwrap();
+        assert_eq!(output.metadata().unwrap().len(), 64 * 1024 + 4);
+        output.seek(SeekFrom::End(-4)).unwrap();
+        let mut tail = [0; 4];
+        std::io::Read::read_exact(&mut output, &mut tail).unwrap();
+        assert_eq!(&tail, b"TAIL");
+        assert_no_temporary_files(directory.path());
+    }
+
+    #[test]
+    fn producer_failure_preserves_existing_artifact_and_cleans_temporary() {
+        let directory = TestDirectory::new();
+        let source_path = directory.path().join("source.arc");
+        let output_path = directory.path().join("program");
+        fs::write(&source_path, "world Main {}\n").unwrap();
+        fs::write(&output_path, b"old artifact").unwrap();
+        let (_source_file, source) = open_source(&source_path);
+
+        let result = publish_with(&source, &output_path, |temporary| {
+            temporary.write_all(b"partial")?;
+            Err(io::Error::other("producer failed"))
+        });
+
+        assert!(matches!(result, Err(PublishError::Io(_))));
+        assert_eq!(fs::read(output_path).unwrap(), b"old artifact");
         assert_no_temporary_files(directory.path());
     }
 

@@ -1,89 +1,41 @@
 param(
-    [switch] $SkipGeneratedLinuxExecution
+    [switch] $SkipGeneratedLinuxExecution,
+    [string] $CompilerPath = "",
+    [string] $BuildDirectory = ""
 )
 
-$ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "_proof_helpers.ps1")
 
-$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repoRoot = Split-Path -Parent (Split-Path -Parent $scriptDir)
-$outputPath = Join-Path $repoRoot "build/e2e/exit42"
-$outputDir = Split-Path -Parent $outputPath
-$isWindowsPlatform = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
-$isLinuxPlatform = $false
-if (!$isWindowsPlatform) {
-    $isLinuxVariable = Get-Variable -Name IsLinux -ErrorAction SilentlyContinue
-    $isLinuxPlatform = $null -ne $isLinuxVariable -and [bool] $isLinuxVariable.Value
+if ($BuildDirectory.Length -eq 0) {
+    $BuildDirectory = Join-Path $script:E2eRepoRoot "build/e2e/exit42"
 }
-
-function ConvertTo-WslPath {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string] $Path
-    )
-
-    $resolved = (Resolve-Path -LiteralPath $Path).Path
-
-    if ($resolved -notmatch '^([A-Za-z]):\\(.*)$') {
-        Write-Error "Cannot convert non-drive path to WSL path: $resolved"
-        exit 1
-    }
-
-    $drive = $matches[1].ToLowerInvariant()
-    $rest = $matches[2] -replace '\\', '/'
-    return "/mnt/$drive/$rest"
+if (Test-Path -LiteralPath $BuildDirectory) {
+    Remove-Item -LiteralPath $BuildDirectory -Recurse -Force
 }
+[IO.Directory]::CreateDirectory($BuildDirectory) | Out-Null
 
-function Assert-ExitCode {
-    param(
-        [Parameter(Mandatory = $true)]
-        [int] $Actual,
-
-        [Parameter(Mandatory = $true)]
-        [int] $Expected
-    )
-
-    if ($Actual -ne $Expected) {
-        Write-Error "Expected exit code $Expected but got $Actual"
-        exit 1
-    }
-}
-
-New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
-Remove-Item -LiteralPath $outputPath -Force -ErrorAction SilentlyContinue
-
-Push-Location $repoRoot
 try {
-    & cargo run --locked --manifest-path "./bootstrap/archec0/Cargo.toml" -- "./examples/exit42.arc" "-o" "./build/e2e/exit42"
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "archec0 failed with exit code $LASTEXITCODE"
-        exit $LASTEXITCODE
+    $compiler = Get-E2eCompiler $CompilerPath
+    $source = Join-Path $script:E2eRepoRoot "examples/exit42.arc"
+    $artifact = Join-Path $BuildDirectory "exit42"
+    $compile = Invoke-E2eProcess "compile exit42" $compiler @($source, "-o", $artifact)
+    Assert-E2eStatus $compile 0
+    Assert-E2eV2Artifact $artifact
+
+    $run = Invoke-E2eArtifact "run exit42" $artifact `
+        -SkipGeneratedLinuxExecution:$SkipGeneratedLinuxExecution
+    if ($null -ne $run) {
+        Assert-E2eStatus $run 42
+        Assert-E2e ($run.Stderr.Length -eq 0) "exit42 wrote unexpected stderr"
+        $normalized = $run.Stdout.Replace("`r`n", "`n").Replace("`r", "`n")
+        Assert-E2e ($normalized -eq "ARCHEOBS2`nEND`n") `
+            "exit42 observation is not the canonical empty-world stream"
+        Assert-E2eObservation "exit42" $run.Stdout
     }
-
-    if ($SkipGeneratedLinuxExecution) {
-        Write-Host "SKIP: exit42 generated Linux execution (-SkipGeneratedLinuxExecution)"
-        return
-    }
-
-    if ($isWindowsPlatform) {
-        if (!(Get-Command wsl -ErrorAction SilentlyContinue)) {
-            Write-Error "wsl.exe is required to run the generated Linux ELF; use -SkipGeneratedLinuxExecution to skip explicitly"
-            exit 1
-        }
-
-        $wslPath = ConvertTo-WslPath -Path $outputPath
-        & wsl $wslPath
-    } elseif ($isLinuxPlatform) {
-        $resolvedOutputPath = (Resolve-Path -LiteralPath $outputPath).Path
-        & $resolvedOutputPath
-    } else {
-        Write-Error "Generated Linux ELF execution is supported only on Windows through WSL or directly on Linux; use -SkipGeneratedLinuxExecution to skip explicitly"
-        exit 1
-    }
-
-    Assert-ExitCode -Actual $LASTEXITCODE -Expected 42
-
-    Write-Host "PASS: exit42 exits 42"
+    Write-Host "PASS: exit42 e2e"
 }
 finally {
-    Pop-Location
+    if (Test-Path -LiteralPath $BuildDirectory) {
+        Remove-Item -LiteralPath $BuildDirectory -Recurse -Force
+    }
 }

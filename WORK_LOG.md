@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M25 implementation is complete and the Board is closed; the next work is a deliberate M26 design checkpoint, not M26 implementation.
+**Current focus:** M26 audit remediation and closure implementation is active. M26 remains open until reference/native parity, both required greater-than-4-GiB jobs, the complete cross-platform proof suite, and exact-head CI are green.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -13,6 +13,43 @@ This file is not a second design document. It is the build map for proving that 
 - Generated proof/build artifacts are intentionally ignored via `.gitignore`, including `build/` and `bootstrap/archec0/target/`.
 - Repository setup does not advance milestone issues; the current board is tracked below.
 - `README.md` provides GitHub orientation for the repository; it does not advance the milestone board.
+
+## 2026-07-31 M26 Audit Remediation Locally Verified (updated 2026-08-01)
+
+The accepted M26 closure contract is being implemented as a hard compatibility cut. This entry records current worktree evidence only. It is not milestone closure evidence and has no implementation commit, hosted large-file result, or exact-head CI result.
+
+Implemented and locally exercised so far:
+
+- Bare invocation and `--check` share the full executable build through branded `VerifiedExecutableCore`; `--emit-ast` remains syntax-only, `--inspect-components` remains declaration-only, and Core, Machine, and output modes use executable checking.
+- The source path copies the complete input into a private immutable `SourceSnapshot` spool before parsing, retains the original `SourceIdentity`, lexes incrementally through `BufRead`, parses with two-token lookahead, uses checked `u64` source positions, and captures precise token, closing-brace, and EOF locations.
+- The frontend and verified Core cover the selected M26 tags and zero-sized schemas, exhaustive literals, resource/query access, scalar expressions, assignment, lexical blocks, branches, loops, multiple non-nested query loops, definite local initialization, payload evaluation/layout order, resource-initialization flow, source spans, low-eight-bit exits, and integer traps. Exclusion-only queries use `for ()`; startup `+=` lowers through typed Core load/add/store; syntax and declaration-only modes retain multiple startup blocks while executable modes reject the second startup at its exact keyword span.
+- The compiler establishes the specified floating-point environment before any semantic folding, and emitted programs establish it again at native entry. A test perturbs the host test thread's MXCSR, calls the same compiler-entry initializer, and proves subnormal folding remains metadata-authoritative; no production-only or environment-variable test hook exists.
+- Canonical BLAKE3-based 128-bit schema, declaration, ABI, and body IDs and the single 14-section `ARCHEECS` v2 package are implemented with checked `u64` fields and host-side structural and cross-reference validation. Schema flags are typed: tags carry exactly `TAG = 0x1`, while components and resources carry `0`; unknown or kind-mismatched bits are rejected.
+- The generic reference world and direct verified-Core interpreter consume decoded and linked v2 metadata, stream canonical `ARCHEOBS2`, preserve prior commits while suppressing a trapping write, and honor metadata-authoritative payload, startup, schedule, query, and dispatch records.
+- Machine IR is derived only from verified Core. Metadata selects schemas, payloads, startup/schedule order, query bindings, functions, and dispatch; AOT code remains authoritative for system-body instructions, with separate ABI and Core-body link hashes. Exact AST, Core, and Machine goldens now cover the M26 closure fixture; Core and Machine output expose every canonical ID32 separately from checked `u64` Core indexes, while the syntax-only AST stays identity-free.
+- The ELF writer plans and streams separate R-- header, R-X text, RW non-executable data/BSS, and R-- metadata segments with a non-executable GNU stack, seek-created sparse holes, 64-bit image-relative anchors, far-safe transfers, and no W+X segment. Publication uses a synchronized sibling temporary and promises atomic visibility only.
+- The native runtime decodes and validates the complete v2 directory before mutation, binds canonical declaration/ABI identity without retaining behavioral metadata mirrors, resolves schedule dispatch through decoded function links, uses per-schema physical-storage rows, and dynamically enumerates resources, spawns, query terms, tables, rows, columns, and `ARCHEOBS2`. Allocation-free decoded-count scans enforce payload, string, and source-span use plus function-body ownership, containment, and non-overlap with the same accepted/rejected boundary as the host decoder.
+- Linux and Windows strict-Clippy jobs and separate 20-minute physical-large-source and sparse-large-executable Linux jobs are defined in the proof workflow. Defining those jobs is not evidence that hosted runners passed them or that the new contexts are required by branch protection.
+- A Linux-only test-harness race that intermittently produced `ETXTBSY` under default-parallel execution is closed structurally: one `cfg(all(test, target_os = "linux"))` mutex now covers each temporary PIE's publication, execution, and cleanup across AOT, native-runtime, and sparse-proof helpers. It introduces no production hook or lint suppression.
+- The stale repository `AUDIT.md` and its sole `.gitattributes` preservation rule are deleted; Git history remains the audit record.
+- Production encoders, decoders, observers, fixture-shape recognizers, and source-derived runtime assembly no longer provide ARCHECMP, ARCHEECS v1, or ARCHEOBS1 compatibility paths. Only explicit legacy-rejection probes and these required status-1 diagnostics remain: `arche: unsupported ARCHEECS version 1; rebuild with archec0` and `arche: unsupported ARCHECMP artifact; rebuild with archec0`.
+
+Current local evidence captured on this uncommitted worktree:
+
+- Formatting, locked all-target checks, strict `-D warnings` Clippy, and locked debug and release all-target tests are green. Debug and release each passed 52 library tests and 151 executable tests; the ten ignored Windows-host cases are the explicit WSL-native counterparts.
+- The final x86-64 Linux-musl cross-target check and strict `-D warnings` Clippy are green. The exact-current Linux binary harness passed twice at default parallelism and once serially, each with 175 passed, zero failed, and only the required sparse proof ignored; the focused ignored sparse proof then passed 1/1. The Linux library harness passed 52/52. These repeated parallel runs close the temporary-PIE `ETXTBSY` regression rather than hiding it behind a serial CI invocation.
+- The complete PowerShell Core 7.6.4 proof suite passed with generated Linux execution through WSL, including exact CLI statuses, primary/Arena/trap parity, repeated ASLR execution, malformed-artifact pre-mutation rejection, and three dynamically discovered end-to-end scripts. PowerShell Core and Windows PowerShell 5.1 also passed the Windows-host suite with generated execution explicitly delegated.
+- Independent `readelf -hW/-lW/-dW/-rW` checks confirmed `ET_DYN`, four R--/R-X/RW-/R-- `PT_LOAD` segments, entry in R-X, RW non-executable `PT_GNU_STACK`, no interpreter or dynamic section, no relocations, and no W+X segment.
+- A fresh exact-current local physical-source proof compiled 4,294,969,985 logical bytes with 4,294,975,488 allocated bytes through the detached immutable spool. It observed and then mutated the original at byte 4,294,969,965 only after snapshot completion; the 122,080-byte emitted PIE retained snapshot behavior, exited `47`, and matched ARCHEOBS2 byte for byte. The measured compiler peak RSS was 1,792 KiB, scratch peak 8,590,086,144 bytes, and elapsed time 9.87 seconds.
+- The fresh exact-current production sparse-writer proof executed with real v2 metadata beyond 4 GiB, passed its readelf assertions, and matched the direct Core reference. Its artifact was 4,294,972,896 logical bytes with 112 allocated 512-byte blocks (57,344 bytes); peak RSS was 2,912 KiB, peak scratch was 69,632 bytes, and elapsed time was 0.03 seconds. The proof removed both large artifacts and its private scratch root.
+- `cargo audit --file ./bootstrap/archec0/Cargo.lock`, workflow YAML parsing, `bash -n` for all ten multiline Linux workflow blocks, and `git diff --check` passed.
+- A live GitHub protection audit found strict `main` protection still requires only `Proof / Native Linux` and `Proof / Windows`; no open implementation pull request or ruleset has registered or required the two new large-job contexts. No external state was changed.
+
+Still required before M26 can close:
+
+- Publish the implementation on an authorized branch and pull request so the two new greater-than-4-GiB check contexts register, then add both contexts to strict `main` branch protection while retaining the existing Linux and Windows proof checks.
+- Run both required `ubuntu-24.04` greater-than-4-GiB jobs on the exact implementation/ledger head within their RSS, scratch, and time contracts. Local equivalents are evidence about the implementation, not substitutes for the required hosted-runner results.
+- Obtain all four required checks green on the exact pull-request/merge-group head and again on the exact merged `main` SHA, then record every run and job identity here. Until those external gates are recorded, M26 remains open.
 
 ## 2026-07-13 M25 Descriptor-Generic Native World
 
@@ -113,40 +150,40 @@ If an issue cannot produce one of those, it is too vague and must be split or re
 ## Current Bootstrap North Star
 
 ```text
-Source -> checked AST -> verified Core -> descriptor-derived storage/execution shape -> reference + native execution -> canonical state equivalence.
+immutable source snapshot -> checked AST -> VerifiedExecutableCore
+  -> ARCHEECS v2 metadata + linked AOT bodies
+  -> independent Core reference + native execution
+  -> byte-identical ARCHEOBS2 and equal process status
 ```
 
 This is the current bootstrap proof, not the final product boundary.
 
 Current proven chain and remaining boundary:
 
-- M25 derives canonical multi-table stack storage from verified schemas and startup operations, emits descriptor-sized 4/8/12-byte columns, materializes typed arbitrary startup lists, and resolves query subsets and bindings by stable component ID.
-- One verified-Core-derived supported shape drives both reference and native execution for the unrelated Demo and Arena programs. No fixture name, hard-coded fixture stable ID, declaration ordinal, physical offset, capacity, or row count selects production storage or execution.
-- Canonical test-only observation proves complete live-state equivalence. M26 must replace the temporary one-schedule/one-system/one-resource/one-query, two-term, two-lane `f32` multiply-add shape with generic verified-Core body and sequential-schedule execution.
+- Source, executable checking, verified Core, stable 128-bit IDs, the host v2 decoder/linker, the independent reference interpreter, canonical observation, and the segmented static-PIE writer implement the accepted M26 contracts without the M25 shape recognizer or source-derived runtime assembly.
+- Decoded metadata is the authority for schemas, payloads, startup/schedule order, query terms/bindings, function selection, and dispatch; AOT bodies are the authority for compiled system instructions.
+- Metadata-authoritative per-schema native storage, decoded startup/schedule/query/function dispatch, dynamic state enumeration, primary-fixture/Arena/trap parity, and local physical/sparse greater-than-4-GiB proofs are green. The remaining boundary is hosted large-file and exact-head CI evidence.
 
 ## Integration Debt
 
-These are intentional gaps created by narrow proof milestones.
+These are the current open integration boundaries. The M25 restrictions below survive only in historical milestone records; they are not the present production contract.
 
 Current gaps:
 
-- Native storage is per-program, canonical, multi-table, descriptor-sized, aligned, and statically planned on the stack. It has no runtime heap growth or structural mutation; command buffers, entity lifecycle, and archetype transitions remain M27 work.
-- Startup component lists and payload shapes are descriptor-generic, and query matching accepts any archetype containing the required component-ID subset. Metadata remains version 1.
-- The current execution adapter accepts exactly one initialized read resource, one startup schedule, one system, one query, two distinct mut/read query components, one query loop, and exactly two distinct `f32` operations of `target += source * resource`.
-- The schedule contains exactly one sequential item. The source terminator must be the direct literal `exit 0`; published ECS proofs map success to `47` and metadata/runtime failure to `1`.
-- Compile-time geometric capacities bound each native column. Runtime reallocation, commands, events, relations, parallel scheduling, and arbitrary Core statements/expressions are not implemented.
-- Legacy Demo-shaped helpers remain only behind test/compatibility paths. Production planning, startup, binding, reference execution, and native emission use descriptor/Core-derived identities and offsets.
+- The two hosted greater-than-4-GiB jobs are defined and locally reproduced but are not yet recorded within their required `ubuntu-24.04` runner contracts.
+- Required exact-head Linux and Windows CI has not run on a committed implementation head. All settled local implementation gates are green; this external acceptance boundary remains outstanding.
+- Runtime growth, system-time structural mutation, entity lifecycle, archetype transitions, command buffers, events, relations, and parallel scheduling remain deliberate post-M26 work rather than compatibility debt.
 
 ## Future Horizon
 
-These are milestone-level direction and closure constraints. M21 through M25 are complete. M26 is the next deliberate design checkpoint but has no promoted issue; later milestones must not be expanded into issue rows before their predecessor closes.
+These are milestone-level direction and closure constraints. M21 through M25 are complete. M26 implementation is active under the accepted closure contract; later milestones must not be expanded into issue rows before M26 closes.
 
 - M21: Native ECS table generalization is complete below.
 - M22: Native ECS table row iteration is complete below.
 - M23: Native ECS world storage bridge is complete below.
 - M24: Native ECS storage catalog and descriptor-driven column binding is complete below. It is the final milestone allowed to close using only the bounded, exact-name `Demo` native fixtures.
 - M25: Descriptor-generic native world is complete. Demo and Arena execute through descriptor-sized multi-table storage and one verified-Core-derived supported shape without fixture identity, declaration ordinal, physical offset, capacity, or row count controlling production behavior.
-- M26: Core-generic native systems and schedules. Native lowering and execution must consume verified Core schemas, system bodies, query bindings, and schedule descriptors without recognizing `Demo.Move`, `Demo.Main`, or equivalent exact program shapes. It closes only when two distinct systems and schedules execute without compiler changes and agree with the reference runtime.
+- M26: Core-generic native systems and schedules. The accepted host, reference, metadata-authoritative native storage/dispatch, AOT, observation, and local parity contracts are implemented and locally green. It closes only when the hosted greater-than-4-GiB and exact-head CI gates are green and recorded.
 - M27: Deferred structural commands and entity lifecycle. Add spawn, despawn, add-component, and remove-component commands; defined schedule-boundary application; archetype transitions; and stale-handle-safe entity reuse. It closes only when commands issued during query execution apply deterministically without invalidating the active scan or partially mutating world state.
 - M28: Deterministic many-world simulation and ML environment proof. Run a headless workload across at least 1,024 independent worlds with observation, action, episode-state, and reward data expressed through ordinary ECS data; repeated seeded schedule steps; and reproducible final-state checksums. It closes only when the same source runs standalone through the reference and native paths without compiler specialization and produces equivalent observable state.
 
@@ -224,7 +261,7 @@ Board rules:
 
 | Issue | Title | Notes |
 |---|---|---|
-| - | - | Empty. |
+| M26-CLOSURE | Audit remediation and M26 closure | Implementation and local reference/native, cross-shell, physical-source, and sparse-executable proofs are green. Required hosted large-file jobs and exact-head CI remain open. |
 
 ### Done
 
@@ -2049,7 +2086,9 @@ Closure verification on 2026-07-13:
 - Required implementation-head CI run [`29291558560`](https://github.com/noahsabaj/arche/actions/runs/29291558560) passed native Linux job `86956066315` and Windows job `86956066332`; Linux executed the native observer and Unix publication gates, while Windows passed both PowerShell editions.
 - Repository `AUDIT.md` remained SHA-256 `B5A84B5DA0E28106A220D0A05F0AC1B54720D955DEA98608376E51BCBB41C48E`; the external ledger remained `0F82FFA0178BEC66298FE535A75A8824B3501DB7DA919B430BCCA7762B25A2A7`. Tooling changed no repository file; only the user-level advisory cache was refreshed.
 
-### M26 Preparation: Remaining Execution Specialization Ledger
+### Superseded M26 Preparation: Remaining Execution Specialization Ledger (historical M25 snapshot)
+
+> Superseded by the accepted M26 contract and the active 2026-07-31 implementation entry at the top of this file. The text below is preserved as the historical M25-to-M26 handoff; its present-tense restrictions do not describe the current worktree.
 
 M26 is recorded but neither promoted nor implemented. M25 removed program identity from storage, archetype, binding, capacity, offset, and supported-shape execution decisions. The remaining restrictions are shape limits derived from verified Core and shared by both acceptance programs:
 
