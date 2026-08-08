@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M26 audit remediation and M27-A are closed. M27-B is the sole active gate, implementing packages, explicit modules, workspaces, dependency resolution and locks, package-aware name resolution, root-world linking, and resolved HIR. M27-C through M27-L remain Backlog. M28 remains the Arche 0.1 release gate after M27.
+**Current focus:** M26 audit remediation, M27-A, and M27-B are closed. M27-C is the sole active gate, implementing the general type, trait, ownership, pattern, call, effect, closure, generator, thread, CTFE, and verified generic Core foundation. M27-D through M27-L remain Backlog. M28 remains the Arche 0.1 release gate after M27.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -268,7 +268,6 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| M27-C | General language semantics and verified generic Core | The selected type, trait, specialization, ownership, pattern, call, effect, closure, generator, thread, CTFE, and verification contracts are implemented and exercised without bypassing the verified generic Core authority. |
 | M27-D | Monomorphization, layout, and ARCHEOBJ v1 | Deterministic instance discovery, verified instantiated Core, layout/ABI, separate compilation, linking/coherence, promoted constants, and object corruption matrices pass. |
 | M27-E | Dynamic runtime values and reentrant worlds | Process/world allocation, move/drop/codec glue, Canonical Value v1, independent `WorldContext` instances, dynamic ECS values, and the OBS3 envelope pass reference-runtime proofs. |
 | M27-F | Entity lifecycle and structural commands | Entity reuse/location repair, deferred ordered commands, archetype transitions, physical iteration order, full OBS3 state, and trap/exception command-epoch behavior pass direct-reference lifecycle proofs. |
@@ -283,12 +282,13 @@ Board rules:
 
 | Issue | Title | Notes |
 |---|---|---|
-| M27-B | Packages, modules, resolution, and HIR | Implement schema-1 manifests, target kinds, explicit module discovery, workspaces, official-registry/local-path dependency resolution and canonical locks, package-aware name resolution, root-world linking, and resolved HIR. Preserve the M27-A public shell and all protected M26/M27-A gates while adding focused malformed-input, determinism, clean-workspace, and cross-host proofs. |
+| M27-C | General language semantics and verified generic Core | Implement the selected type, trait, specialization, operator, pattern, ownership/NLL/drop/unsafe, recursive call, throws/requires, closure, generator, thread, CTFE, and verified generic Core contracts. Preserve the package-aware M27-B HIR authority, keep later instance/layout/AOT concerns in M27-D and M27-G, and add focused semantic, cleanup, effect, and verification proofs. |
 
 ### Done
 
 | Issue | Title | Evidence |
 |---|---|---|
+| M27-B | Packages, modules, resolution, and HIR | Schema-1 manifests, explicit target kinds/modules/workspaces, local-path and deterministic registry-snapshot resolution, canonical requirement-preserving `Arche.lock`, secure immutable source snapshots, package-aware resolved HIR, visibility/re-export and root-world linking, the public `arche check` path, and explicit M26 source migration diagnostics are implemented without changing the accepted `archec0` execution path. Adversarial review fixed graph/lock revalidation, registry-snapshot commitment, alias collisions, visibility widening, raw-definition target linking, public module re-exports, nested path identity, source-open TOCTOU, reserved words, and explicit-root grammar; the final audit found no remaining high or medium finding. Local formatting, locked debug/release workspace all-target tests (`293` passed, `10` intentionally ignored), strict Clippy, PowerShell Core 7.6.4 and Windows PowerShell 5.1 proof suites, dependency audit, duplicate-dependency, publication-cleanup, and diff checks passed. Pull request [#11](https://github.com/noahsabaj/arche/pull/11) merged implementation commit `cf289dda745bd09c8e33626b4ff75cd2e67d5cfb` as `fccca2712b2453bd2943f95ace1da1ccf2c13a81`; exact PR-head run [31267985870](https://github.com/noahsabaj/arche/actions/runs/31267985870) and exact merged-main run [31268239040](https://github.com/noahsabaj/arche/actions/runs/31268239040) each passed Native Linux, Windows, physical greater-than-4-GiB source, and sparse greater-than-4-GiB executable. Main protection was reconfirmed strict with those exact four required contexts. |
 | M27-A | Promote and establish the M27 platform foundation | The normative general-purpose M27/M28 contract, concise README status, promoted ledger, first-party `MIT OR Apache-2.0` licenses, three-member Rust workspace, truthful public `arche` shell, shared process/compiler status taxonomy, exact M27 identity domains with `u32le(2)` goldens, five 64-byte directory-envelope vectors, distinct 64-byte ARCHEENV frame vector, and workspace-wide protected CI are implemented without changing accepted M26 behavior. Local formatting, locked debug/release all-target tests (`219` passed, `10` intentionally ignored), strict Clippy, PowerShell Core 7.6.4 and Windows PowerShell 5.1 suites with WSL execution, dependency audit, metadata validation, and diff checks passed. Pull request [#9](https://github.com/noahsabaj/arche/pull/9) merged implementation commit `ad91ece06725fa83d68504884e009810ec91efe5` as `cb4ddf1383187ab280b17a211521d9b14150bc71`; exact merged-main run [31262003302](https://github.com/noahsabaj/arche/actions/runs/31262003302) passed Native Linux, Windows, physical greater-than-4-GiB source, and sparse greater-than-4-GiB executable. Branch protection was reconfirmed to require those exact four GitHub Actions contexts. |
 | M26-CLOSURE | Audit remediation and M26 closure | `VerifiedExecutableCore`, ARCHEECS v2, generic direct-Core reference execution, metadata-authoritative AOT dispatch and native world storage, ARCHEOBS2, checked `u64` streaming interfaces, static PIE output, strict Clippy, and transactional trap behavior are implemented. The primary, Arena, trap, physical greater-than-4-GiB source, and sparse greater-than-4-GiB executable proofs passed locally and in required protected CI. Pull request [#7](https://github.com/noahsabaj/arche/pull/7) merged as `b52f1ab0383db34e22c759a92737d86b6d9a5895`; exact merged-main run [30709348257](https://github.com/noahsabaj/arche/actions/runs/30709348257) passed all four required jobs. |
 | M25-005 | Close two-program descriptor-generic execution proof | Commit `2be3c51` derives a neutral `VerifiedCoreExecutionShape` from independently verified Core and cross-checked descriptors, then passes that same shape into runtime assembly, transactional reference execution, native planning, and native SSE emission. Published artifacts are silent and exit `47`; corrupt metadata fails with `1`. Test-only `ARCHEOBS1` observation independently parses live native state and byte-compares it with canonical reference state for Demo and Arena, including exact values, excluded rows, unchanged payloads, memberships, row counts, and capacities. Local formatting, locked debug/release 146/146 suites, normal/comparison Clippy, both complete PowerShell runners, dependency audit, and diff checks passed. Required implementation CI run [`29291558560`](https://github.com/noahsabaj/arche/actions/runs/29291558560) passed native Linux job `86956066315` and Windows job `86956066332` on the exact implementation head. |
@@ -2196,16 +2196,16 @@ Subproblem confidence:
 | Native and reference observation proves Arena's exact matching and excluded values, unchanged Regeneration/Faction payloads, memberships, rows, and capacities | 99/100 |
 | M25-001 through M25-005 are implemented as ordered planning, emission, startup materialization, identity binding, and two-program execution proofs | 99/100 |
 | Canonical keys/order, checked layout arithmetic, whole-spawn validation, transactional reference updates, and live native observation support the descriptor-generic claim | 98/100 |
-| M26 closure evidence remains preserved while M27-A has exact implementation, merge, merged-main, and branch-protection evidence | 99/100 |
-| Ready is empty, M27-B alone is Doing, M27-C through M27-L are Backlog, and only M27-A is recorded Done | 100/100 |
+| M26 closure evidence remains preserved while M27-A and M27-B have exact implementation, merge, merged-main, and branch-protection evidence | 99/100 |
+| Ready is empty, M27-C alone is Doing, M27-D through M27-L are Backlog, and M27-A plus M27-B are recorded Done | 100/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
 - `Ready` is empty.
-- `Doing` contains only M27-B.
-- `Backlog` contains M27-C through M27-L in dependency order.
-- `Done` contains completed M0 through M21, M22-001 through M22-005, M23-001 through M23-005, M24-001 through M24-005, M25-001 through M25-005, M26-CLOSURE, and M27-A.
+- `Doing` contains only M27-C.
+- `Backlog` contains M27-D through M27-L in dependency order.
+- `Done` contains completed M0 through M21, M22-001 through M22-005, M23-001 through M23-005, M24-001 through M24-005, M25-001 through M25-005, M26-CLOSURE, M27-A, and M27-B.
 - The preserved detailed historical inventory runs through M25-005; the promoted gate inventory adds M27-A through M27-L without claiming those gates complete.
-- M7 through M27-A are complete through their recorded scopes. M25 proves descriptor-generic storage and execution of the shared verified-Core shape across two unrelated programs; M26 closes Core-generic execution and its protected large-file gates; M27-A establishes the shared platform contract and public shell. M27-B is active, M27 as a whole is not complete, and M28 remains sequenced after M27.
+- M7 through M27-B are complete through their recorded scopes. M25 proves descriptor-generic storage and execution of the shared verified-Core shape across two unrelated programs; M26 closes Core-generic execution and its protected large-file gates; M27-A establishes the shared platform contract and public shell; M27-B establishes package/workspace resolution and package-aware resolved HIR. M27-C is active, M27 as a whole is not complete, and M28 remains sequenced after M27.
