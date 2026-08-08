@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M26 audit remediation is closed. The next milestone has not been promoted; the board remains empty pending deliberate M27 acceptance design.
+**Current focus:** M26 audit remediation is closed. M27 is promoted as one general-purpose ECS platform milestone with mandatory gates M27-A through M27-L. M27-A is in progress; later gates remain Backlog until their dependencies and acceptance evidence are ready. M28 remains the Arche 0.1 release gate after M27.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -176,9 +176,20 @@ Current gaps:
 
 - Runtime growth, system-time structural mutation, entity lifecycle, archetype transitions, command buffers, events, relations, and parallel scheduling remain deliberate post-M26 work rather than compatibility debt.
 
+## Product North Star
+
+Arche is a standalone, general-purpose, ECS-native language and platform. Games, simulations, authoritative servers, tools, ML environments, and other ECS-shaped applications are equal product uses. Machine learning is an important frontier, not Arche's defining purpose; the language and runtime must remain useful without an external trainer or an ML-specific execution model.
+
+The accepted path to Arche 0.1 has two stages:
+
+- M27 builds the general language, runtime, package, tooling, and registry foundation as one umbrella milestone with mandatory internal gates M27-A through M27-L.
+- M28 adds no broad language foundation. It proves the completed platform through two structurally different applications with equal release weight: a deterministic authoritative multiplayer arena server and a 1,024-world seeded Grid Pursuit environment with a language-neutral external-trainer protocol.
+
+M27 and M28 are hard pre-1.0 development boundaries. A gate advances only from recorded implementation and exact-head acceptance evidence; completing an internal M27 gate does not close M27.
+
 ## Future Horizon
 
-These are milestone-level direction and closure constraints. M21 through M26 are complete. M27 has not been promoted; its acceptance design must be reviewed before issue rows are added.
+These are milestone-level direction and closure constraints. M21 through M26 are complete. M27 is promoted under the accepted general-purpose roadmap; M28 remains sequenced after M27.
 
 - M21: Native ECS table generalization is complete below.
 - M22: Native ECS table row iteration is complete below.
@@ -186,12 +197,12 @@ These are milestone-level direction and closure constraints. M21 through M26 are
 - M24: Native ECS storage catalog and descriptor-driven column binding is complete below. It is the final milestone allowed to close using only the bounded, exact-name `Demo` native fixtures.
 - M25: Descriptor-generic native world is complete. Demo and Arena execute through descriptor-sized multi-table storage and one verified-Core-derived supported shape without fixture identity, declaration ordinal, physical offset, capacity, or row count controlling production behavior.
 - M26: Core-generic native systems and schedules is complete. The accepted host, reference, metadata-authoritative native storage/dispatch, AOT, observation, local parity, hosted greater-than-4-GiB, and exact-head CI contracts are implemented, green, and recorded above.
-- M27: Deferred structural commands and entity lifecycle. Add spawn, despawn, add-component, and remove-component commands; defined schedule-boundary application; archetype transitions; and stale-handle-safe entity reuse. It closes only when commands issued during query execution apply deterministically without invalidating the active scan or partially mutating world state.
-- M28: Deterministic many-world simulation and ML environment proof. Run a headless workload across at least 1,024 independent worlds with observation, action, episode-state, and reward data expressed through ordinary ECS data; repeated seeded schedule steps; and reproducible final-state checksums. It closes only when the same source runs standalone through the reference and native paths without compiler specialization and produces equivalent observable state.
+- M27: General-purpose ECS platform foundation. Build the package/module language, full typed ownership and effect pipeline, separate compilation, reentrant dynamic worlds, deterministic structural commands, generalized native runtime, standard library, public tool suite, managed toolchains, and production registry through gates M27-A through M27-L. M27 closes only after every gate has exact-head evidence and the integrated clean-host, security, restore, soak, and protected-CI contracts pass.
+- M28: Arche 0.1 proof and release. Prove the M27 platform through both the authoritative Arena server and seeded Grid Pursuit at 1,024 isolated worlds, including deterministic reference/native replay, live loopback networking, canonical observations, the binary trainer protocol, Python interoperability, clean-room package resolution, and public-tool workflows. Neither workload alone can close M28.
 
 ## Machine Learning Boundary
 
-Arche's first ML exploration is simulation-first: reinforcement-learning environments, multi-agent or agent-based simulation, neuroevolution workloads, and inference orchestration whose heterogeneous state and behavior are naturally represented by components, resources, systems, queries, and schedules. Arche remains the programming model; an integration must not require users to treat it primarily as a Python, Rust, or C++ library. A thin optional bridge to an external trainer is interoperability, not a runtime dependency, and the Arche environment must still run without it.
+Arche's first ML exploration is simulation-first: reinforcement-learning environments, multi-agent or agent-based simulation, neuroevolution workloads, and inference orchestration whose heterogeneous state and behavior are naturally represented by components, resources, systems, queries, and schedules. This is one application frontier within the general-purpose ECS platform, alongside games, servers, simulations, and tools. Arche remains the programming model; an integration must not require users to treat it primarily as a Python, Rust, or C++ library. A thin optional bridge to an external trainer is interoperability, not a runtime dependency, and the Arche environment must still run without it.
 
 Research basis reviewed on 2026-07-13:
 
@@ -200,21 +211,21 @@ Research basis reviewed on 2026-07-13:
 - [Simulation Streams](https://arxiv.org/abs/2501.18668) uses ECS to organize multi-entity LLM simulations, rule enforcement, information control, and reinforcement-learning tasks. This supports agent-state orchestration, while not establishing a need for LLM-specific language primitives.
 - [The Essence of Entity Component System](https://arxiv.org/abs/2606.14919) formalizes archetype ECS state transitions and a storage-safety type system. This reinforces the value of language-level ECS semantics beyond framework conventions.
 
-M28 does not claim a tensor compiler, automatic differentiation, optimizer framework, GPU kernel compiler, distributed trainer, model ecosystem, or Python-first API. Dense tensor training is a different computational substrate; those capabilities become candidates only after an executable workload demonstrates that they belong inside an ECS-native language rather than at an interoperability boundary.
+M28 does not claim a tensor compiler, automatic differentiation, optimizer framework, GPU kernel compiler, distributed trainer, model ecosystem, or Python-first API. Dense tensor training is a different computational substrate; those capabilities become a parallel post-0.1 product track only after executable workloads demonstrate that they belong inside an ECS-native language rather than at an interoperability boundary.
 
-## Do Not Start Yet
+## M27/M28 Exclusions
 
 - Events.
 - Relations.
 - Parallel scheduling.
-- Package manager.
-- Debugger or profiler.
-- Object/linker split.
-- Generics.
-- Command buffers before the deliberate M27 structural-command acceptance design.
+- User native-library FFI.
+- Graphics, audio, windowing, and local-input subsystems.
+- Async/futures and user macros.
+- Trait objects, associated types, garbage collection, optional/change-detection queries, and nested query loops.
+- Native Windows output and non-x86-64 generated targets.
 - Tensor syntax, automatic differentiation, optimizer APIs, GPU kernel compilation, or distributed training before the M28 simulation proof.
 - Python-first or host-language-first bindings as Arche's primary product surface.
-- A self-hosted compiler rewrite before Arche can express the compiler-supporting language features listed in the design document's bootstrap plan.
+- A self-hosted compiler rewrite before Arche 0.1 closes; the Rust seed remains authoritative through M28.
 
 ## Integration Checkpoints
 
@@ -224,9 +235,9 @@ M28 does not claim a tensor compiler, automatic differentiation, optimizer frame
 - After M18: generated executables can run a compiled system query loop.
 - After M24: the bounded exact-name `Demo` bootstrap is complete; no later milestone may close solely on those fixtures.
 - After M25 (achieved): native world storage is driven by source schemas and descriptors rather than fixture identities or capacities, and two unrelated programs agree across reference and native execution.
-- After M26: verified Core is the production authority for generic native system and schedule execution.
-- After M27: structural mutation has deterministic lifecycle and schedule-boundary semantics.
-- After M28: Arche has proved an ML-relevant many-world simulation substrate without claiming a general ML framework.
+- After M26 (achieved): verified Core is the production authority for generic native system and schedule execution.
+- After M27: Arche has the general-purpose language, reentrant ECS runtime, object/link pipeline, package ecosystem, public tools, and registry foundation required by both 0.1 applications.
+- After M28: Arche 0.1 has proved both a deterministic authoritative game-server workload and an ML-relevant many-world environment without making either workload the language's exclusive identity.
 
 ## Board
 
@@ -243,7 +254,7 @@ Board rules:
 
 - Keep only one or two issues in `Doing`.
 - Promote issues to `Ready` only when their dependencies are done.
-- Do not expand the active board beyond the next one or two unblocked proofs.
+- Keep `Ready` plus `Doing` limited to the next one or two unblocked proofs. `Backlog` may inventory the mandatory gates of a promoted umbrella milestone without activating them.
 - Do not use the design document as a top-to-bottom checklist.
 - Every post-M24 milestone must name the fixture-specific production assumptions it removes and include a structurally distinct source program that requires no program-specific compiler change.
 
@@ -257,13 +268,31 @@ Board rules:
 
 | Issue | Title | Done when |
 |---|---|---|
-| - | - | Empty. |
+| M27-B | Packages, modules, resolution, and HIR | Schema-1 manifests, target kinds, explicit modules, workspaces, deterministic dependency resolution/locks, package-aware names, root-world linking, and resolved HIR pass their focused and clean-workspace proofs. |
+| M27-C | General language semantics and verified generic Core | The selected type, trait, specialization, ownership, pattern, call, effect, closure, generator, thread, CTFE, and verification contracts are implemented and exercised without bypassing the verified generic Core authority. |
+| M27-D | Monomorphization, layout, and ARCHEOBJ v1 | Deterministic instance discovery, verified instantiated Core, layout/ABI, separate compilation, linking/coherence, promoted constants, and object corruption matrices pass. |
+| M27-E | Dynamic runtime values and reentrant worlds | Process/world allocation, move/drop/codec glue, Canonical Value v1, independent `WorldContext` instances, dynamic ECS values, and the OBS3 envelope pass reference-runtime proofs. |
+| M27-F | Entity lifecycle and structural commands | Entity reuse/location repair, deferred ordered commands, archetype transitions, physical iteration order, full OBS3 state, and trap/exception command-epoch behavior pass direct-reference lifecycle proofs. |
+| M27-G | General native AOT and runtime | Calls, recursion, unwind, dynamic values, reentrant worlds, commands, system interfaces, networking, TLS, threads, and atomics execute through generalized native AOT with the required deterministic reference/native parity. |
+| M27-H | Standard library and core public workflows | `core`/`alloc`/`std`, package caching, `check/build/run/test`, official packages, capabilities, environment synthesis, and deterministic locked/offline builds pass on supported hosts. |
+| M27-I | Complete public developer tooling | `fmt/doc/lsp/inspect/debug/profile`, source/debug metadata, workspace UX, WSL transport, observation side channels, and human/NDJSON contracts pass end to end. |
+| M27-J | Managed toolchains and production registry | Source packages, sparse resolution, device login, trusted OIDC publishing, scope/role operations, yanks/tombstones, transparency, backups, monitoring, and status service are deployed and verified. |
+| M27-K | Integrated acceptance and production soak | Clean-host, security/corruption, allocation-failure, offline rebuild, WSL, telemetry, registry restore, load/failover, and 30-day production-soak evidence satisfies the promoted contract. |
+| M27-L | Exact-head M27 closure | Protected Linux, Windows, WSL, large-file, and registry CI is green on the exact head; all M27 documentation and evidence is closed without weakening a gate. |
 
 ### Doing
 
 | Issue | Title | Notes |
 |---|---|---|
-| - | - | Empty. |
+| M27-A | Promote and establish the M27 platform foundation | Promote the normative M27/M28 contract; align README, design, and ledger; add first-party licensing; establish shared Rust workspace boundaries and the public CLI shell; define status/identity/empty-format contracts; and preserve the required greater-than-4-GiB gates. No later M27 gate is complete or active merely because its interface is named here. |
+
+M27-A local implementation evidence, 2026-08-08:
+
+- The three-member Rust workspace preserves `archec0` as the default member and adds the shared `arche-foundation` contract crate plus the public `arche` command shell. Real-process tests prove help/version behavior and status-`2` boundaries for reserved-but-unimplemented and unknown commands.
+- M27 identity domains use exact `u32le(2)` prefixes and golden 128-bit hashes. Five directory-envelope formats have byte-exact 64-byte empty vectors; ARCHEENV has a separate byte-exact 64-byte frame foundation so later protocol fields do not reinterpret directory offsets.
+- Shared compiler/process statuses are adopted by `archec0` CLI exits and the M26 trap path without changing accepted M26 behavior. `MIT OR Apache-2.0` metadata and complete license texts cover the first-party workspace.
+- Workspace formatting, locked debug and release all-target tests (`219` passed, `10` intentionally ignored), strict workspace Clippy with `-D warnings`, the complete PowerShell Core 7.6.4 and Windows PowerShell 5.1 proof suites including WSL native execution, the locked dependency audit, workspace metadata validation, and `git diff --check` passed locally.
+- M27-A remains `Doing` until the exact branch head passes all four protected hosted jobs and branch protection is reconfirmed. The two greater-than-4-GiB jobs remain hosted-only required proofs and were not substituted with local virtual tests.
 
 ### Done
 
@@ -416,6 +445,26 @@ Board rules:
 | M20-005 | Execute move_system from decoded native ECS tables | `cargo test --manifest-path .\bootstrap\archec0\Cargo.toml executes_move_system_from_decoded_native_ecs_tables` passed, proving generated rich-ECS native text validates startup operation table records against decoded component/resource descriptors, materializes compiled schedule state from decoded `Demo.Main` schedule descriptor slots, validates query-plan state against decoded `Demo.Move` system query-param slots, and still executes compiled `Demo.Move` through planned payload addresses; `powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1` passed while preserving valid `move_system` exit `47` and existing corrupt metadata, descriptor, startup table, payload, query-plan, field-math, position-store, and run-schedule failure proofs. This completed M20 native ECS descriptor tables and remained fixture-specific decoded-table execution only: no general native scheduler, metadata format change, Core/runtime behavior change, native heap table, or generated success-code change was added. Implementation commit: `053bff89`. |
 
 ## Milestones
+
+### M27: General-Purpose ECS Platform Foundation (Active)
+
+Purpose:
+
+```text
+Build the standalone general-purpose ECS language and platform substrate needed by games, servers, simulations, tools, and ML environments.
+```
+
+M27 is one umbrella milestone implemented through mandatory gates M27-A through M27-L. The gates cover contract promotion; packages/modules/HIR; general language semantics; separate compilation; dynamic reentrant worlds; entity lifecycle and structural commands; generalized native AOT; standard libraries and core workflows; developer tooling; managed toolchains and the registry; integrated acceptance; and exact-head closure. Gate evidence accumulates, but only M27-L may close M27 after every prior gate and external production prerequisite passes.
+
+### M28: Arche 0.1 Proof and Release (Sequenced After M27)
+
+Purpose:
+
+```text
+Prove one completed general-purpose ECS platform through two equal, structurally different release applications.
+```
+
+M28 adds no broad language foundation. It requires both a deterministic authoritative Arena server and a 1,024-world seeded Grid Pursuit environment, exercised through the public package/toolchain surface with reference/native parity, clean-room builds, protocol and interoperability proofs, and exact-head release evidence. Arena proves the game/server path; Grid Pursuit proves isolated many-world simulation and external ML interoperability. Neither defines Arche alone and neither can close Arche 0.1 alone.
 
 ### M0: Repository and Executable Test Harness
 
@@ -2155,14 +2204,16 @@ Subproblem confidence:
 | Native and reference observation proves Arena's exact matching and excluded values, unchanged Regeneration/Faction payloads, memberships, rows, and capacities | 99/100 |
 | M25-001 through M25-005 are implemented as ordered planning, emission, startup materialization, identity binding, and two-program execution proofs | 99/100 |
 | Canonical keys/order, checked layout arithmetic, whole-spawn validation, transactional reference updates, and live native observation support the descriptor-generic claim | 98/100 |
-| The M26 ledger names only current verified-Core shape restrictions and keeps structural mutation assigned to M27 | 99/100 |
-| Ready, Doing, and Backlog are empty; M25-001 through M25-005 are Done and no M26 issue is promoted | 100/100 |
+| M26 closure evidence remains preserved while M27 is promoted as one umbrella milestone with twelve mandatory internal gates | 99/100 |
+| Ready is empty, M27-A alone is Doing, M27-B through M27-L are Backlog, and no M27 work is falsely recorded Done | 100/100 |
 
 Weighted confidence: 98/100.
 
 Verification pass:
 
-- `Ready`, `Doing`, and `Backlog` are empty.
-- `Done` contains completed M0 through M21, M22-001 through M22-005, M23-001 through M23-005, M24-001 through M24-005, and M25-001 through M25-005.
-- Detailed active inventory includes M12-001 through M12-004, M13-001 through M13-006, M14-001 through M14-005, M15-001 through M15-005, M16-001 through M16-005, M17-001 through M17-005, M18-001 through M18-005, M19-001 through M19-005, M20-001 through M20-005, M21-001 through M21-005, M22-001 through M22-005, M23-001 through M23-005, M24-001 through M24-005, and M25-001 through M25-005 only.
-- M7 through M25 are complete through their recorded scopes. M25 proves descriptor-generic storage and execution of the shared verified-Core shape across two unrelated programs. M26 remains unpromoted pending a deliberate acceptance/design checkpoint.
+- `Ready` is empty.
+- `Doing` contains only M27-A.
+- `Backlog` contains M27-B through M27-L in dependency order.
+- `Done` contains completed M0 through M21, M22-001 through M22-005, M23-001 through M23-005, M24-001 through M24-005, M25-001 through M25-005, and M26-CLOSURE.
+- The preserved detailed historical inventory runs through M25-005; the promoted gate inventory adds M27-A through M27-L without claiming those gates complete.
+- M7 through M26 are complete through their recorded scopes. M25 proves descriptor-generic storage and execution of the shared verified-Core shape across two unrelated programs; M26 closes Core-generic execution and its protected large-file gates. M27 is promoted but not complete; M28 remains sequenced after M27.

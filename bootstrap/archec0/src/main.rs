@@ -20,6 +20,7 @@ mod source_snapshot;
 
 pub use archec0::scalar_v2;
 
+use arche_foundation::status::CompilerStatus;
 use std::env;
 use std::path::Path;
 use std::process;
@@ -51,12 +52,12 @@ fn main() {
         [] => {
             eprintln!("archec0: no input provided");
             eprintln!("run `archec0 --help` for usage");
-            process::exit(2);
+            process::exit(CompilerStatus::Usage.code());
         }
         _ => {
             eprintln!("archec0: command not implemented yet");
             eprintln!("run `archec0 --help` for usage");
-            process::exit(2);
+            process::exit(CompilerStatus::Usage.code());
         }
     }
 }
@@ -104,7 +105,7 @@ fn emit_tokens(source_path: &str) {
         let eof = token.kind == lexer::TokenKind::Eof;
         if let Err(error) = lexer::write_token(&mut output, &token) {
             eprintln!("archec0: could not emit tokens: {error}");
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
         if eof {
             break;
@@ -112,7 +113,7 @@ fn emit_tokens(source_path: &str) {
     }
     if let Err(error) = std::io::Write::flush(&mut output) {
         eprintln!("archec0: could not flush tokens: {error}");
-        process::exit(1);
+        process::exit(CompilerStatus::Failure.code());
     }
 }
 
@@ -128,7 +129,7 @@ fn emit_ast(source_path: &str) {
         .and_then(|()| std::io::Write::flush(&mut output))
     {
         eprintln!("archec0: could not emit AST: {error}");
-        process::exit(1);
+        process::exit(CompilerStatus::Failure.code());
     }
 }
 
@@ -156,7 +157,7 @@ fn emit_machine(source_path: &str) {
         .and_then(|()| std::io::Write::flush(&mut output))
     {
         eprintln!("archec0: could not emit Machine IR: {error}");
-        process::exit(1);
+        process::exit(CompilerStatus::Failure.code());
     }
 }
 
@@ -174,7 +175,7 @@ fn emit_core(source_path: &str) {
         .and_then(|()| std::io::Write::flush(&mut output))
     {
         eprintln!("archec0: could not emit Core: {error}");
-        process::exit(1);
+        process::exit(CompilerStatus::Failure.code());
     }
 }
 
@@ -188,25 +189,25 @@ fn inspect_components(source_path: &str) {
             "{}",
             diagnostics::format_check_error(path, error.span.start, &error)
         );
-        process::exit(1);
+        process::exit(CompilerStatus::Failure.code());
     }
 
     let stdout = std::io::stdout();
     let mut output = stdout.lock();
     if let Err(error) = component_inspect::write_components(&mut output, &program) {
         eprintln!("archec0: could not inspect components: {error}");
-        process::exit(1);
+        process::exit(CompilerStatus::Failure.code());
     }
     if let Err(error) = std::io::Write::flush(&mut output) {
         eprintln!("archec0: could not flush component inspection: {error}");
-        process::exit(1);
+        process::exit(CompilerStatus::Failure.code());
     }
 }
 
 fn read_source(path: &Path) -> source_snapshot::SourceSnapshot {
     if !path.is_file() {
         eprintln!("archec0: source file not found: {}", path.display());
-        process::exit(2);
+        process::exit(CompilerStatus::Usage.code());
     }
 
     match source_snapshot::SourceSnapshot::capture(path) {
@@ -217,7 +218,7 @@ fn read_source(path: &Path) -> source_snapshot::SourceSnapshot {
                 path.display(),
                 error
             );
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
     }
 }
@@ -234,7 +235,7 @@ fn source_reader(
                 path.display(),
                 error
             );
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
     }
 }
@@ -255,7 +256,7 @@ fn report_lexer_failure(path: &Path, error: lexer::LexerFailure) -> ! {
             );
         }
     }
-    process::exit(1);
+    process::exit(CompilerStatus::Failure.code());
 }
 
 fn parse_source(path: &Path, source: &source_snapshot::SourceSnapshot) -> parser::Program {
@@ -267,14 +268,14 @@ fn parse_source(path: &Path, source: &source_snapshot::SourceSnapshot) -> parser
                 "{}",
                 diagnostics::format_parse_error(path, error.span.start, &error)
             );
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
         Err(parser::ParseStreamError::Lex(error)) => {
             eprintln!(
                 "{}",
                 diagnostics::format_lex_error(path, error.span.start, &error)
             );
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
         Err(parser::ParseStreamError::Read(error)) => {
             eprintln!(
@@ -282,7 +283,7 @@ fn parse_source(path: &Path, source: &source_snapshot::SourceSnapshot) -> parser
                 path.display(),
                 error
             );
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
     }
 }
@@ -298,14 +299,14 @@ fn build_executable(path: &Path, program: &parser::Program) -> ExecutableBuild {
             "{}",
             diagnostics::format_check_error(path, error.span.start, &error)
         );
-        process::exit(1);
+        process::exit(CompilerStatus::Failure.code());
     }
 
     let core = match core_lower::lower_program_to_core(program) {
         Ok(core) => core,
         Err(error) => {
             eprintln!("archec0: could not lower Core: {}", error.message);
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
     };
     let core = verify_executable_core(core);
@@ -313,7 +314,7 @@ fn build_executable(path: &Path, program: &parser::Program) -> ExecutableBuild {
         Ok(plan) => plan,
         Err(error) => {
             eprintln!("archec0: could not plan native executable: {error}");
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
     };
     let source_name = path
@@ -328,14 +329,14 @@ fn build_executable(path: &Path, program: &parser::Program) -> ExecutableBuild {
         Ok(package) => package,
         Err(error) => {
             eprintln!("archec0: could not build ARCHEECS v2 package: {error}");
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
     };
     let image = match aot_v2::finalize_native(plan, &core, &package) {
         Ok(image) => image,
         Err(error) => {
             eprintln!("archec0: could not link native executable: {error}");
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
     };
 
@@ -347,7 +348,7 @@ fn verify_executable_core(core: core::CoreProgram) -> core_verify::VerifiedExecu
         Ok(core) => core,
         Err(error) => {
             eprintln!("archec0: invalid executable Core: {}", error.message);
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
     }
 }
@@ -373,7 +374,7 @@ fn write_output(source_path: &str, output_path: &str) {
                 "archec0: refusing to overwrite input source with output {}",
                 output.display()
             );
-            process::exit(2);
+            process::exit(CompilerStatus::Usage.code());
         }
         Err(error) => {
             eprintln!(
@@ -381,7 +382,7 @@ fn write_output(source_path: &str, output_path: &str) {
                 output.display(),
                 error
             );
-            process::exit(1);
+            process::exit(CompilerStatus::Failure.code());
         }
     }
 

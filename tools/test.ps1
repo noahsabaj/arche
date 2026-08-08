@@ -1065,19 +1065,47 @@ try {
     }
     [System.IO.Directory]::CreateDirectory($proofRoot) | Out-Null
 
-    $tests = Invoke-CapturedProcess -Name "locked debug all-target Rust tests" `
+    $tests = Invoke-CapturedProcess -Name "locked debug workspace all-target Rust tests" `
         -Executable "cargo" `
-        -Arguments @("test", "--locked", "--all-targets", "--manifest-path", $manifestPath)
+        -Arguments @("test", "--locked", "--workspace", "--all-targets", "--manifest-path", $manifestPath)
     Assert-ProcessStatus $tests 0
-    $build = Invoke-CapturedProcess -Name "locked debug compiler build" `
+    $build = Invoke-CapturedProcess -Name "locked debug workspace build" `
         -Executable "cargo" `
-        -Arguments @("build", "--locked", "--manifest-path", $manifestPath)
+        -Arguments @("build", "--locked", "--workspace", "--manifest-path", $manifestPath)
     Assert-ProcessStatus $build 0
 
     $compilerName = if ($isWindowsPlatform) { "archec0.exe" } else { "archec0" }
     $compiler = Join-Path $repoRoot "bootstrap/archec0/target/debug/$compilerName"
     Assert-True -Condition (Test-Path -LiteralPath $compiler -PathType Leaf) `
         -Message "compiler was not built at $compiler"
+
+    $publicCliName = if ($isWindowsPlatform) { "arche.exe" } else { "arche" }
+    $publicCli = Join-Path $repoRoot "bootstrap/archec0/target/debug/$publicCliName"
+    Assert-True -Condition (Test-Path -LiteralPath $publicCli -PathType Leaf) `
+        -Message "public CLI was not built at $publicCli"
+    $publicHelp = Invoke-CapturedProcess -Name "M27-A public CLI help" `
+        -Executable $publicCli -Arguments @("--help")
+    Assert-ProcessStatus $publicHelp 0
+    Assert-Equal -Name "M27-A public CLI help stderr" -Actual $publicHelp.Stderr -Expected ""
+    Assert-Contains -Name "M27-A public CLI command inventory" `
+        -Actual $publicHelp.Stdout -Expected "Reserved M27 commands:"
+    $publicVersion = Invoke-CapturedProcess -Name "M27-A public CLI version" `
+        -Executable $publicCli -Arguments @("--version")
+    Assert-ProcessStatus $publicVersion 0
+    Assert-Contains -Name "M27-A public CLI version text" `
+        -Actual $publicVersion.Stdout -Expected "arche 0.0.0"
+    $publicReserved = Invoke-CapturedProcess -Name "M27-A reserved public command" `
+        -Executable $publicCli -Arguments @("build")
+    Assert-ProcessStatus $publicReserved 2
+    Assert-Equal -Name "M27-A reserved command stdout" `
+        -Actual $publicReserved.Stdout -Expected ""
+    Assert-Contains -Name "M27-A reserved command diagnostic" `
+        -Actual $publicReserved.Stderr -Expected "reserved but not implemented in M27-A"
+    $publicUnknown = Invoke-CapturedProcess -Name "M27-A unknown public command" `
+        -Executable $publicCli -Arguments @("not-a-command")
+    Assert-ProcessStatus $publicUnknown 2
+    Assert-Contains -Name "M27-A unknown command diagnostic" `
+        -Actual $publicUnknown.Stderr -Expected "unknown command ``not-a-command``"
 
     Test-CliModes $compiler
     Test-PublicationContracts $compiler

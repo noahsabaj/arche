@@ -1,0 +1,10 @@
+[package]
+name = "arche-foundation"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+blake3 = { version = "=1.8.5", features = ["pure"] }

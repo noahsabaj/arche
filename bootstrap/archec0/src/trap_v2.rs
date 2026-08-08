@@ -1,9 +1,10 @@
 use crate::observation_v2;
 use crate::runtime_v2::RuntimeWorldV2;
 use crate::scalar_v2::TrapKind;
+use arche_foundation::status::ProcessStatus;
 use std::io::{self, Write};
 
-pub const TRAP_EXIT_STATUS: i32 = 70;
+pub const TRAP_EXIT_STATUS: i32 = ProcessStatus::TrapOrPanic.code();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TrapSite<'a> {
