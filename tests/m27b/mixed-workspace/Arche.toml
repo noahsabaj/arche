@@ -1,0 +1,26 @@
+schema = 1
+
+[package]
+name = "example/mixed"
+version = "0.1.0"
+edition = "2026"
+arche = ">=0.0.0"
+
+[lib]
+path = "src/lib.arc"
+
+[[bin]]
+name = "server"
+path = "src/main.arc"
+world = "package::ServerWorld"
+
+[[environment]]
+name = "grid"
+path = "src/environment.arc"
+world = "package::GridWorld"
+profile = "grid"
+
+[environment-profile.grid]
+reset = "package::Reset"
+step = "package::Step"
+self-play = "package::SelfPlay"

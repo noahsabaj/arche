@@ -98,11 +98,41 @@ World declarations use `world Name { init { ... } }`. Components, resources, tag
 
 Module discovery is explicit and deterministic:
 
-- `mod physics` resolves only `physics.arc`; a child `mod collision` declared there resolves `physics/collision.arc`.
+- `mod physics;` resolves only `physics.arc`; a child `mod collision;` declared there resolves `physics/collision.arc`.
 - There is no `mod.arc`, wildcard discovery, path attribute, or duplicate module loading.
 - `use`, `pub`, `pub(package)`, `pub(super)`, and `pub(in path)` define imports and visibility.
 - Source identifiers use Unicode XID normalized to NFC. Filename aliases, case-fold collisions, and normalization collisions are errors.
 - Public package scope and name segments are strict lowercase ASCII and use `scope/name`; official packages use `arche/*`.
+
+The schema-1 toolchain pins its Unicode tables with the implementation: XID and
+NFC use Unicode 17.0.0 through `unicode-ident` 1.0.24 and
+`unicode-normalization` 0.1.25; full filename/path collision folding uses the
+Unicode 9.0.0 table embedded by `unicode-casefold` 0.2.0. These deliberately
+versioned tables are format/build inputs. A later Unicode upgrade is a reviewed
+language/toolchain change, never an ambient host-library change.
+
+M27-B freezes the structural module grammar used before M27-C owns complete
+signatures and bodies. `mod name;` and `use path;` are the only module/import
+forms. Imports bind their final segment; renames, groups, globs, inline modules,
+and path attributes are unavailable. Paths begin with `package::`, `self::`, one
+or more `super::` segments, or a declared dependency alias. The language does
+not use Rust's `crate::` root. Module, type, and value namespaces are distinct.
+M27-B resolves item headers and target links into session-local HIR identifiers;
+it deliberately does not publish final `DefinitionId` values before M27-C can
+encode complete generic, type, and effect shapes.
+
+The graph-aware frontend assigns dense package nodes by canonical package-name
+order and target IDs by package node plus manifest target order. A HIR
+definition ID is the tuple `(package node, target ID, local definition
+ordinal)`, so imports never collide across packages even though module/file
+ordinals remain target-local. Workspace libraries are checked dependency-first.
+Only direct normal dependency aliases enter a target scope; development and
+transitive aliases do not. Cross-package traversal sees only public module/item
+paths, a public re-export may expose a public item through a private internal
+module, and no `pub use` may widen a package-private or module-private item.
+One `use path;` imports every matching distinct namespace at the final segment.
+Registry dependency exports require the package-cache/object adapter assigned
+to later gates and therefore fail explicitly in the M27-B source-only driver.
 
 M26 `startup`/final-`exit` source is not accepted by M27 target semantics. It receives an explicit migration diagnostic; no source compatibility shim remains.
 
@@ -304,11 +334,147 @@ The generated target remains x86-64 Linux static PIE: real calls and guarded sta
 
 ### 0.6.1 Manifests, workspaces, and dependency resolution
 
-`Arche.toml` schema 1 supports package identity, binary/library/environment targets, explicit workspace membership, registry/path dependencies, const-eval budgets, declared capabilities, and environment profiles. Workspaces use sorted explicit member paths with no globs, nesting, or outside-root members; they share one lockfile, cache, and target directory and may declare default members.
+`Arche.toml` schema 1 is a closed, UTF-8 TOML contract. It starts with the
+mandatory integer `schema = 1` and contains `[package]`, `[workspace]`, or both.
+A package declares `name`, canonical `version` without build metadata,
+`edition = "2026"`, and an `arche` SemVer toolchain requirement. `publish`
+defaults to false. Publishable packages also declare a valid SPDX license
+expression; archive policy may require separately declared documentation files
+when packaging is implemented in M27-J. Unrecognized tables or keys are errors
+rather than forward-compatible guesses.
+Checking validates every workspace member's `arche` requirement against the
+exact selected toolchain before source/HIR work or lock publication.
 
-Dependencies are SemVer requirements from the one official registry or local paths. The resolver selects one version of each registry package identity across the graph; highest compatible non-yanked versions win and prereleases require an explicit prerelease requirement. Git/URL/custom-registry, build-script, feature, optional, and target-conditional dependencies are rejected in 0.1. A publishable path dependency must also name and match a registry package/version; packaging removes the path.
+Targets are explicit. `[lib]` is singular and defaults its path to
+`src/lib.arc`. Each `[[bin]]` declares a unique identifier name, source path,
+`world = "package::..."`, and a sorted capability list; a sole binary may omit
+its path and use `src/main.arc`. Each `[[environment]]` declares an explicit
+name, path, owned root world, and environment-profile name. The matching
+`[environment-profile.<name>]` declares reset, step, and self-play schedule
+paths. Environments cannot request ambient capabilities. `[const-eval]` carries
+positive `steps`, `call-depth`, and `heap-bytes`; unpublished packages receive
+the scaffold defaults while publishable packages pin all three explicitly.
 
-`Arche.lock` canonically and without timestamps pins exact versions, archive/source digest, complete dependency graph, registry identity, provenance/inclusion record, exact toolchain, and release-manifest digest.
+A mixed-target package uses this schema shape (paths and names are illustrative):
+
+```toml
+schema = 1
+
+[package]
+name = "example/simulations"
+version = "0.1.0"
+edition = "2026"
+arche = ">=0.0.0"
+publish = false
+
+[const-eval]
+steps = 10000000
+call-depth = 1024
+heap-bytes = 67108864
+
+[lib]
+path = "src/lib.arc"
+
+[[bin]]
+name = "server"
+path = "src/main.arc"
+world = "package::server::ServerWorld"
+capabilities = ["args", "monotonic-clock", "stdio", "udp"]
+
+[[environment]]
+name = "grid_pursuit"
+path = "src/grid_pursuit.arc"
+world = "package::grid_pursuit::GridWorld"
+profile = "training"
+
+[environment-profile.training]
+reset = "package::grid_pursuit::Reset"
+step = "package::grid_pursuit::Step"
+self-play = "package::grid_pursuit::SelfPlay"
+```
+
+Workspaces use sorted explicit member paths with no globs, nesting, or
+outside-root members. A combined package/workspace lists `.` explicitly. Member
+paths use `/`; except for the workspace-root `.` they cannot be empty, absolute,
+drive-relative, UNC, contain backslashes, `.`/`..` segments, or traverse a
+symlink/junction. Default members are a sorted unique subset; omission means all
+members. Every path dependency names a declared member, and the workspace has
+one lockfile, cache, and target directory. Physical aliases, duplicate package
+identities, case-fold/NFC path aliases, and package dependency cycles are
+errors.
+
+`[dependencies]` and `[dev-dependencies]` use explicit alias tables only:
+
+```toml
+[dependencies]
+math = { package = "arche/math", version = "^0.1.0" }
+tools = { path = "packages/tools" }
+shared = { package = "example/shared", version = "=0.2.0", path = "packages/shared" }
+```
+
+Registry dependencies contain exactly `package` and `version`; local-only
+dependencies contain exactly `path`; publish-compatible path dependencies
+contain all three and must match the target member's identity/version. Packaging
+later removes only `path`. Git/URL/custom-registry, build-script, feature,
+optional, target-conditional, and string-shorthand dependencies are rejected.
+Dependency paths resolve from the declaring package directory. They may use one
+or more `..` segments only as a canonical leading prefix so sibling workspace
+members are expressible; `.` segments and a parent segment after an ordinary
+segment are rejected. Resolution must remain inside the workspace, traverse
+exact NFC/case filesystem components without links or junctions, and name one
+explicitly declared member.
+
+The pure resolver consumes an immutable validated registry snapshot. It selects
+one source and one version for each package identity across the graph, excludes
+yanked candidates on fresh resolution, admits prereleases only through an
+explicit prerelease requirement, and deterministically backtracks over versions
+in descending SemVer order. Its global result lexicographically maximizes the
+selected version vector ordered by package name. Input enumeration order cannot
+affect the graph or diagnostics. Production index/cache/network acquisition is
+owned by M27-H and M27-J, not simulated by M27-B.
+
+Every resolved graph is revalidated before HIR or lock consumption: package
+rows and dense node IDs are canonical, names/PackageIds/workspace paths are
+unique, root and edge lists are sorted and complete, aliases are unique per
+source package, registry nodes cannot depend on workspace nodes, all nodes are
+reachable, and cycles are rejected. Resolution compares complete solutions and
+maximizes the version vector in canonical package-name order rather than
+accepting the first locally highest candidate.
+
+`PackageId` is version-independent. Its canonical preimage, after the M27-A
+`ARCHE-PACKAGE-ID\0` domain and fingerprint-version prefix, is the little-endian
+`u64` byte length and UTF-8 bytes of
+`registry+https://packages.arche-lang.org`, followed by the little-endian `u64`
+byte length and UTF-8 bytes of the scoped package name. Local workspace copies
+use that intended registry identity too. A resolved package instance separately
+records its selected version and source digest; final declaration identity waits
+for M27-C's complete declaration-shape encoding.
+
+`Arche.lock` schema 1 is canonical UTF-8 with LF endings, one final newline,
+fixed field order, package rows sorted by identity, dependency edges sorted by
+alias/target, and no timestamps or host-absolute paths. It pins the exact
+toolchain version and release-manifest digest, official registry identity
+`registry+https://packages.arche-lang.org` and snapshot digest, every resolved
+package version/source, complete reachable graph, workspace source digest,
+registry archive/source digests, and provenance/inclusion record digests. All
+integrity digests are lowercase `sha256:` followed by 64 hexadecimal digits;
+language identity hashes remain the separately domain-separated BLAKE3 values.
+The top-level `[workspace] source-digest` commits the exact root authority
+manifest through the source-tree encoding, including for a virtual workspace;
+member package rows separately commit their own manifests and declared source
+trees. Thus changing member/default selection cannot leave the lock unchanged.
+
+The canonical workspace source-tree digest hashes the byte sequence
+`ARCHE-SOURCE-TREE\0`, little-endian `u32` version 1, little-endian `u64` entry
+count, then each semantic input in portable-path byte order as `u64` path length,
+path UTF-8, `u64` content length, and the raw 32-byte SHA-256 digest of the exact
+immutable snapshot consumed by the parser. This nested commitment permits
+streaming without reopening mutable source paths after checking. Archive and
+signed-record digests hash their canonical bytes. A lock decoder validates its complete graph,
+sources, requirements, digests, and canonical re-encoding before use. Lock
+publication uses a synchronized sibling temporary and atomic replacement;
+failure preserves the prior lock and leaves no temporary file. The promise is
+atomic visibility, not parent-directory durability.
 
 ### 0.6.2 Public toolchain
 
