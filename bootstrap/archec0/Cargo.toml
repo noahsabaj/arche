@@ -1,10 +1,22 @@
 [package]
 name = "archec0"
 version = "0.0.0"
-edition = "2021"
-rust-version = "1.95.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]
+arche-foundation = { path = "crates/arche-foundation" }
 blake3 = { version = "=1.8.5", features = ["pure"] }
 same-file = "=1.0.6"
+
+[workspace]
+members = [".", "crates/arche", "crates/arche-foundation"]
+default-members = ["."]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.95.0"
+license = "MIT OR Apache-2.0"

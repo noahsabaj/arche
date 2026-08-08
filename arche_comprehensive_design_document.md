@@ -1,16 +1,19 @@
 # Arche Comprehensive Design Document
 
-**Document version:** 0.2
-**Date:** 2026-08-01
-**Status:** Foundational design plus implemented and accepted M26 execution contract; milestone closed
+**Document version:** 0.3
+**Date:** 2026-08-08
+**Status:** Normative M27 platform and M28 Arche 0.1 contract; implemented and accepted M26 contract retained as history
 **Primary goal:** Define Arche as an independent, native, ECS-first programming language and software platform.
 
-The broad platform design in this document remains directional. The M26 clauses are normative for the closed bootstrap milestone and override older "initial," example, or future-facing sketches where they conflict. This document defines the contract; `WORK_LOG.md` alone records implementation and acceptance evidence. The metadata-authoritative native physical-storage path has local and hosted reference/native parity evidence, and both required greater-than-4-GiB jobs plus required exact-head CI passed before M26 closed.
+Section 0 is the normative contract for M27, M28, and Arche 0.1. It supersedes every conflicting "initial," 0.0.x, post-M26, open-question, example, and future-facing sketch elsewhere in this document. The detailed M26 clauses remain normative descriptions of the closed historical milestone only; they do not constrain an explicit M27 hard cut. All other sections are supporting rationale or retained design history unless Section 0 adopts them explicitly.
+
+This document defines intended contracts. `WORK_LOG.md` alone records promoted implementation gates, exact-head evidence, and acceptance state. No future-facing clause in this document is a claim that the feature is implemented.
 
 ---
 
 ## Table of Contents
 
+0. [Normative M27 and M28 Contract](#0-normative-m27-and-m28-contract)
 1. [Vision](#1-vision)
 2. [Non-Negotiable Design Principles](#2-non-negotiable-design-principles)
 3. [What Arche Is](#3-what-arche-is)
@@ -58,14 +61,351 @@ The broad platform design in this document remains directional. The M26 clauses 
 45. [Toolchain Commands](#45-toolchain-commands)
 46. [Language Surface](#46-language-surface)
 47. [Example Programs](#47-example-programs)
-48. [Implementation Roadmap](#48-implementation-roadmap)
+48. [Historical Bootstrap Roadmap (Superseded)](#48-historical-bootstrap-roadmap-superseded)
 49. [Bootstrap and Self-Hosting](#49-bootstrap-and-self-hosting)
 50. [Risks and Mitigations](#50-risks-and-mitigations)
-51. [Open Design Questions](#51-open-design-questions)
+51. [Historical Open Design Questions](#51-historical-open-design-questions)
 52. [Appendix A: M26 Grammar Boundary](#52-appendix-a-m26-grammar-boundary)
 53. [Appendix B: Initial Runtime Structs](#53-appendix-b-initial-runtime-structs)
 54. [Appendix C: Initial Arche Core Example](#54-appendix-c-initial-arche-core-example)
 55. [Appendix D: Milestone Acceptance Tests](#55-appendix-d-milestone-acceptance-tests)
+
+---
+
+# 0. Normative M27 and M28 Contract
+
+## 0.1 Product north star and authority
+
+Arche is a standalone, native, general-purpose ECS language and platform. Games, simulations, authoritative servers, tools, deterministic environments, and other ECS-shaped software are equal intended uses. Machine learning is an important application frontier—particularly for running many reproducible simulation worlds—but it is not Arche's identity and does not introduce an ML-specific language boundary before 0.1.
+
+The roadmap to the first public release is:
+
+1. **M26 — closed historical substrate.** Generic verified-Core reference/native agreement, metadata-authoritative ARCHEECS v2 execution, ARCHEOBS2, static x86-64 Linux PIE output, and the required strict/large-file gates are accepted.
+2. **M27 — general platform foundation.** One umbrella milestone, implemented through mandatory internal gates M27-A through M27-L, creates the general language, reentrant ECS runtime, artifact pipeline, package ecosystem, public toolchain, standard library, and source-package registry.
+3. **M28 — Arche 0.1 release proof.** No broad language feature is added. Two structurally different applications prove the completed platform: an authoritative multiplayer arena server and a deterministic 1,024-world Grid Pursuit environment with external trainer interoperability.
+
+Every internal gate uses a short-lived pull request and exact-head evidence. Passing an internal gate does not close M27. M27 closes only after M27-L; Arche 0.1 ships only after M28's exact protected release commit passes both application proofs and every release gate.
+
+## 0.2 Targets, modules, worlds, and entrypoints
+
+`Arche.toml` schema 1 defines library, binary, and environment targets:
+
+- A library target has `src/lib.arc` by default, cannot declare a root world, and has no process entrypoint.
+- A binary target has `src/main.arc` by default, links exactly one explicit root world, and exports `fn main(app: &mut App<RootWorld>, caps: Caps<...>) requires {...} throws {...} -> i32`. Its returned `i32` becomes the process status through the low eight bits.
+- An environment target uses a manifest-listed source root, links exactly one explicit root world, has no `main` or source `exit`, and names reset, step, and self-play schedules in its manifest profile.
+
+World declarations use `world Name { init { ... } }`. Components, resources, tags, systems, schedules, functions, and types are package/module items. `init` is data-only resource and spawn initialization. A binary drives schedules through `App`; an environment's lifecycle and schedules are driver-owned.
+
+Module discovery is explicit and deterministic:
+
+- `mod physics` resolves only `physics.arc`; a child `mod collision` declared there resolves `physics/collision.arc`.
+- There is no `mod.arc`, wildcard discovery, path attribute, or duplicate module loading.
+- `use`, `pub`, `pub(package)`, `pub(super)`, and `pub(in path)` define imports and visibility.
+- Source identifiers use Unicode XID normalized to NFC. Filename aliases, case-fold collisions, and normalization collisions are errors.
+- Public package scope and name segments are strict lowercase ASCII and use `scope/name`; official packages use `arche/*`.
+
+M26 `startup`/final-`exit` source is not accepted by M27 target semantics. It receives an explicit migration diagnostic; no source compatibility shim remains.
+
+## 0.3 General language contract
+
+### 0.3.1 Values and numerics
+
+The scalar set is `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, 64-bit `isize`/`usize`, `f32`, `f64`, `bool`, Unicode-scalar `char`, and 64-bit `entity`. The aggregate and owned-value set includes tuples, fixed arrays, slices, `str`, named structs, payload enums, generic `Option` and `Result`, `String`, `Vec<T>`, ordered `Map<K,V>`, `Box<T>`, `Rc/Weak`, `Arc/Weak`, and `Pin`. Arche has no garbage collector.
+
+Integer arithmetic and shifts wrap in two's complement/modulo arithmetic. Shift counts are masked to the width; signed right shift is arithmetic. Division or remainder by zero and signed minimum divided by `-1` trap. No implicit numeric or boolean conversion exists. `From` and `TryFrom` express safe conversions; `as` is reserved for unsafe pointer/address casts.
+
+Floating-point operations use round-to-nearest-even, masked exceptions, FTZ/DAZ disabled, no contraction, preserved subnormals and signed zero, and canonical arithmetic NaNs for `f32` and `f64`. Ordered comparisons with NaN are false except `!=`, which is true.
+
+### 0.3.2 Functions, generics, traits, and patterns
+
+Arche supports direct and mutual recursion, real call frames, stack probes, and a noncatchable stack-overflow trap. Generics accept type, lifetime, and integer-const parameters.
+
+Traits use static dispatch and required methods only. Trait objects, associated types, default methods, supertraits, and user negative impls are outside 0.1. The orphan rule permits an implementation when its package owns the trait or the outermost nominal target type. Overlap is legal only when the parent is explicitly `impl default` and the child is strictly more specific; incomparable matches are errors. Operator traits use explicit input/output generic parameters and cannot throw. All conversions remain explicit.
+
+Pattern matching supports nested struct, tuple, enum, reference, and slice patterns; literals; integer and character ranges; or-patterns; `name @ pattern`; guards; match ergonomics; `if let`; `while let`; `let ... else`; and catch patterns. Matches are exhaustive. Guards run in source order and do not contribute to exhaustiveness. Every alternative of an or-pattern binds the same names with the same types/modes. Float and map structural patterns are rejected.
+
+### 0.3.3 Ownership, unsafe code, and allocation
+
+Arche uses Rust-like ownership semantics without Rust source, crate, or ABI compatibility:
+
+- Moves, `Copy`, `Clone`, nonthrowing `Drop`, shared/mutable references, nonlexical lifetimes, explicit lifetime parameters, raw pointers, strict provenance, `unsafe`, and `MaybeUninit` are language concepts.
+- Assignment completely evaluates and owns its right-hand side before dropping and replacing the old destination.
+- `Drop` cannot throw. It may panic; panic during an existing unwind aborts with status `134`.
+- Fallible allocation APIs return ordinary `Result<_, AllocError>` values. Infallible or bootstrap allocation failure is an infrastructure failure with status `1`; structural-command allocation failure follows the transactional rule in Section 0.4.1. Compiler-generated cleanup edges destroy every initialized owned value exactly once.
+- Unsafe violations are undefined behavior. A checked-unsafe diagnostic mode may detect violations but does not change the language contract.
+
+Closures infer captures or use `move` and implement anonymous, statically dispatched `Fn`, `FnMut`, or `FnOnce` types. Generators are pinned stackless pull state machines with typed resume, yield, return, `throws`, and `requires` sets. A generator may borrow across yield only through its pinned lifetime rules. Async/futures remain deferred.
+
+Threads use structural `Send`/`Sync`, scoped borrowing, atomics with Relaxed/Acquire/Release/AcqRel/SeqCst orderings, and nonpoisoning mutexes, read/write locks, condition variables, and channels. Consume ordering is unavailable. `App` and live world access are `!Send + !Sync`; the simulation thread exclusively owns its world. Environment stepping remains sequential in 0.1.
+
+### 0.3.4 Exceptions, effects, capabilities, and compile-time evaluation
+
+Checked exceptions use explicit canonical `throws {E...}` sets. Capability effects use separate canonical `requires {Capability...}` sets. Exported functions, traits, closures, generators, function pointers, schedules, Core bodies, and ABI hashes include both sets. Recursive call graphs are solved to a fixed point. A schedule exposes the union of every dispatched system's sets.
+
+`throw`, propagation, and exhaustive `catch` implement recoverable exceptions. An exception escaping the entrypoint unwinds initialized values, discards the current unflushed structural-command epoch, preserves earlier committed effects, emits an enabled observation, writes the reserved diagnostic, and exits `71`. Panic and semantic traps are uncatchable and exit `70` after the same committed-state rule; a panic during unwind aborts `134`.
+
+Capabilities are unforgeable, non-static, nonserializable driver-supplied values. General binaries may receive explicit capabilities for arguments, environment, standard I/O, files, subprocesses, wall/monotonic clocks, TCP/UDP, threads, atomics, and synchronization. Environment reset/step/self-play call graphs are statically checked and dynamically guarded against ambient/nondeterministic host effects, raw address observation, unsafe host calls, and threads.
+
+Compile-time evaluation runs the full hermetic language subset, including recursion, allocation-backed values, traits, caught exceptions, closures/generators, and Drop. It cannot access ECS worlds, capabilities, threads, host I/O, FFI, or observable addresses. `include_bytes` and `include_str` are explicit hashed package inputs. Published manifests pin step, call-depth, and heap budgets; scaffold defaults are 10,000,000 steps, depth 1,024, and 64 MiB. Budget exhaustion is a compiler-resource error, not an Arche result.
+
+## 0.4 ECS and world-lifecycle contract
+
+### 0.4.1 Entities and structural commands
+
+`entity` packs a nonzero 32-bit index in the low half and a nonzero 32-bit generation in the high half. Fresh entities start at generation one. Despawn increments the generation before deterministic LIFO slot reuse; overflow permanently retires the slot. Zero is invalid. `Option<entity>` expresses absence—there is no sentinel entity.
+
+Systems request structural access with an explicit `cmd: commands` parameter:
+
+```arche
+cmd.spawn { Position { x: 0.0, y: 0.0 } } -> entity
+cmd.despawn(e)
+cmd.add(e, Velocity { x: 1.0, y: 0.0 })
+cmd.remove<Velocity>(e)
+```
+
+`cmd.spawn` immediately reserves and returns a handle. That handle may be stored or targeted by later queued commands, but the entity is not query-visible until flush. Structural commands flush exactly once at the implicit end of a schedule; no public intermediate flush exists.
+
+Command emission order is schedule order, system order, query table/row order, then statement order. Each command is atomic. Earlier valid commands remain committed if the first stale, duplicate, conflicting, or allocation-failing command stops the flush. The failing command publishes no partial effect, later commands remain unapplied, and every owned queued payload is dropped exactly once.
+
+### 0.4.2 Tables, queries, and isolated worlds
+
+Queries visit materialized tables in table-creation order and live physical row slots in row order. Spawn and archetype transition append to the destination table. Removal performs deterministic swap-remove and repairs the moved entity's location. Materialized empty tables remain observable because their catalog position affects future iteration.
+
+Required query terms preserve source binding order; exclusions do not bind; tags and other zero-sized required terms bind only `_`; mutable tags remain invalid. M27/M28 do not add optional terms, change detection, nested query loops, events, relations, or parallel schedules.
+
+Every `WorldContext` owns an independent allocator, resources, table catalog, rows/columns, entity locations and generations, free list, retired slots, command buffer, and allocation ledger. No mutable heap allocation crosses world instances. One immutable linked world template and shared code image may create many reentrant instances.
+
+### 0.4.3 ECS-storable values
+
+`EcsValue` is a compiler-sealed eligibility judgment revalidated after monomorphization. Scalars, entities, eligible arrays/tuples/structs/enums/Option/Result, `Box`, `String`, `Vec`, and ordered `Map` are eligible when every transitive child is owned, sized, `'static`, canonically encodable, and safely droppable.
+
+References, raw pointers, `Rc`/`Arc`/`Weak`, `Pin`, closures, generators, synchronization/interior-mutable values, and operating-system/runtime handles are transitively ineligible. `EcsKey` is separately compiler-sealed and supplies canonical structural ordering. Floats and arbitrary user `Ord` implementations cannot become ECS map keys.
+
+Reference and native execution consume the same decoded/linked metadata but remain independent semantic implementations. The reference executor interprets verified instantiated Core; native execution runs AOT bodies. Exact parity is required for deterministic programs without ambient host effects. Live networking and thread scheduling use separate behavioral conformance tests rather than byte-identical execution claims.
+
+## 0.5 Compiler, artifacts, native runtime, and observation
+
+### 0.5.1 Semantic pipeline and identities
+
+The compiler pipeline is:
+
+```text
+streamed source snapshots
+  -> AST
+  -> resolved HIR
+  -> typed generic MIR (move paths, NLL, patterns, calls, effects, cleanup/unwind edges)
+  -> VerifiedGenericCore
+  -> deterministic link-time instance graph and monomorphization
+  -> VerifiedInstanceCore
+  -> direct reference execution or Machine IR/AOT
+```
+
+Machine IR is never a semantic authority. Domain-separated 128-bit identities cover package, definition, type, concrete instance, interface, layout, ABI, and Core body. Stable definition identity uses registry origin, scoped package name, module path, declaration, and declaration shape—not package version. Resolved package instances separately include version and source digest.
+
+The M27 domains are exact ASCII byte strings including their trailing NUL:
+
+```text
+ARCHE-PACKAGE-ID\0
+ARCHE-DEF-ID\0
+ARCHE-TYPE-ID\0
+ARCHE-INSTANCE-ID\0
+ARCHE-INTERFACE-HASH\0
+ARCHE-LAYOUT-HASH\0
+ARCHE-ABI-HASH\0
+ARCHE-BODY-HASH\0
+```
+
+Every M27 canonical identity preimage begins with the selected domain followed by fingerprint encoding version `2` as `u32le(2)` before the domain-specific fields. No domain may be reused for another identity kind. M27 retains the exact M26 ABI/body domain strings but changes their prefix from the historical M26 `u32le(1)` to `u32le(2)` and uses the new domain-specific preimage contract; Section 23.1's M26 version-1 preimages and vectors remain frozen historical M26 contracts rather than being reinterpreted.
+
+### 0.5.2 Versioned hard cut
+
+M27 makes one fail-closed compatibility cut:
+
+- `ARCHEOBJ` v1 represents one target-specific package target and contains imports/exports, type/trait/impl descriptors, generic Core templates, concrete instances, relocations, source maps, and identity hashes.
+- Canonical-Core encoding v2 is the sole serialized Core contract.
+- `ARCHEECS` v3 is the fully linked executable/environment metadata contract for the type graph, root world, initializers, schedules, queries, function links, environment profiles, canonical values, source spans, and package provenance.
+- Binary `ARCHEOBS` v3 is the semantic observation contract.
+- Canonical Value v1 is the shared logical-value codec.
+- Environment protocol v1 is the trainer process protocol.
+
+ARCHEOBJ, Canonical Core, ARCHEECS, ARCHEOBS, and Canonical Value share this exact little-endian 64-byte directory envelope:
+
+| Offset | Width | Field | Empty-vector value |
+|---:|---:|---|---:|
+| `0` | `8` | format magic | format-specific ASCII bytes |
+| `8` | `4` | version (`u32`) | format-specific version |
+| `12` | `4` | header size (`u32`) | `64` |
+| `16` | `8` | flags (`u64`) | `0` |
+| `24` | `8` | total length (`u64`) | `64` |
+| `32` | `8` | directory offset (`u64`) | `64` |
+| `40` | `8` | directory count (`u64`) | `0` |
+| `48` | `8` | directory entry size (`u64`) | `64` |
+| `56` | `8` | reserved (`u64`) | `0` |
+
+The format magic/version pairs are exact:
+
+| Format | 8-byte magic | Version |
+|---|---|---:|
+| Arche package object | `ARCHEOBJ` | `1` |
+| Canonical Core | `ARCHECOR` | `2` |
+| Linked executable metadata | `ARCHEECS` | `3` |
+| Semantic observation | `ARCHEOBS` | `3` |
+| Canonical Value | `ARCHEVAL` | `1` |
+| Environment protocol frame | `ARCHEENV` | `1` |
+
+The byte-exact empty vector for each of the five directory-envelope formats is:
+
+```text
+magic[8]
+|| u32le(version)
+|| u32le(64)
+|| u64le(0)
+|| u64le(64)
+|| u64le(64)
+|| u64le(0)
+|| u64le(64)
+|| u64le(0)
+```
+
+That is exactly 64 bytes and fixes, in order, the magic, version, header size, flags, total length, directory offset, directory count, directory entry size, and reserved field. Gate-owned directories and sections may specialize content and validation but may not reinterpret any envelope field. Nonempty directories use 64-byte entries, checked `u64` arithmetic, reserved-zero validation, canonical ordering, complete cross-reference validation before mutation, and explicit rejection of unknown versions or sections.
+
+ARCHEENV is the deliberate framing exception: each protocol frame is exactly 64 bytes, so a directory envelope cannot precede or consume its message fields. M27-A freezes its foundation vector as `ARCHEENV || u32le(1) || u32le(64) || zero[48]`. M28 assigns opcode, flags, sequence, lengths, and payload references within bytes `16..64`; until then those bytes are reserved and must be zero. The frame decoder uses checked `u64` values for every length, sequence, and external payload reference and rejects nonzero reserved fields. This distinction preserves the fixed-frame trainer contract without reinterpreting a directory header.
+
+ARCHEECS v2, ARCHEOBS2, M26 source entry syntax, and later incompatible pre-1.0 versions require rebuild/migration; no production compatibility shim remains.
+
+Canonical Value begins with stable `TypeId`, checked payload length, and flags, then type-directed logical bytes. Strings preserve exact UTF-8, vectors logical order, maps sealed key order, enums variant plus payload, and `Box` its pointee. It never exposes pointers, padding, spare capacity, allocator state, or hash buckets. Decode builds in staging storage and publishes only after full validation.
+
+### 0.5.3 Observation and outcomes
+
+OBS3 is opt-in for ordinary binaries. Program stdout/stderr remain entirely program-owned. `arche run --observation PATH` uses a private Linux pipe and atomic publisher; Windows/WSL uses a private mode-restricted WSL sidecar followed by atomic publication. Direct PIE execution without the observation control block emits no observation. Environment snapshots travel inside the framed trainer protocol.
+
+An OBS3 snapshot includes package/lock/profile identity and descriptor dictionaries; resources in schema-ID order; materialized tables in creation order including empty tables; physical rows with table ordinal, row ordinal, entity handle, and birth ordinal; columns in canonical schema-ID signature order; next fresh entity index; every slot generation; retired slots; exact free-list order; and every dynamic value through Canonical Value. Addresses, capacities, and allocator implementation details are absent.
+
+Reserved process statuses are:
+
+| Status | Meaning |
+|---:|---|
+| low eight bits | returned binary `main` value |
+| `1` | infrastructure, metadata, link, bootstrap allocation, or observation-I/O failure |
+| `2` | CLI usage/configuration error or unsafe output target |
+| `64` | trainer protocol violation |
+| `70` | semantic trap or panic |
+| `71` | uncaught checked exception |
+| `72` | environment/profile invariant violation |
+| `134` | double panic or explicit abort |
+
+A source return matching a reserved status remains distinguishable by the absence of the reserved diagnostic.
+
+### 0.5.4 Native target
+
+The generated target remains x86-64 Linux static PIE: real calls and guarded stacks, compiler-managed unwinding, DWARF source/ECS metadata, TLS, direct Linux system calls, no interpreter/dynamic relocation/text relocation, no writable-executable segment, and a nonexecutable stack. All output remains streamed, checked-`u64`, far-safe, and atomically published. User native-library FFI is unavailable in 0.1; only the trusted runtime uses its private native ABI.
+
+## 0.6 Packages, tools, registry, and distribution
+
+### 0.6.1 Manifests, workspaces, and dependency resolution
+
+`Arche.toml` schema 1 supports package identity, binary/library/environment targets, explicit workspace membership, registry/path dependencies, const-eval budgets, declared capabilities, and environment profiles. Workspaces use sorted explicit member paths with no globs, nesting, or outside-root members; they share one lockfile, cache, and target directory and may declare default members.
+
+Dependencies are SemVer requirements from the one official registry or local paths. The resolver selects one version of each registry package identity across the graph; highest compatible non-yanked versions win and prereleases require an explicit prerelease requirement. Git/URL/custom-registry, build-script, feature, optional, and target-conditional dependencies are rejected in 0.1. A publishable path dependency must also name and match a registry package/version; packaging removes the path.
+
+`Arche.lock` canonically and without timestamps pins exact versions, archive/source digest, complete dependency graph, registry identity, provenance/inclusion record, exact toolchain, and release-manifest digest.
+
+### 0.6.2 Public toolchain
+
+The public `arche` CLI owns:
+
+- `new`, `check`, `build`, `run`, `test`, `inspect`, `fmt`, `doc`, `lsp`, `debug`, and `profile`.
+- `add`, `remove`, `update`, `search`, `package`, `publish --dry-run`, `login`, `logout`, `whoami`, scope/owner/trusted-publisher management, and yank/unyank.
+- `toolchain install`, `toolchain list`, `toolchain default`, and `toolchain remove`.
+- Workspace selection, locked/offline/frozen operation, human and NDJSON messages, and deterministic atomic output publication.
+
+`archec0` remains the authoritative Rust bootstrap compiler through 0.1 but becomes an internal component behind `arche`. Linux supports the full toolchain. Windows supports compilation and static tooling; run/test/debug/profile use an explicitly configured, version-matched WSL helper. Debugging wraps LLDB/GDB with Arche source maps and ECS inspection. Profiling wraps Linux `perf` plus systems/schedules/queries/commands/allocation/drop instrumentation.
+
+### 0.6.3 Public registry and toolchain distribution
+
+The official registry at `packages.arche-lang.org` distributes canonical source-only `ARCHEPKG` v1 archives; ARCHEOBJ and native code are local rebuildable caches only. Archives reject traversal, links, devices, duplicate entries, case/NFC aliases, undeclared files, and unsafe expansion. Operational quotas are server-advertised and adjustable rather than compiler product caps.
+
+Human authentication uses a [GitHub App OAuth device flow](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app) and short-lived, scoped registry sessions with no upload permission. Humans reserve names, administer scopes/roles/policies, and yank versions; production publishing is trusted-CI-only. [GitHub Actions OIDC claims](https://docs.github.com/en/actions/reference/security/oidc) are validated against issuer, audience, immutable owner/repository IDs, workflow, ref/environment, version, digest, expiry, and replay ID. A single-use capability publishes exactly one immutable package version.
+
+Scopes bind to immutable GitHub user/organization IDs with Owner, Maintainer, and Publisher roles. Scope transfer and sole-owner recovery require notification, a seven-day delay, two-administrator approval, and append-only audit records. Published versions are immutable and yankable. Security may quarantine or tombstone malware or legally prohibited content; a locked fetch fails rather than receiving substituted bytes.
+
+The production service uses stateless OCI services, managed PostgreSQL, S3-compatible immutable blobs, a CDN/sparse index, append-only transparency, signed attestations, tested backups, and a public status surface. Monthly read and authenticated-write availability are each at least 99.9%; RPO is at most 15 minutes and RTO at most four hours. M27 closure requires a restore/failover exercise and a complete 30-day production soak meeting the SLO.
+
+Managed historical toolchains use expiring, rollback-protected, threshold-signed release metadata. Noncompromised releases remain installable; revoked releases fail with an explicit migration path. First-party toolchain/runtime/registry/packages/templates use `MIT OR Apache-2.0`; generated output carries no Arche copyright claim. Third-party packages declare their own valid SPDX license. Client telemetry is off by default and sends no installation ID, command usage, source, observation, crash dump, or profile.
+
+## 0.7 M27 implementation gates
+
+M27 is one platform milestone with the following mandatory, ordered internal gates:
+
+| Gate | Required result |
+|---|---|
+| **M27-A — promotion/foundation** | Promote this contract; update README/design/ledger; add first-party licenses; establish shared Rust workspace boundaries, a public CLI shell, status taxonomy, ID domains, empty format vectors, and retain both required greater-than-4-GiB checks. |
+| **M27-B — packages/modules/HIR** | Implement schema-1 manifests, target kinds, explicit modules, workspaces, dependency resolution/locks, package-aware name resolution, root-world linking, and resolved HIR. |
+| **M27-C — language semantics** | Implement the selected types, traits/specialization/operators, patterns, ownership/NLL/drop/unsafe, recursion, exceptions/effects, closures, generators, thread semantics, CTFE, and `VerifiedGenericCore`. |
+| **M27-D — separate compilation** | Implement deterministic monomorphization, `VerifiedInstanceCore`, layouts/ABI, ARCHEOBJ v1, linker/coherence validation, promoted constants, and object corruption matrices. |
+| **M27-E — values/reentrant runtime** | Implement process/world allocators, move/drop/codec glue, Canonical Value v1, reentrant `WorldContext`, dynamic ECS values, and the OBS3 envelope. |
+| **M27-F — entity lifecycle** | Implement generation/reuse/location repair, deferred structural commands, archetype transitions, physical ordering, complete OBS3 world records, exception/trap epoch behavior, and direct-reference lifecycle proofs. |
+| **M27-G — generic native AOT** | Implement calls, recursion, unwind, dynamic values, explicit world contexts/commands, system calls, blocking I/O/networking, TLS, threads/atomics, and deterministic reference/native parity. |
+| **M27-H — standard product path** | Stabilize `core`/`alloc`/`std`, package cache, `check/build/run/test`, official packages, capability APIs, environment-target synthesis, and deterministic/offline builds. |
+| **M27-I — developer tools** | Complete `fmt/doc/lsp/inspect/debug/profile`, source/debug metadata, workspace UX, WSL transport, observation side channels, and human/NDJSON contracts. |
+| **M27-J — registry/toolchains** | Deliver managed toolchains and production registry packaging, sparse resolution, GitHub login, trusted OIDC publishing, roles, yanks/tombstones, transparency, backup, monitoring, and status service. |
+| **M27-K — integrated acceptance** | Run clean-host, security/corruption, allocation-failure, offline-rebuild, WSL-fidelity, telemetry-capture, registry-restore, load/failover, and public-soak proofs. |
+| **M27-L — closure** | Require exact-head protected Linux/Windows/WSL/large-file/registry CI, close documentation/evidence, verify the production SLO, and only then mark M27 complete. |
+
+No gate may weaken or silently defer a contract assigned to it. If an external service, hosted runner, production domain, credential, signing root, or package namespace required by a gate is unavailable, that gate and M27 remain blocked.
+
+## 0.8 M28 Arche 0.1 release proof
+
+M28 introduces no broad language feature. It validates M27 with two equal general-purpose ECS applications.
+
+### 0.8.1 Authoritative Arena Server
+
+The Arena proof is a headless 60 Hz authoritative simulation with one exclusive ECS simulation thread. It includes a versioned UDP input/snapshot protocol, logical player/session IDs, reconnects, projectiles, health, teams/tags, entity transitions, resources, dynamic values, replay files, and server configuration.
+
+A network thread validates/fragments input into a channel; the simulation canonicalizes accepted messages by tick, client ID, and sequence. Missing input becomes no-op, duplicates are rejected, late input is dropped and counted, and 0.1 has no rollback. Deterministic acceptance runs eight clients for 10,000 replay ticks with byte-identical reference/native replication, state, and status. A separate loopback run uses four clients for 1,000 ticks with loss, reordering, and reconnect injection. Windowing, graphics, audio, and local input are not required.
+
+### 0.8.2 Seeded Grid Pursuit
+
+Grid Pursuit uses one immutable template and shared code image for 1,024 isolated world contexts. Each 17×17 world has Runner and Chaser agents, a 64-step horizon, explicit seeded RNG, explicit RESET, and no automatic reset. Its ECS model materially uses `String`, `Vec`, ordered `Map`, enums, tags, structural transitions, despawn/drop, and Canonical Value observation.
+
+The same executable runs counts 1, 2, 17, and 1,024 without recompilation or code-size growth. Acceptance performs 1,024 × 256 ordered world transitions plus a second variable-population environment to prevent fixture-shape specialization. Same seed/action streams are byte-identical across runs and reference/native execution; changing one action for world 513 may affect only that world.
+
+### 0.8.3 Trainer protocol and Python adapter
+
+Environment protocol v1 uses fixed 64-byte little-endian frames and HELLO, RESET, RESET_RESULT, STEP, STEP_RESULT, SNAPSHOT, SNAPSHOT_RESULT, CLOSE, CLOSED, and ERROR messages. It permits one outstanding request, requires exact monotonic sequence numbers, validates a complete frame before mutation, treats protocol errors as fatal, and performs no stream resynchronization.
+
+Initial RESET covers every world; later RESET selects explicit subsets. No terminal world advances until explicitly reset. A STEP names an exhaustive action set for every ready agent/world. If world `k` fails, lower-index worlds remain committed; `k` preserves earlier committed effects but discards its pending structural epoch; higher-index worlds remain untouched.
+
+Ship pure-Python `arche-lang-env` with a general subprocess/Canonical-Value client, one-world `ArcheParallelEnv`, batched `ArcheVectorParallelEnv`, and distinct protocol/trap/exception/environment/infrastructure exception classes. The acceptance lock pins [PettingZoo 1.26.1](https://pypi.org/project/pettingzoo/) and [Gymnasium 1.3.0](https://pypi.org/project/gymnasium/) and passes PettingZoo's documented [`parallel_api_test(..., num_cycles=1000)`](https://pettingzoo.farama.org/main/content/environment_tests/) for the one-world adapter.
+
+### 0.8.4 Release gate
+
+Arche 0.1 is released only when the exact protected commit:
+
+- Creates both applications through public `arche` commands in real workspaces.
+- Resolves an immutable official registry dependency, rebuilds offline from source-only cache, and reproduces ARCHEOBJ and PIE bytes.
+- Passes check/build/test/fmt/doc/LSP/inspect/debug/profile on clean Linux and Windows+WSL hosts.
+- Repeats deterministic native runs under ASLR with identical state/observation/status.
+- Proves world/client isolation, stale handles, canonical physical ordering, allocation/drop balance, and ordered-stop state.
+- Keeps the complete core proof below 20 minutes, combined compiler/reference/native RSS below 1 GiB, and scratch below 12 GiB.
+- Keeps Python plus its native child below 2 GiB RSS and its proof below 20 minutes.
+- Reports throughput without inventing a marketing performance floor before measurement.
+- Passes every release, registry, clean-room, arena-server, and environment gate at the exact publication commit.
+
+## 0.9 Post-0.1 direction and explicit exclusions
+
+After 0.1, use time-bounded 0.x releases with workload-backed acceptance. Advance two equal application tracks over the shared compiler/runtime:
+
+- **Game platform:** public unsafe C ABI, static/dynamic native linking, first-party window/input/render/audio packages, asset pipeline, client-game examples, and later editor workflows.
+- **Native ML:** tensors, shape/dtype/device semantics, CPU kernels, reverse-mode autodiff, optimizers, GPU kernel compilation, and end-to-end native training workloads.
+
+Neither track becomes Arche's exclusive identity. Self-hosting begins after 0.1: compiler-support/linker pieces move into Arche, the Rust seed builds `archec1`, `archec1` builds `archec2`, and reproducible or conformance-equivalent stage-1/stage-2 output is mandatory before 1.0.
+
+M27/M28 explicitly exclude user FFI, graphics/audio/windowing, async/futures, user macros, trait objects, associated types, garbage collection, events, relations, optional/change-detection queries, nested query loops, parallel schedules, native Windows output, other architectures, and native tensor/autodiff/GPU facilities. General binaries may use explicit threads and ambient-I/O capabilities; deterministic environment execution rejects them.
+
+Pre-1.0 releases may hard-cut source, manifests, object files, executable metadata, observations, registry APIs, and trainer protocols. Every contract remains explicitly versioned and old data is never silently reinterpreted. Stable compatibility begins only with 1.0.
+
+External prerequisites include control of `arche-lang.org`, production infrastructure credentials, GitHub App/OIDC configuration, signing roots, and distribution namespaces. A missing prerequisite blocks the relevant gate rather than causing an unreviewed rename or weakened acceptance contract.
 
 ---
 
@@ -3524,7 +3864,9 @@ schedule Main {
 
 ---
 
-# 48. Implementation Roadmap
+# 48. Historical Bootstrap Roadmap (Superseded)
+
+This 0.0.x sequence records the original bootstrap sketch. Section 0.7 supersedes it as the implementation roadmap; none of the entries below is a current acceptance gate.
 
 ## 48.1 Version 0.0.1 — Native executable seed
 
@@ -3777,7 +4119,9 @@ Self-hosting should not block the first native ECS executable.
 
 ---
 
-# 51. Open Design Questions
+# 51. Historical Open Design Questions
+
+These questions are retained to show the earlier decision frontier. Section 0 resolves or explicitly defers them for M27, M28, and Arche 0.1; they are not open implementation choices for those milestones.
 
 These need future decisions:
 

@@ -3,9 +3,24 @@
 version = 4
 
 [[package]]
+name = "arche"
+version = "0.0.0"
+dependencies = [
+ "arche-foundation",
+]
+
+[[package]]
+name = "arche-foundation"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+]
+
+[[package]]
 name = "archec0"
 version = "0.0.0"
 dependencies = [
+ "arche-foundation",
  "blake3",
  "same-file",
 ]
