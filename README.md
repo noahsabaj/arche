@@ -7,7 +7,7 @@ Arche is for the full range of work that benefits from ECS: games, simulations, 
 ## Road to 0.1
 
 - **M26 — closed:** established the generic verified-Core, metadata-authoritative reference/native execution substrate; ARCHEECS v2 and ARCHEOBS2; static x86-64 Linux PIE output; strict cross-platform CI; and the required greater-than-4-GiB source and artifact proofs.
-- **M27 — platform foundation:** builds the general language, ownership and effect systems, reentrant ECS runtime, package/object formats, public `arche` toolchain, standard library, and source-package registry. M27 is one umbrella milestone executed through mandatory gates M27-A through M27-L. M27-A is closed; M27-B packages/modules/resolution/HIR work is active.
+- **M27 — platform foundation:** builds the general language, ownership and effect systems, reentrant ECS runtime, package/object formats, public `arche` toolchain, standard library, and source-package registry. M27 is one umbrella milestone executed through mandatory gates M27-A through M27-L. M27-A and M27-B are closed; M27-C general language semantics and verified generic Core work is active.
 - **M28 — Arche 0.1 release:** proves the completed platform with two materially different applications: an authoritative multiplayer arena server and a deterministic 1,024-world Grid Pursuit environment with a language-neutral trainer protocol.
 
 After 0.1, game-platform and native-ML capabilities advance as equal application tracks over the same compiler and runtime. Reproducible self-hosting is a later objective before 1.0; the Rust `archec0` seed remains authoritative through 0.1.
@@ -37,12 +37,13 @@ arche profile
 ```
 
 M27-A established the public `arche` command shell and its shared contracts.
-The active M27-B implementation connects `arche check` to schema-1 manifests,
+M27-B connected `arche check` to schema-1 manifests,
 explicit workspaces and local path dependencies, deterministic resolution and
 locking, streamed module loading, package-aware resolved HIR, and the M26
 source-migration hard cut. A successful check publishes only canonical
 `Arche.lock`; registry acquisition and the remaining public commands stay
-explicitly unavailable until their assigned later gates. `archec0` remains the
+explicitly unavailable until their assigned later gates. M27-C is now building
+the general semantic and verified generic Core authority. `archec0` remains the
 authoritative executable compiler interface until the general language and AOT
 pipeline are connected. Arche generates static x86-64 Linux PIE executables.
 Windows remains a supported compiler and tooling host; generated programs run
@@ -59,7 +60,7 @@ bootstrap/archec0/   Rust bootstrap compiler/runtime seed and Cargo workspace
                      Schema-1 manifests, workspaces, resolver, and lockfiles
   crates/arche-frontend/
                      Streaming M27 module parser and package-aware resolved HIR
-  crates/arche/       Public command driver (`check` is active in M27-B)
+  crates/arche/       Public command driver (`check` implemented since M27-B)
 examples/            Arche source fixtures
 tests/m27b/           Package/module/public-check proof fixtures
 tests/e2e/           End-to-end executable proofs
