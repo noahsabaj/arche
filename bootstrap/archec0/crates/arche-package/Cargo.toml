@@ -1,5 +1,5 @@
 [package]
-name = "arche"
+name = "arche-package"
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -8,5 +8,10 @@ publish = false
 
 [dependencies]
 arche-foundation = { path = "../arche-foundation" }
-arche-frontend = { path = "../arche-frontend" }
-arche-package = { path = "../arche-package" }
+semver = "=1.0.28"
+sha2 = "=0.11.0"
+spdx = "=0.13.5"
+toml_edit = "=0.25.13"
+unicode-casefold = "=0.2.0"
+unicode-ident = "=1.0.24"
+unicode-normalization = "=0.1.25"

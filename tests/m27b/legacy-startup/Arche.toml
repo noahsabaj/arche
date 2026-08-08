@@ -1,0 +1,12 @@
+schema = 1
+
+[package]
+name = "example/legacy"
+version = "0.1.0"
+edition = "2026"
+arche = ">=0.0.0"
+
+[[bin]]
+name = "legacy"
+path = "src/main.arc"
+world = "package::LegacyWorld"

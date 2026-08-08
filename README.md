@@ -36,14 +36,32 @@ arche debug
 arche profile
 ```
 
-M27-A establishes the public `arche` command shell and its shared contracts; later gates connect those commands to the compiler, package system, runtime, and services. `archec0` remains the authoritative implemented compiler interface until that integration is accepted. Arche generates static x86-64 Linux PIE executables. Windows remains a supported compiler and tooling host; generated programs run through explicitly configured WSL until native Windows output becomes a later target.
+M27-A established the public `arche` command shell and its shared contracts.
+The active M27-B implementation connects `arche check` to schema-1 manifests,
+explicit workspaces and local path dependencies, deterministic resolution and
+locking, streamed module loading, package-aware resolved HIR, and the M26
+source-migration hard cut. A successful check publishes only canonical
+`Arche.lock`; registry acquisition and the remaining public commands stay
+explicitly unavailable until their assigned later gates. `archec0` remains the
+authoritative executable compiler interface until the general language and AOT
+pipeline are connected. Arche generates static x86-64 Linux PIE executables.
+Windows remains a supported compiler and tooling host; generated programs run
+through explicitly configured WSL until native Windows output becomes a later
+target.
 
 ## Repository layout
 
 ```text
 bootstrap/archec0/   Rust bootstrap compiler/runtime seed and Cargo workspace
-  crates/            Shared M27 contracts and public CLI shell
+  crates/arche-foundation/
+                     Shared process, identity, and format foundations
+  crates/arche-package/
+                     Schema-1 manifests, workspaces, resolver, and lockfiles
+  crates/arche-frontend/
+                     Streaming M27 module parser and package-aware resolved HIR
+  crates/arche/       Public command driver (`check` is active in M27-B)
 examples/            Arche source fixtures
+tests/m27b/           Package/module/public-check proof fixtures
 tests/e2e/           End-to-end executable proofs
 tools/               Local proof runner
 WORK_LOG.md          Promoted milestone state and acceptance evidence

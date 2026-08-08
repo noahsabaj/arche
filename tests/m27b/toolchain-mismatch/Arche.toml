@@ -1,0 +1,10 @@
+schema = 1
+
+[package]
+name = "example/future"
+version = "0.1.0"
+edition = "2026"
+arche = ">=1.0.0"
+
+[lib]
+path = "src/lib.arc"

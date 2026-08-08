@@ -1,0 +1,10 @@
+schema = 1
+
+[package]
+name = "example/shared"
+version = "0.1.0"
+edition = "2026"
+arche = ">=0.0.0"
+
+[lib]
+path = "src/lib.arc"

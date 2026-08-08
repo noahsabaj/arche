@@ -12,7 +12,13 @@ blake3 = { version = "=1.8.5", features = ["pure"] }
 same-file = "=1.0.6"
 
 [workspace]
-members = [".", "crates/arche", "crates/arche-foundation"]
+members = [
+    ".",
+    "crates/arche",
+    "crates/arche-foundation",
+    "crates/arche-frontend",
+    "crates/arche-package",
+]
 default-members = ["."]
 resolver = "2"
 

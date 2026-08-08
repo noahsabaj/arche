@@ -105,7 +105,10 @@ function Invoke-CapturedProcess {
         [string] $Executable,
 
         [Parameter(Mandatory = $false)]
-        [string[]] $Arguments = @()
+        [string[]] $Arguments = @(),
+
+        [Parameter(Mandatory = $false)]
+        [string] $WorkingDirectory = $repoRoot
     )
 
     Write-Host "==> $Name"
@@ -114,7 +117,7 @@ function Invoke-CapturedProcess {
     $startInfo.Arguments = (($Arguments | ForEach-Object {
         ConvertTo-ProcessArgument -Value $_
     }) -join " ")
-    $startInfo.WorkingDirectory = $repoRoot
+    $startInfo.WorkingDirectory = $WorkingDirectory
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
@@ -141,6 +144,266 @@ function Invoke-CapturedProcess {
         Stdout = $stdout
         Stderr = $stderr
     }
+}
+
+function Copy-ProofDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Source,
+
+        [Parameter(Mandatory = $true)]
+        [string] $Destination
+    )
+
+    [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
+    foreach ($entry in @(Get-ChildItem -LiteralPath $Source -Force)) {
+        Copy-Item -LiteralPath $entry.FullName -Destination $Destination -Recurse -Force
+    }
+}
+
+function Get-RelativeProofFiles {
+    param([Parameter(Mandatory = $true)][string] $Root)
+
+    $prefixLength = $Root.TrimEnd([IO.Path]::DirectorySeparatorChar).Length + 1
+    return @(Get-ChildItem -LiteralPath $Root -Recurse -File -Force |
+        ForEach-Object { $_.FullName.Substring($prefixLength) } |
+        Sort-Object)
+}
+
+function Assert-NoLockTemporaries {
+    param([Parameter(Mandatory = $true)][string] $Root)
+
+    $temporaries = @(Get-RelativeProofFiles -Root $Root | Where-Object {
+        [IO.Path]::GetFileName($_).Contains(".Arche.lock.arche-tmp-")
+    })
+    Assert-Equal -Name "M27-B sibling lock temporary cleanup" `
+        -Actual $temporaries.Count -Expected 0
+}
+
+function Test-M27BPublicCheck {
+    param([Parameter(Mandatory = $true)][string] $PublicCli)
+
+    $fixtureRoot = Join-Path $repoRoot "tests/m27b"
+    $project = Join-Path $proofRoot "m27b-public-check"
+    Copy-ProofDirectory -Source (Join-Path $fixtureRoot "mixed-workspace") `
+        -Destination $project
+    $nested = Join-Path $project "nested/working-directory"
+    [System.IO.Directory]::CreateDirectory($nested) | Out-Null
+    $before = @(Get-RelativeProofFiles -Root $project)
+
+    $discovered = Invoke-CapturedProcess -Name "M27-B nested manifest discovery" `
+        -Executable $PublicCli -Arguments @("check") -WorkingDirectory $nested
+    Assert-ProcessStatus $discovered 0
+    Assert-Equal -Name "M27-B check stderr" -Actual $discovered.Stderr -Expected ""
+    Assert-Equal -Name "M27-B stable resolution summary" `
+        -Actual (Normalize-LineEndings $discovered.Stdout) `
+        -Expected "arche: resolved packages=1 targets=3 modules=5`n"
+
+    $after = @(Get-RelativeProofFiles -Root $project)
+    $created = @($after | Where-Object { $before -notcontains $_ })
+    Assert-Equal -Name "M27-B check-only publication count" `
+        -Actual $created.Count -Expected 1
+    Assert-Equal -Name "M27-B check-only publication" `
+        -Actual $created[0] -Expected "Arche.lock"
+    $lockPath = Join-Path $project "Arche.lock"
+    $lockBytes = [System.IO.File]::ReadAllBytes($lockPath)
+    Assert-True -Condition ($lockBytes.Length -gt 0) `
+        -Message "M27-B canonical lock is empty"
+    Assert-True -Condition ($lockBytes -notcontains [byte] 13) `
+        -Message "M27-B canonical lock contains CR bytes"
+
+    [System.IO.File]::WriteAllText(
+        $lockPath,
+        "incomplete lock bytes`n",
+        $utf8NoBom
+    )
+
+    $explicit = Invoke-CapturedProcess -Name "M27-B explicit manifest path" `
+        -Executable $PublicCli `
+        -Arguments @("check", "--manifest-path", (Join-Path $project "Arche.toml"))
+    Assert-ProcessStatus $explicit 0
+    Assert-Equal -Name "M27-B explicit manifest stderr" `
+        -Actual $explicit.Stderr -Expected ""
+    Assert-Equal -Name "M27-B discovery and explicit summaries" `
+        -Actual $explicit.Stdout -Expected $discovered.Stdout
+    $lockBase64 = [Convert]::ToBase64String($lockBytes)
+    $repeatedLockBase64 = [Convert]::ToBase64String(
+        [System.IO.File]::ReadAllBytes($lockPath)
+    )
+    Assert-Equal -Name "M27-B repeated canonical lock" `
+        -Actual $repeatedLockBase64 -Expected $lockBase64
+    Assert-Equal -Name "M27-B repeated check file inventory" `
+        -Actual ((Get-RelativeProofFiles -Root $project) -join "`n") `
+        -Expected ($after -join "`n")
+    Assert-NoLockTemporaries -Root $project
+
+    $pathWorkspace = Join-Path $proofRoot "m27b-path-workspace"
+    Copy-ProofDirectory -Source (Join-Path $fixtureRoot "path-workspace") `
+        -Destination $pathWorkspace
+    $pathWorkspaceNested = Join-Path $pathWorkspace "packages/shared/src"
+    $pathWorkspaceBefore = @(Get-RelativeProofFiles -Root $pathWorkspace)
+    $pathResolution = Invoke-CapturedProcess `
+        -Name "M27-B multi-member path dependency" `
+        -Executable $PublicCli -Arguments @("check") `
+        -WorkingDirectory $pathWorkspaceNested
+    Assert-ProcessStatus $pathResolution 0
+    Assert-Equal -Name "M27-B multi-member stderr" `
+        -Actual $pathResolution.Stderr -Expected ""
+    Assert-Equal -Name "M27-B multi-member summary" `
+        -Actual (Normalize-LineEndings $pathResolution.Stdout) `
+        -Expected "arche: resolved packages=2 targets=2 modules=2`n"
+    $pathWorkspaceAfter = @(Get-RelativeProofFiles -Root $pathWorkspace)
+    $pathWorkspaceCreated = @($pathWorkspaceAfter | Where-Object {
+        $pathWorkspaceBefore -notcontains $_
+    })
+    Assert-Equal -Name "M27-B multi-member publication count" `
+        -Actual $pathWorkspaceCreated.Count -Expected 1
+    Assert-Equal -Name "M27-B multi-member publication" `
+        -Actual $pathWorkspaceCreated[0] -Expected "Arche.lock"
+    $pathLockPath = Join-Path $pathWorkspace "Arche.lock"
+    $pathLock = [System.IO.File]::ReadAllText($pathLockPath)
+    Assert-Contains -Name "M27-B workspace authority lock row" `
+        -Actual (Normalize-LineEndings $pathLock) `
+        -Expected "[workspace]`nsource-digest = `"sha256:"
+    Assert-Contains -Name "M27-B multi-member app lock row" `
+        -Actual $pathLock -Expected 'name = "example/app"'
+    Assert-Contains -Name "M27-B multi-member dependency lock row" `
+        -Actual $pathLock -Expected 'name = "example/shared"'
+    Assert-Contains -Name "M27-B path dependency lock edge" `
+        -Actual $pathLock `
+        -Expected 'alias = "shared", package = "example/shared"'
+
+    $pathManifestPath = Join-Path $pathWorkspace "Arche.toml"
+    $pathManifest = [System.IO.File]::ReadAllText($pathManifestPath)
+    $changedPathManifest = $pathManifest.Replace(
+        'default-members = ["packages/app", "packages/shared"]',
+        'default-members = ["packages/app"]'
+    )
+    Assert-True -Condition ($changedPathManifest -ne $pathManifest) `
+        -Message "M27-B virtual workspace fixture defaults were not found"
+    [System.IO.File]::WriteAllText(
+        $pathManifestPath,
+        $changedPathManifest,
+        $utf8NoBom
+    )
+    $changedDefaults = Invoke-CapturedProcess `
+        -Name "M27-B virtual workspace authority lock replacement" `
+        -Executable $PublicCli -Arguments @("check") `
+        -WorkingDirectory $pathWorkspaceNested
+    Assert-ProcessStatus $changedDefaults 0
+    Assert-Equal -Name "M27-B changed defaults stderr" `
+        -Actual $changedDefaults.Stderr -Expected ""
+    Assert-Equal -Name "M27-B changed defaults summary" `
+        -Actual $changedDefaults.Stdout -Expected $pathResolution.Stdout
+    $changedPathLock = [System.IO.File]::ReadAllText($pathLockPath)
+    Assert-True -Condition ($changedPathLock -ne $pathLock) `
+        -Message "M27-B virtual workspace authority change did not replace the lock"
+    Assert-Equal -Name "M27-B changed defaults file inventory" `
+        -Actual ((Get-RelativeProofFiles -Root $pathWorkspace) -join "`n") `
+        -Expected ($pathWorkspaceAfter -join "`n")
+    Assert-NoLockTemporaries -Root $pathWorkspace
+
+    $legacy = Join-Path $proofRoot "m27b-legacy-startup"
+    Copy-ProofDirectory -Source (Join-Path $fixtureRoot "legacy-startup") `
+        -Destination $legacy
+    $legacyLockPath = Join-Path $legacy "Arche.lock"
+    $legacyLockBytes = $utf8NoBom.GetBytes("previous complete lock`n")
+    [System.IO.File]::WriteAllBytes($legacyLockPath, $legacyLockBytes)
+    $legacyBefore = @(Get-RelativeProofFiles -Root $legacy)
+    $migration = Invoke-CapturedProcess -Name "M27-B startup hard cut" `
+        -Executable $PublicCli -Arguments @("check") -WorkingDirectory $legacy
+    Assert-ProcessStatus $migration 1
+    Assert-Equal -Name "M27-B migration stdout" -Actual $migration.Stdout -Expected ""
+    Assert-Contains -Name "M27-B migration diagnostic code" `
+        -Actual $migration.Stderr -Expected "error[MIGRATE001]"
+    Assert-Contains -Name "M27-B migration world header" `
+        -Actual $migration.Stderr -Expected "M26 ``world Name`` headers"
+    Assert-Contains -Name "M27-B migration entrypoint" `
+        -Actual $migration.Stderr -Expected "``fn main``"
+    Assert-Equal -Name "M27-B failed check file inventory" `
+        -Actual ((Get-RelativeProofFiles -Root $legacy) -join "`n") `
+        -Expected ($legacyBefore -join "`n")
+    Assert-Equal -Name "M27-B failed check preserves complete lock" `
+        -Actual ([Convert]::ToBase64String(
+            [System.IO.File]::ReadAllBytes($legacyLockPath)
+        )) `
+        -Expected ([Convert]::ToBase64String($legacyLockBytes))
+    Assert-NoLockTemporaries -Root $legacy
+
+    $registry = Join-Path $proofRoot "m27b-registry-unavailable"
+    Copy-ProofDirectory -Source (Join-Path $fixtureRoot "registry-unavailable") `
+        -Destination $registry
+    $registryBefore = @(Get-RelativeProofFiles -Root $registry)
+    $unavailable = Invoke-CapturedProcess -Name "M27-B unavailable registry source" `
+        -Executable $PublicCli -Arguments @("check") -WorkingDirectory $registry
+    Assert-ProcessStatus $unavailable 1
+    Assert-Equal -Name "M27-B unavailable registry stdout" `
+        -Actual $unavailable.Stdout -Expected ""
+    Assert-Contains -Name "M27-B unavailable registry diagnostic code" `
+        -Actual $unavailable.Stderr -Expected "error[DEPENDENCY001]"
+    Assert-Contains -Name "M27-B unavailable registry package" `
+        -Actual $unavailable.Stderr -Expected "example/remote"
+    Assert-Equal -Name "M27-B unavailable registry file inventory" `
+        -Actual ((Get-RelativeProofFiles -Root $registry) -join "`n") `
+        -Expected ($registryBefore -join "`n")
+
+    $toolchainMismatch = Join-Path $proofRoot "m27b-toolchain-mismatch"
+    Copy-ProofDirectory -Source (Join-Path $fixtureRoot "toolchain-mismatch") `
+        -Destination $toolchainMismatch
+    $toolchainLockPath = Join-Path $toolchainMismatch "Arche.lock"
+    $toolchainLockBytes = $utf8NoBom.GetBytes("previous complete lock`n")
+    [System.IO.File]::WriteAllBytes($toolchainLockPath, $toolchainLockBytes)
+    $toolchainBefore = @(Get-RelativeProofFiles -Root $toolchainMismatch)
+    $toolchain = Invoke-CapturedProcess `
+        -Name "M27-B incompatible toolchain requirement" `
+        -Executable $PublicCli -Arguments @("check") `
+        -WorkingDirectory $toolchainMismatch
+    Assert-ProcessStatus $toolchain 2
+    Assert-Equal -Name "M27-B incompatible toolchain stdout" `
+        -Actual $toolchain.Stdout -Expected ""
+    Assert-Contains -Name "M27-B incompatible toolchain code" `
+        -Actual $toolchain.Stderr -Expected "error[MANIFEST004]"
+    Assert-Contains -Name "M27-B incompatible toolchain requirement" `
+        -Actual $toolchain.Stderr `
+        -Expected "package ``example/future`` requires Arche ``>=1.0.0``, but selected toolchain is ``0.0.0``"
+    Assert-Equal -Name "M27-B toolchain rejection file inventory" `
+        -Actual ((Get-RelativeProofFiles -Root $toolchainMismatch) -join "`n") `
+        -Expected ($toolchainBefore -join "`n")
+    Assert-Equal -Name "M27-B toolchain rejection preserves complete lock" `
+        -Actual ([Convert]::ToBase64String(
+            [System.IO.File]::ReadAllBytes($toolchainLockPath)
+        )) `
+        -Expected ([Convert]::ToBase64String($toolchainLockBytes))
+    Assert-NoLockTemporaries -Root $toolchainMismatch
+
+    $malformedManifest = Join-Path $proofRoot "m27b-malformed-manifest"
+    Copy-ProofDirectory -Source (Join-Path $fixtureRoot "malformed-manifest") `
+        -Destination $malformedManifest
+    $malformedBefore = @(Get-RelativeProofFiles -Root $malformedManifest)
+    $malformed = Invoke-CapturedProcess -Name "M27-B malformed manifest" `
+        -Executable $PublicCli -Arguments @("check") `
+        -WorkingDirectory $malformedManifest
+    Assert-ProcessStatus $malformed 2
+    Assert-Equal -Name "M27-B malformed manifest stdout" `
+        -Actual $malformed.Stdout -Expected ""
+    Assert-Contains -Name "M27-B malformed manifest code" `
+        -Actual $malformed.Stderr -Expected "error[MANIFEST002]"
+    Assert-Contains -Name "M27-B malformed manifest schema" `
+        -Actual $malformed.Stderr `
+        -Expected "unsupported Arche.toml schema 2; expected schema 1"
+    Assert-Equal -Name "M27-B malformed manifest file inventory" `
+        -Actual ((Get-RelativeProofFiles -Root $malformedManifest) -join "`n") `
+        -Expected ($malformedBefore -join "`n")
+
+    $invalid = Invoke-CapturedProcess -Name "M27-B malformed check arguments" `
+        -Executable $PublicCli -Arguments @("check", "--manifest-path")
+    Assert-ProcessStatus $invalid 2
+    Assert-Equal -Name "M27-B malformed check stdout" `
+        -Actual $invalid.Stdout -Expected ""
+    Assert-Equal -Name "M27-B malformed check diagnostic" `
+        -Actual (Normalize-LineEndings $invalid.Stderr) `
+        -Expected "arche: invalid arguments for ``check```nusage: arche check [--manifest-path <Arche.toml>]`n"
+    Write-Host "PASS: M27-B public project, workspace, lock, and migration contracts"
 }
 
 function Assert-ProcessStatus {
@@ -1083,29 +1346,31 @@ try {
     $publicCli = Join-Path $repoRoot "bootstrap/archec0/target/debug/$publicCliName"
     Assert-True -Condition (Test-Path -LiteralPath $publicCli -PathType Leaf) `
         -Message "public CLI was not built at $publicCli"
-    $publicHelp = Invoke-CapturedProcess -Name "M27-A public CLI help" `
+    $publicHelp = Invoke-CapturedProcess -Name "public CLI help" `
         -Executable $publicCli -Arguments @("--help")
     Assert-ProcessStatus $publicHelp 0
-    Assert-Equal -Name "M27-A public CLI help stderr" -Actual $publicHelp.Stderr -Expected ""
-    Assert-Contains -Name "M27-A public CLI command inventory" `
-        -Actual $publicHelp.Stdout -Expected "Reserved M27 commands:"
-    $publicVersion = Invoke-CapturedProcess -Name "M27-A public CLI version" `
+    Assert-Equal -Name "public CLI help stderr" -Actual $publicHelp.Stderr -Expected ""
+    Assert-Contains -Name "public CLI command inventory" `
+        -Actual $publicHelp.Stdout -Expected "M27 commands:"
+    $publicVersion = Invoke-CapturedProcess -Name "public CLI version" `
         -Executable $publicCli -Arguments @("--version")
     Assert-ProcessStatus $publicVersion 0
-    Assert-Contains -Name "M27-A public CLI version text" `
+    Assert-Contains -Name "public CLI version text" `
         -Actual $publicVersion.Stdout -Expected "arche 0.0.0"
-    $publicReserved = Invoke-CapturedProcess -Name "M27-A reserved public command" `
+    $publicReserved = Invoke-CapturedProcess -Name "reserved public command" `
         -Executable $publicCli -Arguments @("build")
     Assert-ProcessStatus $publicReserved 2
-    Assert-Equal -Name "M27-A reserved command stdout" `
+    Assert-Equal -Name "reserved command stdout" `
         -Actual $publicReserved.Stdout -Expected ""
-    Assert-Contains -Name "M27-A reserved command diagnostic" `
-        -Actual $publicReserved.Stderr -Expected "reserved but not implemented in M27-A"
-    $publicUnknown = Invoke-CapturedProcess -Name "M27-A unknown public command" `
+    Assert-Contains -Name "reserved command diagnostic" `
+        -Actual $publicReserved.Stderr -Expected "reserved but not implemented yet"
+    $publicUnknown = Invoke-CapturedProcess -Name "unknown public command" `
         -Executable $publicCli -Arguments @("not-a-command")
     Assert-ProcessStatus $publicUnknown 2
-    Assert-Contains -Name "M27-A unknown command diagnostic" `
+    Assert-Contains -Name "unknown command diagnostic" `
         -Actual $publicUnknown.Stderr -Expected "unknown command ``not-a-command``"
+
+    Test-M27BPublicCheck -PublicCli $publicCli
 
     Test-CliModes $compiler
     Test-PublicationContracts $compiler
@@ -1271,7 +1536,7 @@ startup { exit 70 }
     Write-Host "PASS: dynamically discovered $($e2eScripts.Count) e2e scripts"
 
     Test-NoSiblingTemporaries $proofRoot
-    Write-Host "All M26 proof checks passed"
+    Write-Host "All M26 and M27-B proof checks passed"
 }
 finally {
     Pop-Location
