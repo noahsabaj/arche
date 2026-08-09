@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M26 audit remediation, M27-A, and M27-B are closed. M27-C is the sole active gate, implementing the general type, trait, ownership, pattern, call, effect, closure, generator, thread, CTFE, and verified generic Core foundation. M27-D through M27-L remain Backlog. M28 remains the Arche 0.1 release gate after M27.
+**Current focus:** M26 audit remediation, M27-A, and M27-B are closed. M27-C is the sole active gate; its C0 exact-contract slice is Doing before C1-C6 implement and close the general semantic/verified-Core authority. M27-D through M27-L remain Backlog. M28 remains the Arche 0.1 release gate after M27.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -239,6 +239,25 @@ M28 does not claim a tensor compiler, automatic differentiation, optimizer frame
 - After M27: Arche has the general-purpose language, reentrant ECS runtime, object/link pipeline, package ecosystem, public tools, and registry foundation required by both 0.1 applications.
 - After M28: Arche 0.1 has proved both a deterministic authoritative game-server workload and an ML-relevant many-world environment without making either workload the language's exclusive identity.
 
+## External Prerequisite Status
+
+These operational prerequisites are deliberately not inferred from local code
+or renamed around. No repository evidence currently proves that they are
+secured, so each remains open and blocks its listed production/release gate;
+none blocks the in-repository M27-C0 contract work.
+
+| External prerequisite | Current evidenced status | First blocked gate |
+|---|---|---|
+| Control of `arche-lang.org` and the `packages.arche-lang.org` production DNS/service identity | Open — no ownership or production-DNS evidence is recorded | M27-J production registry |
+| Production infrastructure credentials and recovery access | Open — no provisioned credential/recovery evidence is recorded | M27-J deployment and M27-K restore/failover |
+| GitHub App OAuth device-flow and trusted-publisher OIDC configuration | Open — no production App/OIDC evidence is recorded | M27-J authentication/publishing |
+| Offline signing roots and release-signing ceremony | Open — no signing-root or ceremony evidence is recorded | M27-J signed records and M27-L release closure |
+| Required distribution namespaces, including the `arche-lang-env` Python name | Open — no reservation/ownership evidence is recorded | M28 Python/package publication |
+
+The owning gate must replace `Open` with exact external evidence before it can
+close. Failure to secure an identity blocks that gate; it does not authorize a
+silent rename, substitute trust root, or weakened acceptance contract.
+
 ## Board
 
 Board columns:
@@ -282,7 +301,12 @@ Board rules:
 
 | Issue | Title | Notes |
 |---|---|---|
-| M27-C | General language semantics and verified generic Core | Implement the selected type, trait, specialization, operator, pattern, ownership/NLL/drop/unsafe, recursive call, throws/requires, closure, generator, thread, CTFE, and verified generic Core contracts. Preserve the package-aware M27-B HIR authority, keep later instance/layout/AOT concerns in M27-D and M27-G, and add focused semantic, cleanup, effect, and verification proofs. |
+| M27-C | General language semantics and verified generic Core | C0 is Doing: freeze exact grammar, semantic edge rules, identity inputs, Generic Core/verifier, CTFE accounting/includes, diagnostics, and C1-C6 boundaries. Then implement syntax/HIR/types/identity; traits/operators/patterns; MIR/calls/ownership; effects/stateful abstractions; verified Core/CTFE; and public closure without advancing D early. Preserve the package-aware M27-B authority and keep instance/layout/AOT concerns in D/G. |
+
+M27-C internal progress: C0 **Doing**; C1-C6 **Backlog**. These are
+short-lived implementation slices, not independently completable product
+milestones. M27-C remains Doing until C6's exact-head closure evidence is
+recorded.
 
 ### Done
 
@@ -2198,6 +2222,7 @@ Subproblem confidence:
 | Canonical keys/order, checked layout arithmetic, whole-spawn validation, transactional reference updates, and live native observation support the descriptor-generic claim | 98/100 |
 | M26 closure evidence remains preserved while M27-A and M27-B have exact implementation, merge, merged-main, and branch-protection evidence | 99/100 |
 | Ready is empty, M27-C alone is Doing, M27-D through M27-L are Backlog, and M27-A plus M27-B are recorded Done | 100/100 |
+| External production identities, credentials, App/OIDC, signing roots, and distribution namespaces remain explicitly Open until exact evidence replaces that status | 100/100 |
 
 Weighted confidence: 98/100.
 
@@ -2207,5 +2232,6 @@ Verification pass:
 - `Doing` contains only M27-C.
 - `Backlog` contains M27-D through M27-L in dependency order.
 - `Done` contains completed M0 through M21, M22-001 through M22-005, M23-001 through M23-005, M24-001 through M24-005, M25-001 through M25-005, M26-CLOSURE, M27-A, and M27-B.
+- External prerequisites remain Open in the dedicated status table and block their listed later gates without blocking M27-C0.
 - The preserved detailed historical inventory runs through M25-005; the promoted gate inventory adds M27-A through M27-L without claiming those gates complete.
 - M7 through M27-B are complete through their recorded scopes. M25 proves descriptor-generic storage and execution of the shared verified-Core shape across two unrelated programs; M26 closes Core-generic execution and its protected large-file gates; M27-A establishes the shared platform contract and public shell; M27-B establishes package/workspace resolution and package-aware resolved HIR. M27-C is active, M27 as a whole is not complete, and M28 remains sequenced after M27.
