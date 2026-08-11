@@ -1609,11 +1609,61 @@ mod tests {
     #[test]
     fn registry_snapshot_v2_commitment_is_exact_and_span_sensitive() {
         let package: PackageName = "example/span-sensitive".parse().unwrap();
-        let snapshot = snapshot([(package.clone(), vec![release("1.0.0", false, vec![])])]);
+        let mut exact_release = release(
+            "1.0.0",
+            false,
+            vec![registry_dependency(
+                "distinct_alias",
+                "example/distinct-dependency",
+                "^2.3.0",
+            )],
+        );
+        exact_release.archive_digest = IntegrityDigest::of_bytes(b"distinct archive");
+        exact_release.source_digest = IntegrityDigest::of_bytes(b"distinct source tree");
+        exact_release.provenance_record_digest =
+            IntegrityDigest::of_bytes(b"distinct provenance record");
+        exact_release.inclusion_record_digest =
+            IntegrityDigest::of_bytes(b"distinct inclusion record");
+        let snapshot = snapshot([(package.clone(), vec![exact_release])]);
         assert_eq!(
             snapshot.snapshot_digest.to_string(),
-            "sha256:a9f8af8269b51741c3f05b45648a7bd3724927c144452c9ae0f2e0f7c4aff992"
+            "sha256:b3a3941999dc71bbb0836f6ca18c57ca59e747555f57f91316de7ccccc7cb4b3"
         );
+
+        for field in 0..4 {
+            let mut stale = snapshot.clone();
+            let release = &mut stale.releases.get_mut(&package).unwrap()[0];
+            let mutation = IntegrityDigest::of_bytes(b"one independently mutated commitment");
+            match field {
+                0 => release.archive_digest = mutation,
+                1 => release.source_digest = mutation,
+                2 => release.provenance_record_digest = mutation,
+                3 => release.inclusion_record_digest = mutation,
+                _ => unreachable!(),
+            }
+            assert_ne!(
+                registry_snapshot_commitment(&stale.releases).unwrap(),
+                snapshot.snapshot_digest,
+                "commitment field {field} is independently bound"
+            );
+        }
+
+        for field in 0..4 {
+            let mut stale = snapshot.clone();
+            let dependency = &mut stale.releases.get_mut(&package).unwrap()[0].dependencies[0];
+            match field {
+                0 => dependency.alias = crate::SourceIdentifier::new("changed_alias").unwrap(),
+                1 => dependency.package = "example/changed-dependency".parse().unwrap(),
+                2 => dependency.requirement = VersionReq::parse("=9.8.7").unwrap(),
+                3 => dependency.kind = LockDependencyKind::Development,
+                _ => unreachable!(),
+            }
+            assert_ne!(
+                registry_snapshot_commitment(&stale.releases).unwrap(),
+                snapshot.snapshot_digest,
+                "dependency field {field} is independently bound"
+            );
+        }
 
         let mutations: [fn(&mut ManifestSpan); 6] = [
             |span| span.start_byte += 1,

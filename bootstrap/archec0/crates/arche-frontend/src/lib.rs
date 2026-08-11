@@ -5,22 +5,67 @@
 //! their namespaces into HIR identifiers, and performs the structural target
 //! linking that precedes M27-C type/effect checking.
 
+pub mod ast;
+pub mod embedded_core;
 mod hir;
+pub mod include_inputs;
+pub mod lexer;
 mod modules;
 mod package;
+pub mod parser;
 mod source;
 mod symbol;
 mod syntax;
 
 pub use arche_package::SourceTreeEntry;
 pub use hir::{
-    dump_resolved_target, CheckTargetRequest, EnvironmentSchedulePaths, HirDefinition,
-    HirDefinitionId, HirDefinitionKind, HirModule, HirNamespace, ModuleId, ResolvedTargetHir,
-    ResolvedWorkspaceHir, TargetId, TargetKind,
+    check_workspace_c1, declaration_shape_readiness, dump_hir_c1, dump_resolved_target,
+    encode_declaration_shape_preimage, encode_definition_owner_entry,
+    encode_final_declaration_shape_identity, encode_final_definition_owner_identity,
+    encode_generic_arguments, encode_generic_parameters, encode_inventory_c1, encode_method_entry,
+    encode_symbolic_const, encode_symbolic_effect, encode_symbolic_effect_set,
+    encode_symbolic_predicate, encode_symbolic_predicate_set, encode_symbolic_type,
+    owner_shape_readiness, try_canonicalize_declaration_shape, try_canonicalize_definition_owner,
+    AssociatedPathCandidate, AssociatedPathOwner, AssociatedPathResolution, BuiltinRes,
+    BuiltinResTarget, CallTrait, CanonicalDeclarationShape, CanonicalDefinitionOwner, CaptureMode,
+    CheckTargetRequest, CtfeBudgetsSkeleton, DeclarationKind, DependencyKind, EffectKind,
+    EnvironmentSchedulePaths, FrontendOutput, GeneratorTarget, GenericArgumentShape,
+    GenericParameterId, GenericParameterKind, GenericParameterShape, HiddenLifetimeBinder,
+    HiddenLifetimeBinderSource, HirBinding, HirBindingOrigin, HirBindingTarget, HirBodyId,
+    HirBodySource, HirDefinition, HirDefinitionId, HirDefinitionKind, HirGenericArgumentUse,
+    HirGenericArgumentsUse, HirItemId, HirItemRes, HirItemSource, HirLocalBinding, HirModule,
+    HirModuleId, HirNamespace, HirPathUse, HirSelfUse, IntegerType, LocalId, ManifestCapability,
+    MaterializedRegistryPackage, MemberVisibilityPath, ModuleId, ModuleRef, Mutability, Namespace,
+    PackageDependencySkeleton, PackageProvenanceSkeleton, PackageSourceSkeleton, PathResolution,
+    PendingShapeKind, Res, ResolvedGenericArgument, ResolvedSymbolicBody, ResolvedSymbolicConst,
+    ResolvedSymbolicEffect, ResolvedSymbolicItem, ResolvedSymbolicLifetime, ResolvedSymbolicModule,
+    ResolvedSymbolicPackageHir, ResolvedSymbolicShape, ResolvedSymbolicTargetHir,
+    ResolvedSymbolicType, ResolvedSymbolicWorkspaceHir, ResolvedTargetContract, ResolvedTargetHir,
+    ResolvedWorkspaceHir, SemanticBindingInventorySkeleton, SemanticBindingOrigin,
+    SemanticBindingPath, SemanticBindingTarget, SemanticBodyInventorySkeleton, SemanticBodyKey,
+    SemanticBodyKind, SemanticDeclarationPath, SemanticDefinitionInventorySkeleton,
+    SemanticDefinitionKey, SemanticInventorySkeleton, SemanticMemberVisibility,
+    SemanticModuleInventorySkeleton, SemanticPackageInventorySkeleton,
+    SemanticTargetContractSkeleton, SemanticTargetInventorySkeleton, ShapeEncodingError,
+    SymbolicCallableKind, SymbolicCallableParameterMode, SymbolicCallableParameterSkeleton,
+    SymbolicCallableShapeSkeleton, SymbolicCapabilityAccessMode, SymbolicCapture,
+    SymbolicConstExpression, SymbolicConstNode, SymbolicDeclarationPayloadSkeleton,
+    SymbolicDeclarationShapeSkeleton, SymbolicDefinitionOwnerSkeleton, SymbolicEffectAtom,
+    SymbolicEffectSetsSkeleton, SymbolicEffectShapeSkeleton, SymbolicFieldShapeSkeleton,
+    SymbolicImpliedCapabilityRequirementSkeleton, SymbolicLifetime, SymbolicMethodShapeSkeleton,
+    SymbolicPendingShape, SymbolicPredicate, SymbolicPredicateShapeSkeleton, SymbolicQueryTermKind,
+    SymbolicQueryTermShapeSkeleton, SymbolicRecordForm, SymbolicRecordShapeSkeleton,
+    SymbolicShapeReadiness, SymbolicSourceSpan, SymbolicSystemAccessShapeSkeleton, SymbolicType,
+    SymbolicTypeEffectSet, SymbolicTypeShapeSkeleton, SymbolicVariantShapeSkeleton, TargetId,
+    TargetKind, TargetRoot, UnresolvedPathKind, Visibility, WorkspaceInventorySkeleton,
 };
 pub use modules::{check_target, FrontendError, FrontendErrorCode};
 pub use package::{check_manifest_target, check_workspace, check_workspace_target};
-pub use source::{Diagnostic, FileId, Label, SourcePosition, Span};
+pub use parser::parse_reader;
+pub use source::{
+    Diagnostic, FileId, Label, SourceDatabase, SourceDatabaseBuilder, SourceFile, SourcePosition,
+    SourceRole, SourceSnippet, Span, EMBEDDED_CORE_FILE_ID,
+};
 pub use symbol::{case_fold_nfc, normalize_identifier, Symbol};
 
 /// The exact Unicode tables are a source/package compatibility contract.

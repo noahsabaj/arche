@@ -7,11 +7,120 @@ use arche_package::{PackageNodeId, SourceTreeEntry};
 use crate::source::{FileId, Span};
 use crate::symbol::Symbol;
 
+// These C1 primitives remain nested behind the existing HIR module so the
+// compatible M27-B entry points keep their original module layout. The crate
+// root re-exports the complete C1 data API; none of these unverified rows is a
+// stable-identity or semantic-verification authority.
+#[path = "arena.rs"]
+mod arena;
+#[path = "inventory.rs"]
+mod inventory;
+#[path = "shape.rs"]
+mod shape;
+#[path = "workspace_frontend.rs"]
+mod workspace_frontend;
+
+pub use self::inventory::{
+    encode_inventory_c1, CtfeBudgetsSkeleton, DependencyKind, ManifestCapability,
+    MemberVisibilityPath, ModuleRef, Namespace, PackageDependencySkeleton,
+    PackageProvenanceSkeleton, PackageSourceSkeleton, SemanticBindingInventorySkeleton,
+    SemanticBindingOrigin, SemanticBindingPath, SemanticBindingTarget,
+    SemanticBodyInventorySkeleton, SemanticBodyKey, SemanticBodyKind,
+    SemanticDefinitionInventorySkeleton, SemanticDefinitionKey, SemanticInventorySkeleton,
+    SemanticMemberVisibility, SemanticModuleInventorySkeleton, SemanticPackageInventorySkeleton,
+    SemanticTargetContractSkeleton, SemanticTargetInventorySkeleton, Visibility,
+};
+pub use self::shape::{
+    declaration_shape_readiness, encode_declaration_shape_preimage, encode_definition_owner_entry,
+    encode_final_declaration_shape_identity, encode_final_definition_owner_identity,
+    encode_generic_arguments, encode_generic_parameters, encode_method_entry,
+    encode_symbolic_const, encode_symbolic_effect, encode_symbolic_effect_set,
+    encode_symbolic_predicate, encode_symbolic_predicate_set, encode_symbolic_type,
+    owner_shape_readiness, try_canonicalize_declaration_shape, try_canonicalize_definition_owner,
+    CallTrait, CanonicalDeclarationShape, CanonicalDefinitionOwner, CaptureMode, DeclarationKind,
+    EffectKind, GeneratorTarget, GenericArgumentShape, GenericParameterKind, GenericParameterShape,
+    IntegerType, Mutability, PendingShapeKind, SemanticDeclarationPath, ShapeEncodingError,
+    SymbolicCallableKind, SymbolicCallableParameterMode, SymbolicCallableParameterSkeleton,
+    SymbolicCallableShapeSkeleton, SymbolicCapabilityAccessMode, SymbolicCapture,
+    SymbolicConstExpression, SymbolicConstNode, SymbolicDeclarationPayloadSkeleton,
+    SymbolicDeclarationShapeSkeleton, SymbolicDefinitionOwnerSkeleton, SymbolicEffectAtom,
+    SymbolicEffectSetsSkeleton, SymbolicEffectShapeSkeleton, SymbolicFieldShapeSkeleton,
+    SymbolicImpliedCapabilityRequirementSkeleton, SymbolicLifetime, SymbolicMethodShapeSkeleton,
+    SymbolicPendingShape, SymbolicPredicate, SymbolicPredicateShapeSkeleton, SymbolicQueryTermKind,
+    SymbolicQueryTermShapeSkeleton, SymbolicRecordForm, SymbolicRecordShapeSkeleton,
+    SymbolicShapeReadiness, SymbolicSourceSpan, SymbolicSystemAccessShapeSkeleton, SymbolicType,
+    SymbolicTypeEffectSet, SymbolicTypeShapeSkeleton, SymbolicVariantShapeSkeleton, TargetRoot,
+};
+pub use self::workspace_frontend::{
+    check_workspace_c1, dump_hir_c1, AssociatedPathCandidate, AssociatedPathOwner,
+    AssociatedPathResolution, BuiltinRes, BuiltinResTarget, FrontendOutput, GenericParameterId,
+    HiddenLifetimeBinder, HiddenLifetimeBinderSource, HirBinding, HirBindingOrigin,
+    HirBindingTarget, HirBodySource, HirGenericArgumentUse, HirGenericArgumentsUse, HirItemRes,
+    HirItemSource, HirLocalBinding, HirPathUse, HirSelfUse, LocalId, MaterializedRegistryPackage,
+    PathResolution, Res, ResolvedGenericArgument, ResolvedSymbolicBody, ResolvedSymbolicConst,
+    ResolvedSymbolicEffect, ResolvedSymbolicItem, ResolvedSymbolicLifetime, ResolvedSymbolicModule,
+    ResolvedSymbolicPackageHir, ResolvedSymbolicShape, ResolvedSymbolicTargetHir,
+    ResolvedSymbolicType, ResolvedSymbolicWorkspaceHir, ResolvedTargetContract, UnresolvedPathKind,
+    WorkspaceInventorySkeleton,
+};
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct TargetId(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ModuleId(pub u64);
+
+/// Exact package/target-qualified module session identity required by M27-C1.
+/// `ModuleId` remains temporarily available for the compatible M27-B target
+/// API while module loading is migrated to the workspace-wide arena.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct HirModuleId {
+    package: PackageNodeId,
+    target: TargetId,
+    local: u64,
+}
+
+impl HirModuleId {
+    pub const fn new(package: PackageNodeId, target: TargetId, local: u64) -> Self {
+        Self {
+            package,
+            target,
+            local,
+        }
+    }
+
+    pub const fn package(self) -> PackageNodeId {
+        self.package
+    }
+
+    pub const fn target(self) -> TargetId {
+        self.target
+    }
+
+    pub const fn local(self) -> u64 {
+        self.local
+    }
+}
+
+impl fmt::Display for HirModuleId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "p{}t{}m{}",
+            self.package.get(),
+            self.target.0,
+            self.local
+        )
+    }
+}
+
+/// Globally unique item arena ID within one `FrontendOutput`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct HirItemId(pub u64);
+
+/// Globally unique body arena ID within one `FrontendOutput`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct HirBodyId(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct HirDefinitionId {
@@ -359,7 +468,7 @@ impl fmt::Display for ResolvedTargetHir {
 }
 
 #[cfg(test)]
-mod contract_tests {
+mod c1_contract_tests {
     use super::*;
 
     fn empty_target(package: u64, target: u64) -> ResolvedTargetHir {
@@ -380,6 +489,15 @@ mod contract_tests {
             Vec::new(),
             Vec::new(),
         )
+    }
+
+    #[test]
+    fn module_session_ids_include_the_package_and_per_package_target() {
+        let first = HirModuleId::new(PackageNodeId::new(0), TargetId(0), 3);
+        let second = HirModuleId::new(PackageNodeId::new(1), TargetId(0), 3);
+        assert_ne!(first, second);
+        assert_eq!(first.to_string(), "p0t0m3");
+        assert_eq!(second.to_string(), "p1t0m3");
     }
 
     #[test]
