@@ -46,6 +46,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "arche-semantics"
+version = "0.0.0"
+dependencies = [
+ "arche-foundation",
+ "arche-frontend",
+ "arche-package",
+]
+
+[[package]]
 name = "archec0"
 version = "0.0.0"
 dependencies = [

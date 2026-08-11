@@ -1611,7 +1611,7 @@ mod tests {
             let workspace = load_workspace(&ManifestRequest::discover_from(&root)).unwrap();
             let graph = resolve(&workspace, &RegistrySnapshot::empty()).unwrap();
             let output = check_workspace_c1(&workspace, &graph, &[]).unwrap();
-            let bytes = encode_inventory_c1(&output.inventory).unwrap();
+            let bytes = encode_inventory_c1(output.inventory()).unwrap();
             assert!(bytes.starts_with(b"ARCHE-C1-INVENTORY\0\x01\0\0\0"));
             lengths.push(bytes.len());
             combined.extend_from_slice(&u64::try_from(bytes.len()).unwrap().to_le_bytes());
