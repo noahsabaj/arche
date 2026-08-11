@@ -27,6 +27,9 @@ jobs:
       - name: Check workspace formatting
         run: cargo fmt --all --manifest-path ./bootstrap/archec0/Cargo.toml -- --check
 
+      - name: Check locked workspace targets
+        run: cargo check --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+
       - name: Run locked debug tests
         run: cargo test --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
 
@@ -35,6 +38,9 @@ jobs:
 
       - name: Run strict Clippy
         run: cargo clippy --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml -- -D warnings
+
+      - name: Report locked duplicate dependencies
+        run: cargo tree --locked --workspace --duplicates --manifest-path ./bootstrap/archec0/Cargo.toml
 
       - name: Install cargo-audit 0.22.2
         run: cargo install cargo-audit --version 0.22.2 --locked
@@ -67,7 +73,7 @@ jobs:
         run: |
           git diff --check
           git diff --exit-code
-          test -z "$(git status --porcelain --untracked-files=no)"
+          test -z "$(git status --short)"
 
   windows:
     name: Proof / Windows
@@ -84,6 +90,9 @@ jobs:
       - name: Check workspace formatting
         run: cargo fmt --all --manifest-path ./bootstrap/archec0/Cargo.toml -- --check
 
+      - name: Check locked workspace targets
+        run: cargo check --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+
       - name: Run locked debug tests
         run: cargo test --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
 
@@ -92,6 +101,9 @@ jobs:
 
       - name: Run strict Clippy
         run: cargo clippy --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml -- -D warnings
+
+      - name: Report locked duplicate dependencies
+        run: cargo tree --locked --workspace --duplicates --manifest-path ./bootstrap/archec0/Cargo.toml
 
       - name: Run proof suite under PowerShell Core
         run: pwsh -NoLogo -NoProfile -File .\tools\test.ps1 -SkipGeneratedLinuxExecution
@@ -106,7 +118,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git diff --exit-code
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if ((git status --porcelain --untracked-files=no).Count -ne 0) { exit 1 }
+          $status = @(git status --short)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($status.Count -ne 0) {
+            $status | Write-Host
+            exit 1
+          }
 
   physical-large-source:
     name: Proof / Physical >4-GiB Source
@@ -293,7 +310,7 @@ jobs:
         run: |
           git diff --check
           git diff --exit-code
-          test -z "$(git status --porcelain --untracked-files=no)"
+          test -z "$(git status --short)"
 
   sparse-large-executable:
     name: Proof / Sparse >4-GiB Executable
@@ -385,4 +402,4 @@ jobs:
         run: |
           git diff --check
           git diff --exit-code
-          test -z "$(git status --porcelain --untracked-files=no)"
+          test -z "$(git status --short)"

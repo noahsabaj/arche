@@ -5,7 +5,7 @@ use crate::lock::{
 };
 use crate::{
     canonical_package_id, Dependency, DependencyAlias, DependencyKind, IntegrityDigest,
-    PackageName, PortablePath, Workspace, OFFICIAL_REGISTRY_IDENTITY,
+    ManifestSpan, PackageName, PortablePath, Workspace, OFFICIAL_REGISTRY_IDENTITY,
 };
 use arche_foundation::identity::PackageId;
 use semver::{Version, VersionReq};
@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 const REGISTRY_SNAPSHOT_DOMAIN: &[u8] = b"ARCHE-REGISTRY-SNAPSHOT\0";
-const REGISTRY_SNAPSHOT_VERSION: u32 = 1;
+const REGISTRY_SNAPSHOT_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct PackageNodeId(u64);
@@ -26,6 +26,45 @@ impl PackageNodeId {
 
     pub const fn get(self) -> u64 {
         self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PackageNodeIdAllocator {
+    next: Option<u64>,
+}
+
+impl PackageNodeIdAllocator {
+    const fn new() -> Self {
+        Self { next: Some(0) }
+    }
+
+    #[cfg(test)]
+    const fn near_exhaustion() -> Self {
+        Self {
+            next: Some(u64::MAX - 1),
+        }
+    }
+
+    fn allocate(
+        &mut self,
+        package: &PackageName,
+        authority_path: &std::path::Path,
+        authority_start: u64,
+        authority_end: u64,
+    ) -> Result<PackageNodeId, Diagnostics> {
+        let value = self.next.ok_or_else(|| {
+            identity_error(
+                authority_path,
+                authority_start,
+                authority_end,
+                format!(
+                    "PackageNodeId allocation for package `{package}` exceeds the checked u64 domain"
+                ),
+            )
+        })?;
+        self.next = value.checked_add(1);
+        Ok(PackageNodeId::new(value))
     }
 }
 
@@ -45,6 +84,9 @@ pub struct RegistryRelease {
     pub source_digest: IntegrityDigest,
     pub provenance_record_digest: IntegrityDigest,
     pub inclusion_record_digest: IntegrityDigest,
+    /// Inclusion-verified `[package]` header range in this release's
+    /// `Arche.toml`; it is diagnostic provenance, not package identity.
+    pub manifest_span: ManifestSpan,
     pub dependencies: Vec<RegistryDependency>,
 }
 
@@ -89,6 +131,7 @@ pub enum ResolvedSource {
         source_digest: IntegrityDigest,
         provenance_record_digest: IntegrityDigest,
         inclusion_record_digest: IntegrityDigest,
+        manifest_span: ManifestSpan,
     },
 }
 
@@ -179,6 +222,14 @@ impl ResolvedGraph {
                 {
                     return Err(dependency_error(format!(
                         "resolved workspace path `{relative_path}` is duplicated or case-fold/NFC aliased"
+                    )));
+                }
+            }
+            if let ResolvedSource::Registry { manifest_span, .. } = &package.source {
+                if !valid_manifest_span(*manifest_span) {
+                    return Err(dependency_error(format!(
+                        "resolved registry package `{}` has an invalid package-manifest span",
+                        package.name
                     )));
                 }
             }
@@ -327,6 +378,7 @@ impl ResolvedGraph {
                         source_digest,
                         provenance_record_digest,
                         inclusion_record_digest,
+                        manifest_span: _,
                     } => LockSource::Registry {
                         archive_digest: *archive_digest,
                         source_digest: *source_digest,
@@ -375,6 +427,14 @@ struct SelectedRegistry {
 pub fn resolve(
     workspace: &Workspace,
     snapshot: &RegistrySnapshot,
+) -> Result<ResolvedGraph, Diagnostics> {
+    resolve_with_allocator(workspace, snapshot, PackageNodeIdAllocator::new())
+}
+
+fn resolve_with_allocator(
+    workspace: &Workspace,
+    snapshot: &RegistrySnapshot,
+    mut id_allocator: PackageNodeIdAllocator,
 ) -> Result<ResolvedGraph, Diagnostics> {
     validate_snapshot(snapshot)?;
     let workspace_by_name = workspace
@@ -442,16 +502,36 @@ pub fn resolve(
     package_names.extend(selected.keys().cloned());
     package_names.sort();
     package_names.dedup();
-    let ids = package_names
-        .iter()
-        .enumerate()
-        .map(|(index, name)| {
-            (
-                name.clone(),
-                PackageNodeId::new(u64::try_from(index).expect("package graph index fits u64")),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
+    let mut ids = BTreeMap::new();
+    for name in &package_names {
+        let registry_authority;
+        let (authority_path, authority_start, authority_end) =
+            if let Some(member) = workspace_by_name.get(name) {
+                let span = member.manifest.package_span().ok_or_else(|| {
+                    identity_error(
+                        &member.manifest.path,
+                        0,
+                        member.manifest.source_entry.byte_length,
+                        format!("workspace package `{name}` has no retained package-table span"),
+                    )
+                })?;
+                (
+                    member.manifest.path.as_path(),
+                    span.start_byte,
+                    span.end_byte,
+                )
+            } else {
+                let release = &selected[name].release;
+                registry_authority = registry_manifest_path(name, &release.version);
+                (
+                    registry_authority.as_path(),
+                    release.manifest_span.start_byte,
+                    release.manifest_span.end_byte,
+                )
+            };
+        let id = id_allocator.allocate(name, authority_path, authority_start, authority_end)?;
+        ids.insert(name.clone(), id);
+    }
 
     let mut packages = Vec::with_capacity(package_names.len());
     for name in &package_names {
@@ -483,6 +563,7 @@ pub fn resolve(
                     source_digest: release.source_digest,
                     provenance_record_digest: release.provenance_record_digest,
                     inclusion_record_digest: release.inclusion_record_digest,
+                    manifest_span: release.manifest_span,
                 },
             });
         }
@@ -770,6 +851,16 @@ fn validate_registry_releases(
                 )
                 .into());
             }
+            if !valid_manifest_span(release.manifest_span) {
+                return Err(Diagnostic::new(
+                    DiagnosticCode::RegistryInvalid,
+                    format!(
+                        "registry release `{name} {}` has an invalid package-manifest span",
+                        release.version
+                    ),
+                )
+                .into());
+            }
             let mut aliases = BTreeMap::<String, String>::new();
             for dependency in &release.dependencies {
                 let folded = dependency.alias.casefold_key();
@@ -788,6 +879,16 @@ fn validate_registry_releases(
         }
     }
     Ok(())
+}
+
+const fn valid_manifest_span(span: ManifestSpan) -> bool {
+    span.start_byte < span.end_byte
+        && span.start_line != 0
+        && span.start_column != 0
+        && span.end_line != 0
+        && span.end_column != 0
+        && span.start_line <= span.end_line
+        && (span.start_line != span.end_line || span.start_column < span.end_column)
 }
 
 // This is an internal M27-B integrity commitment over the injected logical
@@ -816,6 +917,12 @@ fn registry_snapshot_commitment(
             hasher.update(release.source_digest.as_bytes());
             hasher.update(release.provenance_record_digest.as_bytes());
             hasher.update(release.inclusion_record_digest.as_bytes());
+            hasher.update(release.manifest_span.start_byte.to_le_bytes());
+            hasher.update(release.manifest_span.end_byte.to_le_bytes());
+            hasher.update(release.manifest_span.start_line.to_le_bytes());
+            hasher.update(release.manifest_span.start_column.to_le_bytes());
+            hasher.update(release.manifest_span.end_line.to_le_bytes());
+            hasher.update(release.manifest_span.end_column.to_le_bytes());
             update_registry_count(
                 &mut hasher,
                 release.dependencies.len(),
@@ -949,15 +1056,159 @@ fn dependency_error(message: impl Into<String>) -> Diagnostics {
     Diagnostic::new(DiagnosticCode::DependencyConflict, message).into()
 }
 
+fn registry_manifest_path(package: &PackageName, version: &Version) -> std::path::PathBuf {
+    std::path::PathBuf::from(format!("registry/{package}/{version}/Arche.toml"))
+}
+
+fn identity_error(
+    path: &std::path::Path,
+    start: u64,
+    end: u64,
+    message: impl Into<String>,
+) -> Diagnostics {
+    Diagnostic::new(DiagnosticCode::IdentityInvalid, message)
+        .at_span(
+            path,
+            usize::try_from(start).unwrap_or(usize::MAX),
+            usize::try_from(end).unwrap_or(usize::MAX),
+        )
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ManifestRequest, Workspace};
+    use crate::{Manifest, ManifestRequest, Workspace};
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn package_node_id_allocator_accepts_its_maximum_then_fails_closed() {
+        let authority = PathBuf::from("packages/overflow/Arche.toml");
+        let manifest_source = concat!(
+            "schema = 1\n",
+            "[package]\n",
+            "name = \"example/overflow\"\n",
+            "version = \"0.1.0\"\n",
+            "edition = \"2026\"\n",
+            "arche = \">=0.0.0\"\n",
+            "[lib]\n",
+        );
+        let manifest = Manifest::parse(&authority, manifest_source).unwrap();
+        let authority_span = manifest.package_span().unwrap();
+        assert_eq!(
+            &manifest_source[usize::try_from(authority_span.start_byte).unwrap()
+                ..usize::try_from(authority_span.end_byte).unwrap()],
+            "[package]"
+        );
+        let names = [
+            "example/zero".parse::<PackageName>().unwrap(),
+            "example/one".parse::<PackageName>().unwrap(),
+            "example/overflow".parse::<PackageName>().unwrap(),
+        ];
+        let mut allocator = PackageNodeIdAllocator::near_exhaustion();
+
+        assert_eq!(
+            allocator
+                .allocate(
+                    &names[0],
+                    &authority,
+                    authority_span.start_byte,
+                    authority_span.end_byte,
+                )
+                .unwrap()
+                .get(),
+            u64::MAX - 1
+        );
+        assert_eq!(
+            allocator
+                .allocate(
+                    &names[1],
+                    &authority,
+                    authority_span.start_byte,
+                    authority_span.end_byte,
+                )
+                .unwrap()
+                .get(),
+            u64::MAX
+        );
+
+        let error = allocator
+            .allocate(
+                &names[2],
+                &authority,
+                authority_span.start_byte,
+                authority_span.end_byte,
+            )
+            .unwrap_err();
+        let diagnostic = &error.entries()[0];
+        assert_eq!(diagnostic.code.as_str(), "IDENTITY001");
+        assert_eq!(diagnostic.primary.as_ref().unwrap().path, authority);
+        assert_eq!(
+            diagnostic.primary.as_ref().unwrap().start,
+            authority_span.start_byte
+        );
+        assert_eq!(
+            diagnostic.primary.as_ref().unwrap().end,
+            authority_span.end_byte
+        );
+        assert!(diagnostic.message.contains("example/overflow"));
+
+        let repeated = allocator
+            .allocate(
+                &names[2],
+                &authority,
+                authority_span.start_byte,
+                authority_span.end_byte,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error, repeated,
+            "exhaustion must be deterministic and sticky"
+        );
+    }
+
+    #[test]
+    fn registry_package_exhaustion_uses_its_committed_manifest_span() {
+        let (root, workspace) = workspace_with_dependencies(concat!(
+            "first = { package = \"zeta/first\", version = \"^1.0.0\" }\n",
+            "overflow = { package = \"zeta/overflow\", version = \"^1.0.0\" }",
+        ));
+        let first: PackageName = "zeta/first".parse().unwrap();
+        let overflow: PackageName = "zeta/overflow".parse().unwrap();
+        let registry = snapshot([
+            (first, vec![release("1.0.0", false, vec![])]),
+            (overflow.clone(), vec![release("1.0.0", false, vec![])]),
+        ]);
+
+        let error = resolve_with_allocator(
+            &workspace,
+            &registry,
+            PackageNodeIdAllocator::near_exhaustion(),
+        )
+        .unwrap_err();
+        let diagnostic = &error.entries()[0];
+        assert_eq!(diagnostic.code, DiagnosticCode::IdentityInvalid);
+        assert_eq!(
+            diagnostic.primary.as_ref().unwrap().path,
+            registry_manifest_path(&overflow, &Version::parse("1.0.0").unwrap())
+        );
+        assert_eq!(diagnostic.primary.as_ref().unwrap().start, 17);
+        assert_eq!(diagnostic.primary.as_ref().unwrap().end, 26);
+        assert!(diagnostic.message.contains("zeta/overflow"));
+
+        let repeated = resolve_with_allocator(
+            &workspace,
+            &registry,
+            PackageNodeIdAllocator::near_exhaustion(),
+        )
+        .unwrap_err();
+        assert_eq!(error, repeated);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn selects_highest_compatible_non_yanked_release_independent_of_input_order() {
@@ -1212,6 +1463,14 @@ mod tests {
             .push(release("1.1.0", false, vec![]));
         assert!(resolve(&workspace, &mutated).is_err());
 
+        let mut invalid_span = snapshot.clone();
+        let invalid_release = &mut invalid_span.releases.get_mut(&package).unwrap()[0];
+        invalid_release.manifest_span.end_byte = invalid_release.manifest_span.start_byte;
+        assert_eq!(
+            validate_snapshot(&invalid_span).unwrap_err().entries()[0].code,
+            DiagnosticCode::RegistryInvalid
+        );
+
         let aliases = BTreeMap::from([(
             package,
             vec![release(
@@ -1284,6 +1543,14 @@ mod tests {
             source_digest: digest,
             provenance_record_digest: digest,
             inclusion_record_digest: digest,
+            manifest_span: ManifestSpan {
+                start_byte: 17,
+                end_byte: 26,
+                start_line: 3,
+                start_column: 1,
+                end_line: 3,
+                end_column: 10,
+            },
             dependencies,
         }
     }

@@ -14,6 +14,7 @@ pub enum DiagnosticCode {
     DependencyConflict,
     DependencyCycle,
     RegistryInvalid,
+    IdentityInvalid,
     LockInvalid,
     Io,
 }
@@ -32,6 +33,7 @@ impl DiagnosticCode {
             Self::DependencyConflict => "DEPENDENCY001",
             Self::DependencyCycle => "DEPENDENCY002",
             Self::RegistryInvalid => "DEPENDENCY003",
+            Self::IdentityInvalid => "IDENTITY001",
             Self::LockInvalid => "LOCK001",
             Self::Io => "PACKAGEIO001",
         }

@@ -1,0 +1,43 @@
+schema = 1
+
+[package]
+name = "fixtures/target-order"
+version = "0.1.0"
+edition = "2026"
+arche = ">=0.0.0"
+publish = false
+
+[[environment]]
+name = "environment_a"
+path = "src/environment_a.arc"
+world = "package::EnvironmentA"
+profile = "environment_a"
+
+[[environment]]
+name = "environment_b"
+path = "src/environment_b.arc"
+world = "package::EnvironmentB"
+profile = "environment_b"
+
+[environment-profile.environment_a]
+reset = "package::ResetA"
+step = "package::StepA"
+self-play = "package::SelfPlayA"
+
+[environment-profile.environment_b]
+reset = "package::ResetB"
+step = "package::StepB"
+self-play = "package::SelfPlayB"
+
+[[bin]]
+name = "server_a"
+path = "src/server_a.arc"
+world = "package::ServerA"
+
+[[bin]]
+name = "server_b"
+path = "src/server_b.arc"
+world = "package::ServerB"
+
+[lib]
+path = "src/lib.arc"

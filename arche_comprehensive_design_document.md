@@ -519,7 +519,7 @@ unary_expression := ("-" | "!" | "~" | "*" | "&" | "&" "mut") unary_expression
                   | postfix_expression
 postfix_expression := primary_expression postfix_part*
 postfix_part  := "(" argument_list? ")" | "[" expression "]"
-               | "." method_name generic_arguments? "(" argument_list? ")"
+               | "." method_name ("::" generic_arguments)? "(" argument_list? ")"
                | "." (IDENT | INTEGER_LITERAL)
                | "." "spawn" command_spawn_payload
                | "." "resume" "(" expression ")"
@@ -559,7 +559,13 @@ generator_closure := "gen" "move"? "|" closure_parameters? "|"
                   "resume" type "yields" type effect_sets
                   ("->" type)? expression
 closure_parameters := closure_parameter ("," closure_parameter)* ","?
-closure_parameter := pattern (":" type)?
+closure_parameter := closure_at_pattern (":" type)?
+closure_at_pattern := binding_pattern "@" closure_at_pattern
+                    | closure_structural_pattern
+closure_structural_pattern := "_" | "(" ")" | literal_pattern
+                    | const_pattern | range_pattern | binding_pattern
+                    | "&" "mut"? closure_at_pattern
+                    | tuple_pattern | slice_pattern | constructor_pattern
 self_expression := "self"
 record_constructor := value_path ("::" generic_arguments)?
 
@@ -634,9 +640,15 @@ begin an unparenthesized record constructor. A record-valued condition,
 iterator, scrutinee, or catch operand must be parenthesized. This makes
 `if Name { ... }` unambiguously a path condition followed by a block, while
 `if (Name {}) { ... }` tests a constructed value.
-After `.name`, an immediately following generic-argument list or `(` is parsed
-as one method-call postfix before the field-plus-call alternative. Calling a
-callable value stored in a field therefore requires `(object.field)(...)`.
+After `.name`, an immediately following `::<...>` or `(` is parsed as one
+method-call postfix before the field-plus-call alternative. Method generic
+arguments always use that turbofish, so `object.field < rhs` is relational and
+never begins a generic method call. Calling a callable value stored in a field
+therefore requires `(object.field)(...)`. A cast consumes the longest
+type after `as`; when that type reaches a path, a following `<` commits to its
+type-generic list and the parser does not backtrack to reinterpret it as a
+relational operator. Comparing a cast result with `<` therefore requires
+parentheses, as in `(value as T) < rhs`.
 `place_expression` admits direct dereference recursively, so `*pointer = value`
 is syntactically a destination; place typing and the unsafe-region rules still
 decide whether that destination is writable.
@@ -650,6 +662,17 @@ generators an omitted return type is `()`. For a closure/generator closure it is
 inferred from expression completion and explicit returns unless an expected
 callable type supplies it; incompatible sites are `TYPE002`, not an implicit
 unit fallback.
+
+A closure or generator-closure parameter accepts one `closure_at_pattern`, not
+a top-level or-pattern, because the same `|` token closes the parameter list.
+The restriction propagates through undelimited `&` and `@` operands.
+Or-patterns remain available after a tuple, slice, or constructor payload has
+opened its own explicit delimiter. Consequently
+`|a| a | b` is one parameter followed by a bit-or body. Because whitespace is
+nonsemantic, the token-equivalent spelling `|a | b| expr` likewise means one
+`a` parameter followed by the body `b | expr`; it can never request a top-level
+parameter or-pattern. An enclosing structural form such as the singleton tuple
+pattern `(a | b,)` is required when an or-pattern is needed inside a parameter.
 
 A named generator item and a generator-closure expression denote generator
 factories, not an already-running body. Calling either factory evaluates the
@@ -830,6 +853,13 @@ package/target manifest span when the next value cannot be represented. This is
 a compiler-resource failure, not an Arche-language result. `HirModuleId` is
 `(PackageNodeId, TargetId, local u64)`; workspace `FileId`,
 `HirItemId`, and `HirBodyId` are checked globally unique `u64` arena IDs.
+For a selected registry release, the verified registry inclusion metadata
+carries the exact source `Arche.toml` `[package]` header span. The internal
+registry-snapshot commitment version `2` includes that span, and PackageNodeId
+exhaustion uses its canonical virtual registry-manifest label rather than substituting a
+workspace or dependency span. Source acquisition later revalidates the span
+against the included manifest bytes through the assigned package-cache adapter
+before any semantic row can be branded.
 Modules, types, values, lifetimes, methods, fields/variants, generics,
 and lexical locals use distinct scope kinds. Struct/enum constructors and enum
 variants bind the value namespace; their nominal declaration binds type.
@@ -4733,6 +4763,9 @@ The positive/golden matrix is mandatory:
   in `[[bin]]` array order, then environment IDs in `[[environment]]` array
   order. A paired manifest moves `[lib]` and the two target-kind table groups
   without changing either array's internal order and produces identical IDs.
+  A selected-registry near-exhaustion vector commits its inclusion-verified
+  `[package]` header span in registry-snapshot version 2 and proves the failing
+  PackageNodeId diagnostic uses that virtual registry manifest and exact range.
   They also cover the same spelling under
   library/binary/environment roots, and a public re-export through a private
   internal module. Development aliases remain inventory-visible but source-
@@ -4964,7 +4997,8 @@ The negative matrix asserts the exact reserved code, primary span, ordered
 notes, status `1`, unchanged lock, and complete temporary/spool cleanup. It
 covers malformed UTF-8/comments/escapes/numerics/operators/semicolons and every
 reserved keyword; invalid path roots, aliases, NFC/case/physical identities,
-PackageNodeId/TargetId checked exhaustion (`IDENTITY001`), visibility,
+PackageNodeId/TargetId checked exhaustion (`IDENTITY001`), a missing or corrupt
+registry package-manifest span (`DEPENDENCY003` before allocation), visibility,
 entry/root-world signatures, types/generic kinds/sized recursion,
 integer and finite-float literal fit/rounding/coercion; missing/ambiguous trait selection, orphan/overlap/invalid
 specialization and method lookup; invalid/refutable/nonexhaustive/unreachable

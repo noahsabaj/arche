@@ -6,9 +6,10 @@ use crate::{
 use semver::{Version, VersionReq};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, Value};
+use toml_edit::{Array, Document, InlineTable, Item, Table, Value};
 
 pub const MANIFEST_SCHEMA: i64 = 1;
 pub const DEFAULT_CONST_EVAL_STEPS: u64 = 10_000_000;
@@ -207,6 +208,19 @@ pub(crate) struct WorkspaceDeclaration {
     pub default_members: Option<Vec<PortablePath>>,
 }
 
+/// Exact half-open UTF-8 source range retained from one parsed manifest.
+/// Lines and columns are one-based Unicode-scalar coordinates; bare carriage
+/// returns advance only the byte coordinate, matching the C1 source contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManifestSpan {
+    pub start_byte: u64,
+    pub end_byte: u64,
+    pub start_line: u64,
+    pub start_column: u64,
+    pub end_line: u64,
+    pub end_column: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Manifest {
     pub path: PathBuf,
@@ -219,6 +233,10 @@ pub struct Manifest {
     pub environment_profiles: BTreeMap<SourceIdentifier, EnvironmentProfile>,
     pub dependencies: BTreeMap<DependencyAlias, Dependency>,
     pub dev_dependencies: BTreeMap<DependencyAlias, Dependency>,
+    package_span: Option<ManifestSpan>,
+    library_span: Option<ManifestSpan>,
+    binary_spans: Vec<ManifestSpan>,
+    environment_spans: Vec<ManifestSpan>,
     pub(crate) workspace: Option<WorkspaceDeclaration>,
 }
 
@@ -248,7 +266,7 @@ impl Manifest {
             .at_span(path, 0, 3)
             .into());
         }
-        let document = source.parse::<DocumentMut>().map_err(|error| {
+        let document = Document::parse(source).map_err(|error| {
             let mut diagnostic = Diagnostic::new(
                 DiagnosticCode::ManifestSyntax,
                 format!("invalid TOML: {error}"),
@@ -260,7 +278,7 @@ impl Manifest {
             }
             Diagnostics::from(diagnostic)
         })?;
-        let mut manifest = parse_document(path, &document)?;
+        let mut manifest = parse_document(path, &document, source)?;
         manifest.source_entry =
             SourceTreeEntry::from_bytes(PortablePath::new("Arche.toml")?, source.as_bytes())?;
         Ok(manifest)
@@ -286,9 +304,36 @@ impl Manifest {
             .as_ref()
             .map(|workspace| workspace.default_members.as_deref())
     }
+
+    pub const fn package_span(&self) -> Option<ManifestSpan> {
+        self.package_span
+    }
+
+    pub fn target_span(&self, target: &Target) -> Option<ManifestSpan> {
+        match target {
+            Target::Library(candidate) if self.library.as_ref() == Some(candidate) => {
+                self.library_span
+            }
+            Target::Binary(candidate) => self
+                .binaries
+                .iter()
+                .position(|target| target == candidate)
+                .and_then(|index| self.binary_spans.get(index).copied()),
+            Target::Environment(candidate) => self
+                .environments
+                .iter()
+                .position(|target| target == candidate)
+                .and_then(|index| self.environment_spans.get(index).copied()),
+            _ => None,
+        }
+    }
 }
 
-fn parse_document(path: &Path, document: &DocumentMut) -> Result<Manifest, Diagnostics> {
+fn parse_document(
+    path: &Path,
+    document: &Document<&str>,
+    source: &str,
+) -> Result<Manifest, Diagnostics> {
     reject_unknown(
         path,
         document.as_table(),
@@ -401,6 +446,29 @@ fn parse_document(path: &Path, document: &DocumentMut) -> Result<Manifest, Diagn
     }
 
     validate_targets_and_profiles(path, &binaries, &environments, &environment_profiles)?;
+    let package_span = manifest_optional_item_span(
+        path,
+        source,
+        document.get("package"),
+        package.is_some(),
+        "package",
+    )?;
+    let library_span = manifest_optional_item_span(
+        path,
+        source,
+        document.get("lib"),
+        library.is_some(),
+        "library target",
+    )?;
+    let binary_spans =
+        manifest_table_spans(path, source, document.get("bin"), binaries.len(), "binary")?;
+    let environment_spans = manifest_table_spans(
+        path,
+        source,
+        document.get("environment"),
+        environments.len(),
+        "environment",
+    )?;
     Ok(Manifest {
         path: path.to_path_buf(),
         source_entry: SourceTreeEntry::from_bytes(PortablePath::new("Arche.toml")?, &[])?,
@@ -412,8 +480,102 @@ fn parse_document(path: &Path, document: &DocumentMut) -> Result<Manifest, Diagn
         environment_profiles,
         dependencies,
         dev_dependencies,
+        package_span,
+        library_span,
+        binary_spans,
+        environment_spans,
         workspace,
     })
+}
+
+fn manifest_optional_item_span(
+    path: &Path,
+    source: &str,
+    item: Option<&Item>,
+    expected: bool,
+    authority: &str,
+) -> Result<Option<ManifestSpan>, Diagnostics> {
+    let span = item
+        .and_then(Item::span)
+        .map(|range| manifest_span(source, range));
+    if span.is_some() == expected {
+        Ok(span)
+    } else {
+        Err(missing_manifest_span(path, authority))
+    }
+}
+
+fn manifest_table_spans(
+    path: &Path,
+    source: &str,
+    item: Option<&Item>,
+    expected: usize,
+    authority: &str,
+) -> Result<Vec<ManifestSpan>, Diagnostics> {
+    let spans = item
+        .and_then(Item::as_array_of_tables)
+        .map(|tables| {
+            tables
+                .iter()
+                .map(|table| {
+                    table
+                        .span()
+                        .map(|range| manifest_span(source, range))
+                        .ok_or_else(|| missing_manifest_span(path, authority))
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default();
+    if spans.len() != expected {
+        return Err(missing_manifest_span(path, authority));
+    }
+    Ok(spans)
+}
+
+fn missing_manifest_span(path: &Path, authority: &str) -> Diagnostics {
+    Diagnostic::new(
+        DiagnosticCode::IdentityInvalid,
+        format!("parser did not retain the exact {authority} manifest span"),
+    )
+    .at_path(path)
+    .into()
+}
+
+fn manifest_span(source: &str, range: Range<usize>) -> ManifestSpan {
+    let start = manifest_position(source, range.start);
+    let end = manifest_position(source, range.end);
+    ManifestSpan {
+        start_byte: start.0,
+        end_byte: end.0,
+        start_line: start.1,
+        start_column: start.2,
+        end_line: end.1,
+        end_column: end.2,
+    }
+}
+
+fn manifest_position(source: &str, byte: usize) -> (u64, u64, u64) {
+    let prefix = source
+        .get(..byte)
+        .expect("toml_edit returns UTF-8 boundaries");
+    let mut offset = 0_u64;
+    let mut line = 1_u64;
+    let mut column = 1_u64;
+    for character in prefix.chars() {
+        offset = offset
+            .checked_add(u64::try_from(character.len_utf8()).expect("UTF-8 width fits u64"))
+            .expect("manifest length was already checked as u64");
+        if character == '\n' {
+            line = line.checked_add(1).expect("manifest line count fits u64");
+            column = 1;
+        } else if character != '\r' {
+            column = column
+                .checked_add(1)
+                .expect("manifest column count fits u64");
+        }
+    }
+    (offset, line, column)
 }
 
 fn parse_package(path: &Path, table: &Table) -> Result<Package, Diagnostics> {
@@ -1235,6 +1397,40 @@ path = "packages/fixture"
         assert_eq!(manifest.environments.len(), 1);
         assert_eq!(manifest.dependencies.len(), 1);
         assert_eq!(manifest.dev_dependencies.len(), 1);
+    }
+
+    #[test]
+    fn retains_exact_package_and_target_table_spans() {
+        let manifest = Manifest::parse(Path::new("Arche.toml"), PACKAGE).unwrap();
+        let package = manifest.package_span().unwrap();
+        let library = manifest
+            .target_span(&Target::Library(manifest.library.clone().unwrap()))
+            .unwrap();
+        let binary = manifest
+            .target_span(&Target::Binary(manifest.binaries[0].clone()))
+            .unwrap();
+        let environment = manifest
+            .target_span(&Target::Environment(manifest.environments[0].clone()))
+            .unwrap();
+
+        let text = |span: ManifestSpan| {
+            &PACKAGE
+                [usize::try_from(span.start_byte).unwrap()..usize::try_from(span.end_byte).unwrap()]
+        };
+        assert_eq!(text(package), "[package]");
+        assert_eq!(text(library), "[lib]");
+        assert_eq!(text(binary), "[[bin]]");
+        assert_eq!(text(environment), "[[environment]]");
+        assert_eq!(
+            package.start_byte,
+            PACKAGE.find("[package]").unwrap() as u64
+        );
+        assert_eq!(library.start_byte, PACKAGE.find("[lib]").unwrap() as u64);
+        assert_eq!(binary.start_byte, PACKAGE.find("[[bin]]").unwrap() as u64);
+        assert_eq!(
+            environment.start_byte,
+            PACKAGE.find("[[environment]]").unwrap() as u64
+        );
     }
 
     #[test]

@@ -9,9 +9,40 @@ use arche_package::{
 use crate::hir::DependencyExport;
 use crate::modules::{check_target_with_dependencies, package_export_surface};
 use crate::{
-    check_target, CheckTargetRequest, Diagnostic, EnvironmentSchedulePaths, FrontendError,
-    FrontendErrorCode, Label, ResolvedTargetHir, ResolvedWorkspaceHir, TargetId, TargetKind,
+    check_target, CheckTargetRequest, Diagnostic, EnvironmentSchedulePaths, FileId, FrontendError,
+    FrontendErrorCode, Label, ResolvedTargetHir, ResolvedWorkspaceHir, SourcePosition, Span,
+    TargetId, TargetKind,
 };
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TargetIdAllocator {
+    next: Option<u64>,
+}
+
+impl TargetIdAllocator {
+    pub(crate) const fn new() -> Self {
+        Self { next: Some(0) }
+    }
+
+    #[cfg(test)]
+    const fn near_exhaustion() -> Self {
+        Self {
+            next: Some(u64::MAX - 1),
+        }
+    }
+
+    pub(crate) fn allocate(
+        &mut self,
+        manifest: &Manifest,
+        target: &Target,
+    ) -> Result<TargetId, FrontendError> {
+        let value = self
+            .next
+            .ok_or_else(|| target_id_exhausted(manifest, target))?;
+        self.next = value.checked_add(1);
+        Ok(TargetId(value))
+    }
+}
 
 /// Checks one target in an already identified package-graph node. This entry
 /// point is useful for focused tooling; callers checking a workspace with
@@ -113,15 +144,12 @@ pub fn check_workspace(
     let mut ordered_nodes = members.keys().copied().collect::<Vec<_>>();
     ordered_nodes.sort();
     let mut target_ids = BTreeMap::<PackageNodeId, Vec<TargetId>>::new();
-    let mut next_target = 0_u64;
     for node in &ordered_nodes {
-        let count = members[node].manifest.targets().count();
-        let mut ids = Vec::with_capacity(count);
-        for _ in 0..count {
-            ids.push(TargetId(next_target));
-            next_target = next_target
-                .checked_add(1)
-                .ok_or_else(|| target_error("TARGET013", "workspace target count exceeds u64"))?;
+        let manifest = &members[node].manifest;
+        let mut allocator = TargetIdAllocator::new();
+        let mut ids = Vec::new();
+        for target in manifest.targets() {
+            ids.push(allocator.allocate(manifest, &target)?);
         }
         target_ids.insert(*node, ids);
     }
@@ -350,6 +378,41 @@ fn target_error(code: &'static str, message: impl Into<String>) -> FrontendError
     }
 }
 
+fn target_id_exhausted(manifest: &Manifest, target: &Target) -> FrontendError {
+    let manifest_span = manifest.target_span(target);
+    let target = match target {
+        Target::Library(_) => "library target".to_owned(),
+        Target::Binary(target) => format!("binary target `{}`", target.name),
+        Target::Environment(target) => format!("environment target `{}`", target.name),
+    };
+    let mut error = target_error(
+        "IDENTITY001",
+        format!("TargetId allocation for {target} exceeds the checked u64 domain"),
+    );
+    if let Some(manifest_span) = manifest_span {
+        error.diagnostic.primary.span = Some(Span {
+            file: FileId(0),
+            start: SourcePosition {
+                byte: manifest_span.start_byte,
+                line: manifest_span.start_line,
+                column: manifest_span.start_column,
+            },
+            end: SourcePosition {
+                byte: manifest_span.end_byte,
+                line: manifest_span.end_line,
+                column: manifest_span.end_column,
+            },
+        });
+    } else {
+        error
+            .diagnostic
+            .notes
+            .push("the manifest target has no retained table span".to_owned());
+    }
+    error.files.push(manifest.path.clone());
+    error
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,6 +423,105 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn target_id_allocator_accepts_its_maximum_then_fails_closed() {
+        let manifest_path = PathBuf::from("packages/app/Arche.toml");
+        let manifest_source = manifest(
+            "example/app",
+            concat!(
+                "\n[lib]\npath = \"src/lib.arc\"\n",
+                "\n[[bin]]\nname = \"one\"\npath = \"src/one.arc\"\nworld = \"package::One\"\n",
+                "\n[[bin]]\nname = \"overflow\"\npath = \"src/overflow.arc\"\nworld = \"package::Overflow\"\n",
+            ),
+        );
+        let parsed_manifest = Manifest::parse(&manifest_path, &manifest_source).unwrap();
+        let targets = parsed_manifest.targets().collect::<Vec<_>>();
+        let mut allocator = TargetIdAllocator::near_exhaustion();
+
+        assert_eq!(
+            allocator.allocate(&parsed_manifest, &targets[0]).unwrap(),
+            TargetId(u64::MAX - 1)
+        );
+        assert_eq!(
+            allocator.allocate(&parsed_manifest, &targets[1]).unwrap(),
+            TargetId(u64::MAX)
+        );
+
+        let error = allocator
+            .allocate(&parsed_manifest, &targets[2])
+            .unwrap_err();
+        assert_eq!(error.diagnostic.code, "IDENTITY001");
+        assert_eq!(error.files, vec![manifest_path]);
+        let target_span = parsed_manifest.target_span(&targets[2]).unwrap();
+        assert_eq!(
+            &manifest_source[usize::try_from(target_span.start_byte).unwrap()
+                ..usize::try_from(target_span.end_byte).unwrap()],
+            "[[bin]]"
+        );
+        assert_eq!(
+            error.diagnostic.primary.span,
+            Some(Span {
+                file: FileId(0),
+                start: SourcePosition {
+                    byte: target_span.start_byte,
+                    line: target_span.start_line,
+                    column: target_span.start_column,
+                },
+                end: SourcePosition {
+                    byte: target_span.end_byte,
+                    line: target_span.end_line,
+                    column: target_span.end_column,
+                },
+            })
+        );
+        assert!(error.diagnostic.message.contains("overflow"));
+
+        let repeated = allocator
+            .allocate(&parsed_manifest, &targets[2])
+            .unwrap_err();
+        assert_eq!(
+            error, repeated,
+            "exhaustion must be deterministic and sticky"
+        );
+    }
+
+    #[test]
+    fn manifest_target_table_reordering_preserves_canonical_target_ids() {
+        let vectors =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../tests/m27c1/vectors");
+        let load = |name: &str| {
+            let path = vectors.join(name);
+            let source = fs::read_to_string(&path).unwrap();
+            Manifest::parse(&path, &source).unwrap()
+        };
+        let first = load("target-order-a.toml");
+        let second = load("target-order-b.toml");
+        let first_targets = first.targets().collect::<Vec<_>>();
+        let second_targets = second.targets().collect::<Vec<_>>();
+        assert_eq!(first_targets, second_targets);
+
+        let allocate = |manifest: &Manifest, targets: &[Target]| {
+            let mut allocator = TargetIdAllocator::new();
+            targets
+                .iter()
+                .map(|target| allocator.allocate(manifest, target).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let first_ids = allocate(&first, &first_targets);
+        let second_ids = allocate(&second, &second_targets);
+        assert_eq!(first_ids, second_ids);
+        assert_eq!(
+            first_ids,
+            vec![
+                TargetId(0),
+                TargetId(1),
+                TargetId(2),
+                TargetId(3),
+                TargetId(4)
+            ]
+        );
+    }
 
     struct Fixture {
         root: PathBuf,
@@ -459,6 +621,13 @@ mod tests {
 
         let first = check_workspace(&workspace, &graph).unwrap();
         let second = check_workspace(&workspace, &graph).unwrap();
+        assert!(
+            first
+                .targets()
+                .iter()
+                .all(|target| target.target().id == TargetId(0)),
+            "TargetId must restart at zero for each single-target package"
+        );
         let app = first
             .targets()
             .iter()
