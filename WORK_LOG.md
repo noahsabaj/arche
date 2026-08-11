@@ -14,6 +14,27 @@ This file is not a second design document. It is the build map for proving that 
 - Repository setup does not advance milestone issues; the current board is tracked below.
 - `README.md` provides GitHub orientation for the repository; it does not advance the milestone board.
 
+## 2026-08-11 M27-B/C0 Predecessor Contract Amendment
+
+Implementing M27-C1 exposed contradictions in predecessor authority that had to be corrected before C1 could close. This is an additive correction record: the original M27-B and M27-C0 closure entries, commits, runs, and design hash remain preserved below as historical evidence. The amendment does not reopen their delivered scope, claim C1 production semantics, or advance any later M27 gate.
+
+Corrected predecessor authority:
+
+- Method generic arguments now require `::<...>`; the cast/relational boundary and closure-parameter `|` ambiguity have one normative parse. Executable parser coverage remains C1 work rather than being falsely claimed by this predecessor-only amendment.
+- `PackageNodeId` allocation and per-package `TargetId` allocation are checked, dense, deterministic, and fail as `IDENTITY001` at the exact retained package/target manifest span. Workspace HIR ordering and definition identity use the composite `(PackageNodeId, TargetId)` authority.
+- Manifest package/target table ranges retain exact `u64` byte and one-based Unicode-scalar coordinates through one sparse linear UTF-8 endpoint pass, including LF, CR, tab, and multibyte behavior.
+- Registry snapshot commitment version 2 includes all six inclusion-verified `[package]` span coordinates. Structurally corrupt freshly committed spans fail as `DEPENDENCY003` before allocation. Registry exhaustion retains the exact canonical virtual label `registry/{canonical package name}/{canonical version}/Arche.toml` and all coordinates through structured and human diagnostics.
+- Protected CI now checks the locked workspace with all targets, reports locked duplicate dependencies, and rejects every nonignored checkout change on Linux and Windows without hiding a failing `git status` command.
+
+Review and local implementation-head evidence on `7a0357563c02ae9e6c1fc7caea9444b6593380de`:
+
+- Adversarial partition and provenance reviews found no High issue and initially found three related Medium gaps in registry span validation, exact diagnostic coordinates, and the canonical virtual label. All three were fixed and the integrated result was re-reviewed with no remaining must-fix finding. The optional manifest coordinate-rescan amplification was also removed.
+- The complete frozen local command set passed: formatting; locked workspace/all-target checking; locked debug and release tests; strict `-D warnings` Clippy; duplicate-dependency reporting; RustSec audit; PowerShell Core 7.6.4 and Windows PowerShell 5.1 proof suites with WSL-backed native execution; and diff/checkout checks. Debug and release each passed `309` tests with `10` Windows-host cases intentionally delegated to WSL. The duplicate report was empty, and RustSec scanned `48` locked dependencies with no advisory.
+- Pull request [#15](https://github.com/noahsabaj/arche/pull/15) exact implementation-head run [31514665205](https://github.com/noahsabaj/arche/actions/runs/31514665205) passed [Native Linux `93856701307`](https://github.com/noahsabaj/arche/actions/runs/31514665205/job/93856701307), [Windows `93856701434`](https://github.com/noahsabaj/arche/actions/runs/31514665205/job/93856701434), [physical greater-than-4-GiB source `93856701408`](https://github.com/noahsabaj/arche/actions/runs/31514665205/job/93856701408), and [sparse greater-than-4-GiB executable `93856701405`](https://github.com/noahsabaj/arche/actions/runs/31514665205/job/93856701405). Each job passed the new nonignored-checkout cleanliness gate.
+- The historical C0 design Git blob remains SHA-256 `B4E8E0B8CB81E766F4E2CBE97B1FE10752955496688B1D3C3C92D833DD18A21B`. The corrected design Git blob is SHA-256 `A6D62CACF964C18E45E07EE428067FD3AB29029E08512248AE8E28C52DCEBDCF`.
+
+The evidence-only commit containing this record must pass the same four protected contexts before pull request #15 merges. M27-C1 remains Doing and resumes only from the merged predecessor authority.
+
 ## 2026-08-01 M26 Audit Remediation Closed
 
 The accepted M26 closure contract is implemented as a hard compatibility cut. Local proofs, protected pull-request checks, and all four required jobs on the exact merged implementation SHA are green. This entry is the durable closure ledger; the evidence-only closure commit that contains it must pass the same protected checks before merging.

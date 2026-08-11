@@ -21,7 +21,8 @@ pub use lock::{
 };
 pub use manifest::{
     BinaryTarget, Capability, ConstEvalBudgets, Dependency, DependencyKind, EnvironmentProfile,
-    EnvironmentTarget, LibTarget, Manifest, Package, PublishMetadata, Target, TargetKind,
+    EnvironmentTarget, LibTarget, Manifest, ManifestSpan, Package, PublishMetadata, Target,
+    TargetKind,
 };
 pub use name::{
     canonical_package_id, DependencyAlias, DependencyPath, ItemPath, ItemPathRoot, PackageName,

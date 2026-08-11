@@ -1,3 +1,4 @@
+use crate::manifest::ManifestSpan;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,7 @@ pub enum DiagnosticCode {
     DependencyConflict,
     DependencyCycle,
     RegistryInvalid,
+    IdentityInvalid,
     LockInvalid,
     Io,
 }
@@ -32,6 +34,7 @@ impl DiagnosticCode {
             Self::DependencyConflict => "DEPENDENCY001",
             Self::DependencyCycle => "DEPENDENCY002",
             Self::RegistryInvalid => "DEPENDENCY003",
+            Self::IdentityInvalid => "IDENTITY001",
             Self::LockInvalid => "LOCK001",
             Self::Io => "PACKAGEIO001",
         }
@@ -43,6 +46,10 @@ pub struct SourceLabel {
     pub path: PathBuf,
     pub start: u64,
     pub end: u64,
+    pub start_line: Option<u64>,
+    pub start_column: Option<u64>,
+    pub end_line: Option<u64>,
+    pub end_column: Option<u64>,
 }
 
 impl SourceLabel {
@@ -51,6 +58,22 @@ impl SourceLabel {
             path: path.into(),
             start,
             end,
+            start_line: None,
+            start_column: None,
+            end_line: None,
+            end_column: None,
+        }
+    }
+
+    pub fn source_span(path: impl Into<PathBuf>, span: ManifestSpan) -> Self {
+        Self {
+            path: path.into(),
+            start: span.start_byte,
+            end: span.end_byte,
+            start_line: Some(span.start_line),
+            start_column: Some(span.start_column),
+            end_line: Some(span.end_line),
+            end_column: Some(span.end_column),
         }
     }
 }
@@ -84,6 +107,11 @@ impl Diagnostic {
             u64::try_from(start).unwrap_or(u64::MAX),
             u64::try_from(end).unwrap_or(u64::MAX),
         ));
+        self
+    }
+
+    pub fn at_source_span(mut self, path: impl AsRef<Path>, span: ManifestSpan) -> Self {
+        self.primary = Some(SourceLabel::source_span(path.as_ref(), span));
         self
     }
 
@@ -165,4 +193,48 @@ pub(crate) fn io_diagnostic(path: &Path, action: &str, error: &std::io::Error) -
     )
     .at_path(path)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_span_remains_byte_only() {
+        let diagnostic =
+            Diagnostic::new(DiagnosticCode::ManifestSyntax, "invalid").at_span("Arche.toml", 4, 9);
+        let label = diagnostic.primary.expect("primary label");
+
+        assert_eq!(label.start, 4);
+        assert_eq!(label.end, 9);
+        assert_eq!(label.start_line, None);
+        assert_eq!(label.start_column, None);
+        assert_eq!(label.end_line, None);
+        assert_eq!(label.end_column, None);
+    }
+
+    #[test]
+    fn exact_source_span_preserves_u64_coordinates() {
+        let start_byte = u64::from(u32::MAX) + 1;
+        let diagnostic = Diagnostic::new(DiagnosticCode::IdentityInvalid, "exhausted")
+            .at_source_span(
+                "Arche.toml",
+                ManifestSpan {
+                    start_byte,
+                    end_byte: u64::MAX,
+                    start_line: 7,
+                    start_column: 11,
+                    end_line: 8,
+                    end_column: 3,
+                },
+            );
+        let label = diagnostic.primary.expect("primary label");
+
+        assert_eq!(label.start, start_byte);
+        assert_eq!(label.end, u64::MAX);
+        assert_eq!(label.start_line, Some(7));
+        assert_eq!(label.start_column, Some(11));
+        assert_eq!(label.end_line, Some(8));
+        assert_eq!(label.end_column, Some(3));
+    }
 }
