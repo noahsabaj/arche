@@ -14,6 +14,90 @@ This file is not a second design document. It is the build map for proving that 
 - Repository setup does not advance milestone issues; the current board is tracked below.
 - `README.md` provides GitHub orientation for the repository; it does not advance the milestone board.
 
+## 2026-08-11 M27-C0/C1 Predecessor Contract Amendment
+
+Beginning full M27-C2 implementation exposed predecessor clauses whose stated
+phase order required C2 to consume unavailable stable identities or CTFE
+results, or left compiler-owned semantic authority unspecified. This is an
+additive correction record: it preserves the closed C0/C1 implementation,
+corpora, hashes, commits, and runs; it does not claim C2 semantic completion,
+advance C3-C6, or advance M27-D.
+
+Corrected predecessor authority:
+
+- Pre-C4 trait selection uses exact session-only semantic keys over the current
+  target and transitive Normal-dependency library closure. Candidate visitation
+  cannot affect selection, unresolved const-dependent viability retains the
+  whole obligation as `NeedsCtfe`, and no provisional stable identity enters C2.
+- Trait implicit `Self`, impl-target substitution, receiver normalization,
+  hidden receiver lifetimes, and exact trait-method-set conformance now have one
+  closed binder-coordinate contract. C2 structurally eliminates every
+  `PendingC2` leaf while retaining orthogonal `PendingC4` and `NeedsCtfe` facts.
+- Explicit conversions use ordinary coherent `From`/`TryFrom` impls rather than
+  an invented primitive matrix. Primitive operators and Copy use separately
+  closed compiler evidence; Clone and ordinary iteration remain ordinary trait
+  selection, with no fabricated `CloneByCopy`, `ArrayIntoIter`, or ImplRow.
+- C2 owns const-independent patterns, Map comparator selection, and pre-identity
+  specialization/public-projection facts. C3 owns ownership/CFG lowering; C4
+  owns final const-independent DefinitionId/TypeId and pending-interface rows;
+  C5 owns CTFE-dependent pattern decisions and final InterfaceHash. Definition
+  production precedes the dependency-ready TypeId DAG at every frontier.
+- `tests/m27c1` remains immutable. Versioned C2 descendants begin under
+  `tests/m27c2/v1`, repair syntax-only predecessor forms through explicit
+  semantic authority, and must be pinned to Git/LF bytes before golden hashing.
+
+Implementation and local exact-head evidence:
+
+- Commit [`57288e1a93a22acbf622ae5cb0d54365065503c2`](https://github.com/noahsabaj/arche/commit/57288e1a93a22acbf622ae5cb0d54365065503c2)
+  (`Amend M27-C2 predecessor contracts`, parent
+  `6011d4344bf42c1016f581efd96444b7a3f8b38b`) changes only `.gitattributes`
+  and `arche_comprehensive_design_document.md`, with `538` insertions and `67`
+  deletions. Independent phase-boundary, compiler-trait, fixture, identity,
+  Core, and diagnostic reviews found no remaining normative or acceptance-
+  evidence blocker.
+- The immediate predecessor design Git blob remains SHA-256
+  `A6D62CACF964C18E45E07EE428067FD3AB29029E08512248AE8E28C52DCEBDCF`.
+  The amended design is Git object
+  `980619c87c3363a0463bf94704b684f6c020a41e`, contains `493990` raw bytes,
+  and has SHA-256
+  `5226EC18D2E6DF147E61B9A2EA0D23A9BDB208453DDD47E664B6686C749EDEAF`.
+  The accompanying `.gitattributes` object
+  `3f19ce3a283cd16ae08e3ff75b0b2dcbfc830b0a` adds the exact design-file LF
+  rule; its `289` bytes have SHA-256
+  `3025C5D10F968AE08F84449EE1E1DEBC25C7B21198FA58725B7C55FC440801B6`.
+- Formatting; locked workspace/all-target checking; locked debug and release
+  suites; strict ordinary and all-feature Clippy; duplicate-dependency
+  reporting; RustSec audit; both PowerShell proof hosts; and diff/status checks
+  passed on the exact clean commit. Debug and release each passed `452` tests
+  with `10` WSL-only ignores. The duplicate report was empty; RustSec loaded
+  `1,211` advisories, scanned `48` locked dependencies, and found no issue.
+  PowerShell Core 7.6.4 and Windows PowerShell 5.1 each reported `105` PASS, `2`
+  documented SKIP, and `25` WSL executions: `210` PASS, `4` skip records, and
+  `50` WSL executions combined.
+- The design and immutable C1 corpus are byte-exact across HEAD, index, the
+  existing checkout, and a clean detached checkout under `core.autocrlf=true`.
+  The design has zero CR bytes in every view. All `33` C1 files (`23` `.arc`,
+  `8` `Arche.toml`, one `.txt`, and one `.bin`) total `19356` bytes and have
+  framed aggregate SHA-256
+  `BA94A204A170C31370B39CFDD3A5D12DFA0BEF864E5BB746D30717CB5A79C320`;
+  the design-plus-C1 aggregate is
+  `88DECC5A557BB4582081206C4B504583188FC15B9769CE0435FDB39B0282D73C`.
+
+Protected implementation-head evidence:
+
+- Pull request [#18](https://github.com/noahsabaj/arche/pull/18) protected run,
+  attached to implementation head
+  `57288e1a93a22acbf622ae5cb0d54365065503c2`,
+  [31538099580](https://github.com/noahsabaj/arche/actions/runs/31538099580)
+  passed [Native Linux `93933970323`](https://github.com/noahsabaj/arche/actions/runs/31538099580/job/93933970323),
+  [Windows `93933970402`](https://github.com/noahsabaj/arche/actions/runs/31538099580/job/93933970402),
+  [physical greater-than-4-GiB source `93933970371`](https://github.com/noahsabaj/arche/actions/runs/31538099580/job/93933970371),
+  and [sparse greater-than-4-GiB executable `93933970391`](https://github.com/noahsabaj/arche/actions/runs/31538099580/job/93933970391).
+
+The evidence-only commit containing this record must pass the same four
+protected contexts before pull request #18 merges. C2 remains Doing; this
+amendment does not close M27-C or advance any later gate.
+
 ## 2026-08-11 M27-C1 Retained Syntax and Symbolic HIR Closed
 
 M27-C1 is closed on merged implementation SHA `00e0fd93b5c8d57f97071a1f48939366e62e6820`. This closes only the first implementation slice of M27-C: M27-C remains the sole Doing gate, C2 becomes its active slice, and no M27-D instance, layout, object, linker, or AOT work is advanced.
@@ -22,7 +106,7 @@ Implemented C1 boundary:
 
 - Every selected explicit module and validated `include_bytes`/`include_str` input is acquired into immutable retained source authority before semantic use. The C1 result owns the exact snapshots that produced its AST, HIR, and source-tree commitments; source paths are not reopened.
 - The incremental lexer, frozen recursive-descent parser, and complete syntax-preserving AST cover both mandatory workspaces and the complete C0 surface. Exact diagnostics retain codes, byte/scalar spans, messages, secondary-label order, and note order. AST nodes remain session-local and carry no stable definition or type identity.
-- Package-aware symbolic HIR retains every accepted body and resolves modules, imports, re-exports, visibility audiences, namespace partitions, contextual `Self`, associated candidates, compiler-owned embedded-Core rows, and validated include inputs. Checked session arenas fail before wrap; no accepted body is skipped, reopened, or assigned a provisional stable identity.
+- Package-aware symbolic HIR retains every accepted body and resolves modules, imports, re-exports, visibility audiences, namespace partitions, compiler-owned embedded-Core rows, and validated include inputs. It validates contextual `Self` availability, relowers impl-method `Self` through the retained impl target, and preserves trait-owned and header `Self` plus associated candidate partitions as explicit C2 continuations. C2 owns implicit trait-`Self` tag-26 coordinates and substitution, receiver normalization, and trait-impl conformance. Checked session arenas fail before wrap; no accepted body is skipped, reopened, or assigned a provisional stable identity.
 - Symbolic type, generic, predicate, callable, capture, generator, ECS, and const-expression trees use exact checked encoders. The unverified semantic inventory retains private items, empty targets, development dependencies, complete provenance, target/package authority, and body ownership. C2 trait/type selection, C4 canonical effects and semantic IDs, and C5 Generic Core/CTFE remain explicitly pending.
 - The C1 entry point remains separate from the M27-B public check path; C6 owns complete public-pipeline integration and atomic lock publication.
 - The mandatory workspaces pin canonical HIR SHA-256 `7429C71C3AD17941CD845ECBCD4877935F0CCD94B725926D76668A0BADB81D08` over `language-game` then `language-environment`. Their inventory encodings are `136616` bytes for `language-environment` then `175057` bytes for `language-game`, with combined SHA-256 `63D33B6815A9E1E6E7319F53BF87E3F26A4D1ACBF0D47FD2D7AE8109A218F088` in that order. Parser negative-matrix SHA-256 is `519E0F54640BCAF9C1395CC3F1B4483DFCF16A0EAA19C9938EB72689714CBB2E`; lexer negative-matrix SHA-256 is `D0C8071217DE6EED494266F36A087C5B49FE01F7EA9DC3E31F85F0070BE81861`; and the retained RegistrySnapshot-v2 commitment is `sha256:b3a3941999dc71bbb0836f6ca18c57ca59e747555f57f91316de7ccccc7cb4b3`.
