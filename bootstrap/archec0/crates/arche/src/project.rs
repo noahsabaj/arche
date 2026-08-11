@@ -220,13 +220,27 @@ pub(crate) fn write_error(output: &mut impl Write, error: &ProjectError) -> io::
         ProjectError::Package(diagnostics) => {
             for diagnostic in diagnostics.entries() {
                 if let Some(label) = &diagnostic.primary {
-                    writeln!(
-                        output,
-                        "{}: error[{}]: {}",
-                        label.path.display(),
-                        diagnostic.code.as_str(),
-                        diagnostic.message
-                    )?;
+                    match (
+                        label.start_line,
+                        label.start_column,
+                        label.end_line,
+                        label.end_column,
+                    ) {
+                        (Some(line), Some(column), Some(_), Some(_)) => writeln!(
+                            output,
+                            "{}:{line}:{column}: error[{}]: {}",
+                            label.path.display(),
+                            diagnostic.code.as_str(),
+                            diagnostic.message
+                        )?,
+                        _ => writeln!(
+                            output,
+                            "{}: error[{}]: {}",
+                            label.path.display(),
+                            diagnostic.code.as_str(),
+                            diagnostic.message
+                        )?,
+                    }
                 } else {
                     writeln!(
                         output,
@@ -285,3 +299,55 @@ impl fmt::Display for ProjectError {
 }
 
 impl std::error::Error for ProjectError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_diagnostic_renders_exact_source_location() {
+        let error = ProjectError::Package(
+            Diagnostic::new(
+                DiagnosticCode::IdentityInvalid,
+                "identifier space exhausted",
+            )
+            .at_source_span(
+                "registry/example/Arche.toml",
+                arche_package::ManifestSpan {
+                    start_byte: 12,
+                    end_byte: 27,
+                    start_line: 4,
+                    start_column: 3,
+                    end_line: 4,
+                    end_column: 18,
+                },
+            )
+            .into(),
+        );
+        let mut output = Vec::new();
+
+        write_error(&mut output, &error).expect("render diagnostic");
+
+        assert_eq!(
+            String::from_utf8(output).expect("UTF-8 output"),
+            "registry/example/Arche.toml:4:3: error[IDENTITY001]: identifier space exhausted\n"
+        );
+    }
+
+    #[test]
+    fn package_diagnostic_preserves_legacy_path_only_rendering() {
+        let error = ProjectError::Package(
+            Diagnostic::new(DiagnosticCode::ManifestSyntax, "invalid manifest")
+                .at_span("Arche.toml", 2, 8)
+                .into(),
+        );
+        let mut output = Vec::new();
+
+        write_error(&mut output, &error).expect("render diagnostic");
+
+        assert_eq!(
+            String::from_utf8(output).expect("UTF-8 output"),
+            "Arche.toml: error[MANIFEST001]: invalid manifest\n"
+        );
+    }
+}

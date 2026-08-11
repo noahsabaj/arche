@@ -225,7 +225,7 @@ pub struct ResolvedWorkspaceHir {
 
 impl ResolvedWorkspaceHir {
     pub(crate) fn new(mut targets: Vec<ResolvedTargetHir>) -> Self {
-        targets.sort_by_key(|target| target.target.id);
+        targets.sort_by_key(|target| (target.target.package, target.target.id));
         Self { targets }
     }
 
@@ -355,5 +355,45 @@ pub fn dump_resolved_target(hir: &ResolvedTargetHir) -> String {
 impl fmt::Display for ResolvedTargetHir {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(&dump_resolved_target(self))
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    fn empty_target(package: u64, target: u64) -> ResolvedTargetHir {
+        ResolvedTargetHir::new(
+            LinkedTarget {
+                package: PackageNodeId::new(package),
+                id: TargetId(target),
+                name: format!("target-{package}-{target}"),
+                kind: TargetKind::Library,
+                root_module: ModuleId(0),
+                root_world: None,
+                main: None,
+                reset_schedule: None,
+                step_schedule: None,
+                self_play_schedule: None,
+            },
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn workspace_order_uses_package_then_per_package_target_id() {
+        let workspace = ResolvedWorkspaceHir::new(vec![
+            empty_target(1, 0),
+            empty_target(0, 1),
+            empty_target(0, 0),
+        ]);
+        let keys = workspace
+            .targets()
+            .iter()
+            .map(|target| (target.target().package.get(), target.target().id.0))
+            .collect::<Vec<_>>();
+        assert_eq!(keys, [(0, 0), (0, 1), (1, 0)]);
     }
 }

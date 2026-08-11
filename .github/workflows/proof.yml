@@ -27,6 +27,9 @@ jobs:
       - name: Check workspace formatting
         run: cargo fmt --all --manifest-path ./bootstrap/archec0/Cargo.toml -- --check
 
+      - name: Check locked workspace targets
+        run: cargo check --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+
       - name: Run locked debug tests
         run: cargo test --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
 
@@ -35,6 +38,9 @@ jobs:
 
       - name: Run strict Clippy
         run: cargo clippy --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml -- -D warnings
+
+      - name: Report locked duplicate dependencies
+        run: cargo tree --locked --workspace --duplicates --manifest-path ./bootstrap/archec0/Cargo.toml
 
       - name: Install cargo-audit 0.22.2
         run: cargo install cargo-audit --version 0.22.2 --locked
@@ -63,11 +69,15 @@ jobs:
           grep -Fq 'There is no dynamic section in this file.' "$RUNNER_TEMP/m26-dynamic.txt"
           grep -Fq 'There are no relocations in this file.' "$RUNNER_TEMP/m26-relocations.txt"
 
-      - name: Verify no tracked files changed
+      - name: Verify no nonignored checkout changes
         run: |
           git diff --check
           git diff --exit-code
-          test -z "$(git status --porcelain --untracked-files=no)"
+          status="$(git status --short)"
+          if [ -n "$status" ]; then
+            printf '%s\n' "$status"
+            exit 1
+          fi
 
   windows:
     name: Proof / Windows
@@ -84,6 +94,9 @@ jobs:
       - name: Check workspace formatting
         run: cargo fmt --all --manifest-path ./bootstrap/archec0/Cargo.toml -- --check
 
+      - name: Check locked workspace targets
+        run: cargo check --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
+
       - name: Run locked debug tests
         run: cargo test --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml
 
@@ -93,20 +106,28 @@ jobs:
       - name: Run strict Clippy
         run: cargo clippy --locked --workspace --all-targets --manifest-path ./bootstrap/archec0/Cargo.toml -- -D warnings
 
+      - name: Report locked duplicate dependencies
+        run: cargo tree --locked --workspace --duplicates --manifest-path ./bootstrap/archec0/Cargo.toml
+
       - name: Run proof suite under PowerShell Core
         run: pwsh -NoLogo -NoProfile -File .\tools\test.ps1 -SkipGeneratedLinuxExecution
 
       - name: Run proof suite under Windows PowerShell 5.1
         run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -SkipGeneratedLinuxExecution
 
-      - name: Verify no tracked files changed
+      - name: Verify no nonignored checkout changes
         shell: pwsh
         run: |
           git diff --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           git diff --exit-code
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if ((git status --porcelain --untracked-files=no).Count -ne 0) { exit 1 }
+          $status = @(git status --short)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($status.Count -ne 0) {
+            $status | Write-Host
+            exit 1
+          }
 
   physical-large-source:
     name: Proof / Physical >4-GiB Source
@@ -289,11 +310,15 @@ jobs:
           printf 'compiler_elapsed_seconds=%s\n' "$compiler_elapsed_seconds"
           grep 'Elapsed (wall clock) time' "$metrics"
 
-      - name: Verify no tracked files changed
+      - name: Verify no nonignored checkout changes
         run: |
           git diff --check
           git diff --exit-code
-          test -z "$(git status --porcelain --untracked-files=no)"
+          status="$(git status --short)"
+          if [ -n "$status" ]; then
+            printf '%s\n' "$status"
+            exit 1
+          fi
 
   sparse-large-executable:
     name: Proof / Sparse >4-GiB Executable
@@ -381,8 +406,12 @@ jobs:
           printf 'proof_elapsed_seconds=%s\n' "$proof_elapsed_seconds"
           grep 'Elapsed (wall clock) time' "$metrics"
 
-      - name: Verify no tracked files changed
+      - name: Verify no nonignored checkout changes
         run: |
           git diff --check
           git diff --exit-code
-          test -z "$(git status --porcelain --untracked-files=no)"
+          status="$(git status --short)"
+          if [ -n "$status" ]; then
+            printf '%s\n' "$status"
+            exit 1
+          fi
