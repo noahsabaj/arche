@@ -7,7 +7,7 @@ Arche is for the full range of work that benefits from ECS: games, simulations, 
 ## Road to 0.1
 
 - **M26 — closed:** established the generic verified-Core, metadata-authoritative reference/native execution substrate; ARCHEECS v2 and ARCHEOBS2; static x86-64 Linux PIE output; strict cross-platform CI; and the required greater-than-4-GiB source and artifact proofs.
-- **M27 — platform foundation:** builds the general language, ownership and effect systems, reentrant ECS runtime, package/object formats, public `arche` toolchain, standard library, and source-package registry. M27 is one umbrella milestone executed through mandatory gates M27-A through M27-L. M27-A, M27-B, and M27-C0 are closed; M27-C is active in C1, the first of six implementation/closure slices consuming the frozen C0 language/Core contract.
+- **M27 — platform foundation:** builds the general language, ownership and effect systems, reentrant ECS runtime, package/object formats, public `arche` toolchain, standard library, and source-package registry. M27 is one umbrella milestone executed through mandatory gates M27-A through M27-L. M27-A and M27-B are closed; within active M27-C, C0 and C1 are Done and C2 is the current implementation slice consuming C1's retained syntax, symbolic HIR, and type-shape authority.
 - **M28 — Arche 0.1 release:** proves the completed platform with two materially different applications: an authoritative multiplayer arena server and a deterministic 1,024-world Grid Pursuit environment with a language-neutral trainer protocol.
 
 After 0.1, game-platform and native-ML capabilities advance as equal application tracks over the same compiler and runtime. Reproducible self-hosting is a later objective before 1.0; the Rust `archec0` seed remains authoritative through 0.1.
@@ -51,9 +51,12 @@ source-migration hard cut. A successful check publishes only canonical
 `Arche.lock`; registry acquisition and the remaining public commands stay
 explicitly unavailable until their assigned later gates. M27-C0 froze the
 grammar, ownership/effect edge rules, CTFE accounting, diagnostic contract, and
-verified generic Core schema. C1 is implementing complete retained syntax,
-immutable source authority, and resolved symbolic HIR; C2-C6 remain sequenced
-behind that slice. `archec0` remains the
+verified generic Core schema. C1 now implements complete retained syntax,
+immutable source authority, package-aware resolved symbolic HIR, and the
+unverified semantic-inventory/type-shape skeleton. C2 is implementing
+const-independent type checking, trait selection/coherence/specialization,
+operator dispatch, and exhaustive pattern decision trees; C3-C6 remain
+sequenced behind it. `archec0` remains the
 authoritative executable compiler interface until the general language and AOT
 pipeline are connected. Arche generates static x86-64 Linux PIE executables.
 Windows remains a supported compiler and tooling host; generated programs run
@@ -69,10 +72,12 @@ bootstrap/archec0/   Rust bootstrap compiler/runtime seed and Cargo workspace
   crates/arche-package/
                      Schema-1 manifests, workspaces, resolver, and lockfiles
   crates/arche-frontend/
-                     Streaming M27 module parser and package-aware resolved HIR
+                     Complete retained C1 syntax, immutable source authority,
+                     package-aware symbolic HIR, and type-shape/inventory skeletons
   crates/arche/       Public command driver (`check` implemented since M27-B)
 examples/            Arche source fixtures
 tests/m27b/           Package/module/public-check proof fixtures
+tests/m27c1/          Frozen C1 workspace corpora and exact negative/golden vectors
 tests/e2e/           End-to-end executable proofs
 tools/               Local proof runner
 WORK_LOG.md          Promoted milestone state and acceptance evidence
