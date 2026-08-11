@@ -71,9 +71,26 @@ pub type WorkspaceInventorySkeleton = SemanticInventorySkeleton<Arc<VerifiedEmbe
 /// it. The inventory remains unverified until the later semantic gate.
 #[derive(Debug)]
 pub struct FrontendOutput {
-    pub hir: ResolvedSymbolicWorkspaceHir,
-    pub sources: Arc<SourceDatabase>,
-    pub inventory: WorkspaceInventorySkeleton,
+    hir: ResolvedSymbolicWorkspaceHir,
+    sources: Arc<SourceDatabase>,
+    inventory: WorkspaceInventorySkeleton,
+}
+
+impl FrontendOutput {
+    /// Returns the complete session-local symbolic HIR retained by C1.
+    pub fn hir(&self) -> &ResolvedSymbolicWorkspaceHir {
+        &self.hir
+    }
+
+    /// Returns the immutable source snapshots that produced this result.
+    pub fn sources(&self) -> &Arc<SourceDatabase> {
+        &self.sources
+    }
+
+    /// Returns the unverified semantic inventory skeleton retained by C1.
+    pub fn inventory(&self) -> &WorkspaceInventorySkeleton {
+        &self.inventory
+    }
 }
 
 /// One unpacked registry package supplied by the later package-cache adapter.

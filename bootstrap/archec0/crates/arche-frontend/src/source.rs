@@ -649,7 +649,7 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    pub(crate) fn at(code: &'static str, span: Span, message: impl Into<String>) -> Self {
+    pub fn at(code: &'static str, span: Span, message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
             code,
@@ -663,7 +663,7 @@ impl Diagnostic {
         }
     }
 
-    pub(crate) fn path(code: &'static str, message: impl Into<String>) -> Self {
+    pub fn path(code: &'static str, message: impl Into<String>) -> Self {
         let message = message.into();
         Self {
             code,
@@ -677,7 +677,7 @@ impl Diagnostic {
         }
     }
 
-    pub(crate) fn with_secondary(mut self, span: Span, message: impl Into<String>) -> Self {
+    pub fn with_secondary(mut self, span: Span, message: impl Into<String>) -> Self {
         self.secondary.push(Label {
             span: Some(span),
             message: message.into(),
@@ -685,7 +685,7 @@ impl Diagnostic {
         self
     }
 
-    pub(crate) fn with_note(mut self, note: impl Into<String>) -> Self {
+    pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(note.into());
         self
     }
