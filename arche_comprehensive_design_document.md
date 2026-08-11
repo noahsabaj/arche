@@ -710,6 +710,28 @@ are errors, and an equal exclusive range is empty/unreachable. String/str
 literal and Vec/slice patterns compare borrowed logical contents without calling
 user trait code. A const pattern requires a finite structural canonical value
 and likewise invokes no user Eq/Ord implementation.
+
+C2 fully checks literal patterns and literal-only integer/character ranges. For
+a const path, C2 resolves the declaration, checks the scrutinee/endpoint type and
+structural eligibility, and retains the canonical dependency as `NeedsCtfe`; it
+does not read or interpret the initializer. The same applies to either range
+endpoint containing a const path. Finite-canonical-value validation, descending
+or equal-range classification, overlap, reachability, exhaustiveness
+contributions, and concrete decision-tree tests that depend on such a value are
+finalized only from a successful C5 receipt. C2 may still reject value-
+independent structural, type, binding, and mode errors. A decision tree with a
+value-dependent leaf is a checked pending tree and cannot make its target
+successful before C5.
+
+C3/C4 retain each such leaf in typed MIR as a non-Core symbolic pattern test
+with its already-evaluated scrutinee place, canonical const dependency, and both
+typed successor templates. Move/borrow/initialization checking conservatively
+treats both successors as reachable and validates every binding path; it cannot
+erase an arm or mark a fallback unreachable from a pending value. C5 replaces
+the leaf from the successful receipt, reruns value-dependent reachability and
+exhaustiveness, and only then lowers the final branch/switch CFG. No symbolic
+pattern test enters Generic Core.
+
 Unary-negative integer pattern tokens use the same post-negation type-fit rule
 as expression literals, including every signed minimum. A qualified pattern path
 always resolves as a const or constructor. For a bare `IDENT`, `mut IDENT`,
@@ -774,6 +796,19 @@ bound therefore later selects FunctionPointerCall.
 `From` and `TryFrom` are ordinary statically selected trait calls. `as` is
 accepted only in an `unsafe` context for raw-pointer/address exposure and
 reconstruction; it is never a numeric conversion.
+
+The 0.1 compiler synthesizes no primitive `From`/`TryFrom` matrix. Conversion
+selection considers ordinary coherent user impls plus only compiler-owned impl
+candidates explicitly enumerated by the branded embedded-Core authority.
+Embedded-Core version 1 enumerates no compiler-owned `From` or `TryFrom` impl
+candidate. Primitive arithmetic opcodes, literal fitting, the closed safe-
+coercion list, and `String::from_str` are not conversion impls and add no
+candidate. Consequently an explicit conversion succeeds only through an
+ordinary selected impl in the candidate universe above. Under the orphan rule,
+a package using the compiler-owned trait can normally provide one by owning the
+outermost nominal target. A missing primitive-to-primitive candidate is ordinary
+unsatisfied selection, not permission to infer a cast or fabricate a compiler
+impl.
 
 Component, resource, and struct record/tuple fields may spell visibility and
 default to the declaring module. Cross-package construction, field access, and
@@ -1018,21 +1053,68 @@ exists. Flipping it therefore changes the impl and every owned method identity
 and the affected InterfaceHash even when the trait, target, predicates, and
 method signatures are unchanged.
 
-The solver is deterministic and terminating for the selected 0.1 fragment. It
-canonicalizes an obligation as trait identity, self/input/output type trees,
-generic arguments, and a predicate set sorted by each predicate's complete
-encoded bytes. A package graph contributes candidate impls in raw
-`DefinitionId` order. The worklist is a `BTreeSet` ordered by the obligation's
-complete canonical bytes; the least obligation is always processed first.
+The solver is deterministic and terminating for the selected 0.1 fragment.
+Before C4, a canonical obligation contains a `SemanticTraitKey`, the
+pre-identity self/input/output type trees, ordered generic arguments, and the
+predicate set sorted by each predicate's complete pre-identity bytes. An
+ordinary `SemanticTraitKey` encodes byte `1`, `u64le` length, and the referenced
+trait declaration's complete `SemanticDefinitionKey` bytes. A compiler-known
+key encodes byte `2`, the branded `VerifiedEmbeddedCoreAuthority` interface
+version as `u32le`, its 32-byte interface digest, and the exact trait row's raw
+`DefinitionId`. No other tag or trailing byte is valid. Pre-identity type trees
+use tag 29 declaration paths for nominal leaves, tag 26 bound coordinates, and
+symbolic const-definition paths. They contain no provisional `DefinitionId`,
+`TypeId`, or result placeholder.
+
+For one checked package/target scope, ordinary candidate impls are exactly the
+impl declarations in the current target's complete module tree plus the library
+target of each package in its transitive Normal-dependency closure. Sibling
+binary/environment targets, Development dependencies, unrelated workspace
+roots, and merely name-visible imports add no candidate. `SealedCopy`,
+`SealedPrimitiveOperator`, and `SealedEcsKeyComparison` are the separate closed
+rules specified below and never fabricate an ImplRow. Ordinary candidates are
+traversed in complete `SemanticDefinitionKey` byte order. That order is session
+traversal authority, not a semantic tie-break: candidate visitation order cannot
+change the unique selection result. The obligation worklist is a `BTreeSet`
+ordered by the complete pre-identity obligation bytes; the least obligation is
+always processed first.
+
 Unification may introduce only declared generic variables, equality constraints,
 and already-canonical child obligations. A candidate is viable only when every
-predicate is proven from the environment or recursively solved; cycles succeed
-only for compiler-declared structural coinductive traits (`Send`, `Sync`, and
-`Unpin`) and otherwise remain unsatisfied. Selection chooses the unique viable
+predicate is proven from the environment or recursively solved, and is
+nonviable only when one is disproven. A candidate whose head match, predicate,
+or relative specificity depends on an unresolved const is pending `NeedsCtfe`,
+never nonviable. If that candidate could change zero/unique/
+ambiguous viability or the maximal member of a default chain, the complete
+obligation retains `NeedsCtfe` and C2 selects nothing; C5 reevaluates the full
+candidate set after the required receipts. Cycles succeed only for compiler-
+declared structural coinductive traits (`Send`, `Sync`, and `Unpin`) and
+otherwise remain unsatisfied. Selection chooses the unique viable
 non-default impl, or the unique deepest strictly-more-specific descendant of one
 default chain. Zero candidates is unsatisfied and multiple incomparable maxima
-are ambiguous. Results are memoized by canonical obligation bytes; source,
-filesystem, hash iteration, and discovery order cannot affect the result.
+are ambiguous. Results are memoized by complete pre-identity obligation bytes.
+Source, filesystem, hash iteration, package discovery, and candidate discovery
+order cannot affect the result. C4 replaces successful const-independent
+semantic impl keys with final IDs and independently reproduces the same choice
+in raw `DefinitionId` order; a mismatch is `IDENTITY001`. A const-dependent
+obligation retains `NeedsCtfe` and cannot contribute to target success before
+C5. After each successful receipt frontier, C5 likewise replays every newly
+dependency-ready obligation in raw `DefinitionId` order and must map the same
+selected semantic impl key or fail `IDENTITY001`.
+
+C2 closure is a recursive structural property, not the maximum value of a
+single readiness enum. Every C1 `PendingC2` leaf in types, generic arguments,
+predicates, effect members, associated-path continuations, callable shapes, and
+body selections is replaced by a checked semantic node or an emitted diagnostic.
+A checked C2 result contains zero `PendingC2` descendants.
+
+`NeedsCtfe` and `PendingC4` are independent later-gate properties. One checked
+node may carry either or both: `NeedsCtfe` means its canonical pre-result tree
+requires a const result, while `PendingC4` means effects or stable semantic
+identity remain unfinished. Neither may hide a nested `PendingC2` leaf through
+enum precedence or aggregate readiness. C2 success performs a full recursive
+audit of all three properties. `NeedsCtfe` is not a successful target state and
+C2 does not assign the C4-owned `CtfeRootKey`.
 
 Termination is verified when an impl is declared. Build the directed graph of
 trait predicates appearing in impl requirements and condense it into SCCs. An
@@ -1128,16 +1210,30 @@ Those comparison methods have exact empty effect sets and define one total key
 order used by insertion, lookup, iteration, and CTFE. ECS-stored maps impose the
 stronger sealed `EcsKey` judgment and use compiler-defined structural ordering;
 an arbitrary user `Eq` or `Ord` implementation can never establish `EcsKey`.
-For a structurally eligible concrete `EcsKey` type or a bound `K: EcsKey`, the
-compiler supplies the one sealed structural Eq/Ord selection. The bound case
-uses only the indexed sealed entailment above; any overlapping user selection
-makes that use ineligible. When matching EcsKey evidence exists, the sealed
-selection is mandatory even if an identical Eq/Ord predicate is also present in
-the environment; that redundant predicate never creates an alternate
-BoundWitness or ambiguity. Thus
+For a concrete `PrimitiveKey`, the `SealedPrimitiveOperator` Eq/Ord row below is
+also its one EcsKey comparator; C4 validates that primitive eligibility and
+operation without constructing a second selection. String, a nonprimitive
+structural key, or a bound `K: EcsKey` instead uses the one
+`SealedEcsKeyComparison`; the bound case uses only the indexed sealed entailment
+above. Any overlapping user selection makes that use ineligible. When matching
+EcsKey evidence exists, its assigned compiler selection is mandatory even if an
+identical Eq/Ord predicate is also present in the environment; that redundant
+predicate never creates an alternate BoundWitness or ambiguity. Thus
 every `Map<K,V>` eligible for `EcsValue` was constructed and operated with the
 same comparator later used by Canonical Value; comparator identity is never
 changed when the map enters ECS storage.
+
+C2's Map authority ends with type checking and selecting the exact
+`Eq<K,K>`/`Ord<K,K>` evidence and comparator identity. It emits no MIR/Core Map
+operation and invokes no comparator; its checked semantic operation classifies
+the future `i32` result only as negative, zero, or positive and records that
+magnitude is ignored. C3 preserves that selected evidence while lowering source
+evaluation, borrow/move/drop staging, Map operations, comparator calls, and the
+three sign branches into typed MIR. C4 separately owns sealed `EcsKey` judgment
+and the final-ID evidence it requires. C5 lowers dependency-ready roots to verified
+Generic Core and is the first M27-C slice that may execute Map search or user or
+sealed comparison during CTFE. Runtime execution remains later-gate work.
+
 `MapIter<'a,K,V>` holds one shared borrow of its map for `'a` and visits each
 live entry exactly once in that
 same key order; mutation is rejected while it lives. No insertion history, tree
@@ -1320,8 +1416,8 @@ opaque monotonic origin as `u64`, with checked saturation forbidden.
 
 | Trait family | Required semantic method/effects | User positive impl |
 |---|---|---|
-| `Copy` | no method; all fields structurally Copy and no Drop | allowed and validated |
-| `Clone` | `clone(&self) -> Self requires {} throws {}` | allowed |
+| `Copy` | sealed base/array/tuple rule below; an ordinary nominal impl has no method, all fields Copy, and no overlapping Drop | ordinary nominal impl allowed and validated |
+| `Clone` | `clone(&self) -> Self requires {} throws {}`; no compiler-owned candidate | ordinary positive impl only |
 | `Drop` | `drop(&mut self) -> ()` with declared requires and exact `throws {}` | allowed; one impl maximum |
 | `Fn`/`FnMut`/`FnOnce` | `call` with callable's exact signature/effects | compiler-derived only |
 | `Send`/`Sync`/`Unpin` | no methods; structural judgment | compiler-derived only |
@@ -1334,6 +1430,79 @@ opaque monotonic origin as `u64`, with checked saturation forbidden.
 | operator traits | one fixed method below; `throws {}` and declared requires | allowed |
 | `EcsValue`/`EcsKey` | no method; structural sealed evidence | forbidden |
 | `UnwindPayload` | no method; fully owned, sized, `'static`, and transitively reference/raw-pointer/closure/generator/capability/handle/uninitialized-state free; every reachable Drop has `requires {}` | forbidden |
+
+Compiler-known traits retain their published explicit generic arity, but their
+implicit `Self` is not an unconstrained extra dimension. The designated
+relations are closed:
+
+| Trait family | Required relation |
+|---|---|
+| `Copy`, `Clone`, `Drop`, `Send`, `Sync`, `Unpin`, `EcsValue`, `EcsKey`, `UnwindPayload` | `Self` is the operated or judged type |
+| `Fn`, `FnMut`, `FnOnce` | `Self` is the callable type |
+| `From<Source,Target>`, `TryFrom<Source,Target,Error>` | `Self = Target` |
+| `Eq<Lhs,Rhs>`, `Ord<Lhs,Rhs>`, and every binary operator trait | `Self = Lhs` |
+| `Neg<Input,Output>`, `LogicalNot<Input,Output>`, `BitNot<Input,Output>` | `Self = Input` |
+| `IntoIterator<Source,Iter>` | `Self = Source` |
+| `Iterator<Iter,Item>` | `Self = Iter` |
+
+An impl violating its compiler-trait relation is `TRAIT001`; obligation
+construction uses the same equality. Thus sealed map comparison is exactly
+`Eq<K,K>` or `Ord<K,K>` with `Self=K`, not a free third type.
+An ordinary user trait adds no equality between implicit `Self` and an explicit
+generic parameter unless its own declared predicates or signatures impose one.
+
+`Copy` has one closed compiler-evidence lifecycle. C2 may construct bodyless
+`SealedCopy` evidence only for every scalar, unit, never, any shared reference,
+any raw pointer, or any safe or unsafe function pointer regardless of its
+signature/effects; for `[T; N]` exactly when `T: Copy`; and for a tuple exactly
+when every element proves Copy. Array length zero does not waive the element
+predicate, and a shared reference needs no predicate on its referent. A mutable
+reference, unsized `str` or `[T]`, and every nominal, closure, generator,
+capability, handle, or other unlisted family receive no sealed positive fact.
+A type alias is transparent to this judgment.
+A package-owned nominal type becomes Copy only through an ordinary positive
+`impl Copy` selected under the normal orphan/coherence rules. After
+substitution, every field of every variant must prove Copy in the impl
+environment and the target match set must not overlap any `Drop` impl. Empty
+and otherwise structurally eligible nominals still require the explicit impl.
+A structurally invalid user Copy impl or Copy/Drop overlap is `DROP001`; a
+missing Copy candidate is ordinary `TRAIT002`.
+
+C2 represents one successful Copy proof as exactly one sealed base fact, one
+array proof with its ordered element proof, one tuple proof with one child per
+element in field order, one indexed `BoundWitness`, or one ordinary selected
+semantic impl key with substitution and predicate evidence. These are
+session-only checking facts. The indexed BoundWitness is legal only while the
+proof root is an actual bound-type leaf and its obligation is byte-identical to
+that indexed predicate; an identical concrete Copy predicate is never alternate
+evidence. C2 uses these facts only to discharge predicates and
+validate impls; it does not decide source moves or emit Core operands. A sealed
+fact has no ImplRow, ConcreteImpl, coherence row, method, callable body, stable
+identity, interface row, or effect edge; an ordinary user impl retains all normal impl,
+coherence, and identity authority.
+
+C3 independently rederives the exact proof when classifying each use, pattern
+binding, capture, or projection as Copy versus Move. C4 replaces only ordinary
+selected impl keys with final identities. C5 and M27-D rederive the rule after
+each closed substitution: a closed bound leaf becomes `SealedCopy` or the unique
+ordinary impl, array/tuple children rebuild recursively, and a fully closed
+proof contains no Copy BoundWitness. The Core verifier independently derives it from
+the final CoreType, canonical predicate environment, exact sealed rule, and
+verified ordinary impl universe before accepting `Copy(place)`, `PlaceCopy`, or
+reusable Copy SSA. Copy proof is never a Generic Core TraitSelection or
+TraitCall. A fabricated C2/C3 `SealedCopy` proof is `DROP001`; attempting to
+materialize a sealed base as an ImplRow, stable identity, or interface row is
+`IDENTITY001`; a producer-supplied Copy TraitSelection or TraitCall is `CORE004`;
+and a Copy operand whose type does not prove Copy is `CORE003`.
+
+Embedded-core version 1 supplies no compiler-owned `Clone` trait candidate,
+and Copy never entails Clone. Clone selection is therefore an ordinary coherent
+user impl or an exact indexed `BoundWitness` only. The branded `Rc.clone` and
+`Arc.clone` registry methods remain their separately sealed reference-count
+operations and establish no `Clone` obligation or `Self: Clone` evidence. A
+concrete scalar or compiler-owned container does not
+gain Clone merely from its shape; without an ordinary declared candidate the
+obligation is `TRAIT002`.
 
 `Ord::compare` result magnitude has no meaning. Its zero result is equivalent to
 the selected `Eq::eq` returning true; negative and positive results satisfy
@@ -1348,12 +1517,62 @@ Operator mapping is closed: unary `-` selects `Neg<Input,Output>::neg`, unary
 `~` selects `BitNot<Input,Output>::bit_not`; binary `+ - * / % << >> & ^ |`
 select respectively `Add`, `Sub`, `Mul`, `Div`, `Rem`, `ShiftLeft`,
 `ShiftRight`, `BitAnd`, `BitXor`, and `BitOr`, each parameterized as
-`Trait<Lhs,Rhs,Output>` with the lowercase operation name. `==`/`!=` use `Eq`;
-ordering operators use `Ord`; `&&`/`||` are nonoverloadable bool-only CFG
-operations. `+=` performs one sequence: evaluate and own the RHS, resolve and
+`Trait<Lhs,Rhs,Output>` with the lowercase operation name. Outside the exact
+primitive exceptions below, `==`/`!=` use `Eq` and ordering operators use `Ord`;
+`&&`/`||` are nonoverloadable bool-only CFG operations. `+=` performs one
+sequence: evaluate and own the RHS, resolve and
 read the destination once, invoke `Add<PlaceType,Rhs,PlaceType>`, fully own its
 result, drop the old value, then install the result. RHS/Add failure leaves the
 destination unchanged. No other compound assignment exists.
+
+Primitive operator selection is one closed compiler rule. Let
+`SignedInt={i8,i16,i32,i64,isize}`, `UnsignedInt={u8,u16,u32,u64,usize}`,
+`Int=SignedInt|UnsignedInt`, `Float={f32,f64}`, and
+`PrimitiveKey={(),bool,Int,char,entity}`. Before ordinary impl lookup,
+C2 may construct bodyless, exact-empty-effect `SealedPrimitiveOperator`
+evidence only for these same-type obligations:
+
+| Compiler trait obligation | Admitted type |
+|---|---|
+| `Neg<T,T>` | `T` in `SignedInt` or `Float` |
+| `BitNot<T,T>` | `T` in `Int` |
+| `Add<T,T,T>`, `Sub<T,T,T>`, `Mul<T,T,T>`, `Div<T,T,T>` | `T` in `Int` or `Float` |
+| `Rem<T,T,T>`, `ShiftLeft<T,T,T>`, `ShiftRight<T,T,T>`, `BitAnd<T,T,T>`, `BitXor<T,T,T>`, `BitOr<T,T,T>` | `T` in `Int` |
+| `Eq<T,T>` | `T` in `PrimitiveKey` |
+| `Ord<T,T>` | `T` in `PrimitiveKey` |
+| `Eq<P,P>` | one byte-identical raw-pointer type `P`, either `*const T` or `*mut T` |
+
+The output is exactly `T`, except `Eq` returns `bool` and `Ord` returns `i32`.
+Primitive-key order is false before true, typed mathematical integer order,
+Unicode scalar order, and packed unsigned entity order; unit compares as zero
+and is Eq-true. No mixed width, sign, or kind; unsigned `Neg`; float remainder/
+bitwise/shift; bool bitwise; pointer ordering/arithmetic; or other pair is
+admitted. `!bool` and `&&`/`||` remain syntax-only nontrait operations and
+furnish no `LogicalNot` evidence. Exact same-type f32/f64
+`== != < <= > >=` are a syntax-only primitive exception with
+the frozen IEEE/NaN rules: they furnish no `Eq`/`Ord` predicate or selection,
+cannot discharge a generic bound or explicit trait call, and cannot make
+`Map<f32,_>` legal. Raw-pointer `Eq` evidence is reusable, but pointer ordering
+remains unavailable. This matrix supplies no `From` or `TryFrom` candidate.
+
+`SealedPrimitiveOperator` comparison evidence is C2 authority, not sealed
+`EcsKey` proof. A nonprimitive or bound key eligible only through the structural
+EcsKey rule retains a typed `PendingC4` sealed-comparison continuation; that
+continuation fixes the Eq/Ord callable shape and comparator identity without
+branding its structural proof or leaving a `PendingC2` node. C4 alone constructs
+`SealedEcsKeyComparison`. For a primitive-key leaf it must rederive the exact
+operation above, so a Map's comparator identity and order cannot change when it
+enters ECS storage. String and eligible structural keys use the separately
+specified structural comparator, while float remains ineligible.
+
+`SealedPrimitiveOperator` may discharge a concrete compiler-trait obligation,
+an explicit compiler-trait method call, or a closed substitution of a declared
+generic bound. An open generic body retains its ordinary `BoundWitness`. The
+evidence has no ImplRow, ConcreteImpl, coherence row, stable ID, callable body,
+or effect/call-graph edge. C3 lowers direct concrete uses to the exact primitive
+operation or canonical unit constant below. C5 and M27-D rederive the matrix and
+rewrite every closed explicit or generic primitive TraitCall before Core
+verification. A closed primitive TraitCall left behind is `CORE004`.
 
 `Self` is a type only inside a trait or impl. A receiver is permitted only as
 the first method parameter. Trait-impl methods cannot spell visibility;
@@ -1365,10 +1584,56 @@ their declared methods. Multiple viable candidates are an error, never resolved
 by declaration order or return type. `for` desugars through the resolved
 `IntoIterator` and `Iterator` lang items; the query form uses sealed query
 iteration evidence and retains the nonnesting rule.
+Embedded-core version 1 enumerates no compiler-owned `IntoIterator` or
+`Iterator` impl candidate and no `ArrayIntoIter` semantic type. An ordinary `for` expression must select one
+ordinary coherent `IntoIterator<Source,Iter>` impl and then one ordinary
+coherent `Iterator<Iter,Item>` impl, or use the corresponding indexed bound
+witnesses. Arrays, slices, `Vec`, `Map`, and `MapIter` gain no automatic
+candidate; an unwrapped raw-array `for` is therefore `TRAIT002`. The sealed `Map.iter` and `MapIter.next` registry methods are direct
+inherent operations and furnish no iterator-trait evidence. A query loop is the
+sole sealed `for` exception and furnishes neither lang-item predicate. A
+package-owned nominal source and iterator may provide both ordinary impls under
+the normal orphan rule.
+The checked ordinary-`for` node retains the source expression, exact
+`IntoIterator` and `Iterator` selections, `Iter`/`Item` types, and irrefutable
+pattern. C3 evaluates the source exactly once, invokes `into_iter` exactly once,
+and stores its owned `Iter` temporary. Each iteration mutably reborrows that
+place and invokes `next`; `None` exits, while `Some` initializes one owned Item
+temporary before pattern binding and the body. `continue` returns only after the
+current item's cleanup; `break`, normal exit, panic, and unwind destroy every
+live item and then the iterator exactly once in reverse initialization order.
+Both calls are ordinary selected trait calls and introduce no sealed or
+intrinsic iterator evidence.
 Lowercase `self` without `::` is a dedicated value expression legal only in a
 method body with a receiver and resolves directly to that receiver LocalId;
 `self::name` remains a module-rooted item path. Static methods have `Self` type
 but no lowercase `self` value.
+
+Receiver syntax creates no additional type parameter. `self` and `mut self`
+both encode one `ReceiverValue` parameter whose type is designated `Self`; the
+`mut` bit changes only the body-local binding's assignability and is excluded
+from callable and DefinitionId shape. `&'a self` encodes `ReceiverShared` and
+`&'a Self`; `&'a mut self` encodes `ReceiverMutable` and `&'a mut Self`. Hidden
+elided input-lifetime binders follow the method's source generic positions in
+parameter first-occurrence order, so for a method with `M` source generic
+positions an elided borrowed receiver uses lifetime
+`BoundLifetime{depth:0,index:M}`. An elided receiver-derived output reuses that
+same binder. An explicit receiver lifetime uses its declared method coordinate
+and allocates no hidden receiver binder for that reference.
+
+A trait impl's method-name set equals the trait's required method-name set and
+supplies every required method exactly once; missing, extra, duplicate,
+visibility-spelling, or mismatched methods are `TRAIT001`. After capture-avoiding
+trait-argument and designated-`Self` substitution, conformance requires the
+exact method generic kinds and arity, canonical predicates, receiver presence
+and normalized mode/type/lifetime coordinates, remaining parameter and result
+types, safety bit, and callable kind. `self` and `mut self` conform; value,
+shared, and mutable receiver modes do not interchange. Declared
+`requires`/`throws` obey the callable-subtyping rule rather than textual source
+equality: the normalized impl callable must be a subtype of the substituted
+trait callable, so the impl requires and throws sets are each subsets of the
+trait sets. A static trait method remains receiverless in the impl even when its
+signature uses designated `Self`.
 
 A callable value with effects `(requires R, throws T)` is a subtype of an
 otherwise identical callable type `(requires R2, throws T2)` exactly when
@@ -2316,8 +2581,32 @@ element type and canonical integer-const tree; tuple appends ordered type list;
 reference appends mutability, lifetime tree, then pointee; raw pointer appends
 mutability then pointee; nominal appends `DefinitionId` and ordered generic
 arguments; function pointer appends unsafe bit, ordered parameter types, result,
-requires, and throws; bound type appends de Bruijn depth/index. A closure appends its
-owning `DefinitionId`, semantic-expression ordinal, ordered capture
+requires, and throws; bound type appends de Bruijn depth/index.
+
+Every trait declaration owns one compiler-synthesized implicit `Self` type slot
+in the trait declaration's binder frame. If the trait has `N` source generic
+positions, counting lifetime, type, and integer-const positions in source order,
+those positions retain indices `0..N-1` and implicit `Self` is tag 26
+`BoundType{depth:0,index:N}` in the trait's own predicates and shape. Inside an
+immediately owned trait method it is `BoundType{depth:1,index:N}`; each further
+nested declaration binder increments depth. The slot is not a source
+`GenericParameter`, does not change trait-path arity, and cannot be supplied by
+source syntax. Every bound coordinate is validated against its active binder
+frame and kind; the sole extra coordinate beyond the source generic vector is
+this trait-`Self` type slot.
+
+For `impl<G...> Trait<A...> for Target`, conformance applies one capture-
+avoiding substitution: the implicit trait-`Self` slot becomes the normalized
+pre-identity `Target` tree and the explicit trait binders become the ordered
+`A...` arguments. Method-local binders remain innermost and are alpha-normalized
+before comparison. In an inherent or trait impl's own header, `Self` normalizes
+directly to the canonical impl target with impl generics at depth zero; inside an
+owned impl method the target is relowered with those impl generics at depth one.
+A wrong depth, index, or kind; a trait reference with an extra `Self` argument;
+a nominal-path encoding of `Self`; or `Self` outside a trait/impl is `TYPE001` in
+source and `IDENTITY001` in a mutated checked or identity tree.
+
+A closure appends its owning `DefinitionId`, semantic-expression ordinal, ordered capture
 ordinal/mode/type rows, callable parameter/result/effect shape, and generic
 arguments. Every generator state uses tag 28 followed by target tag `1=named`
 plus its generator DefinitionId, complete explicit generic arguments, and the
@@ -2691,8 +2980,29 @@ span uses that module's file. A DefinitionRow's module, declaration kind, name,
 owner chain, and semantic signature reconstruct the exact DefinitionId preimage.
 References inside a shape are expanded through the referenced row's canonical
 package/target/module/kind/name path rather than accepted as opaque raw IDs.
-The verifier computes definitions before types and rejects a self-consistent raw
-ID remap just as it rejects a single wrong ID.
+The producer and verifier both enforce a definition-before-type barrier for
+ordinary workspace identities. At each C4 or dependency-ready C5 frontier, the
+producer first walks dependency-ready definitions in complete
+`SemanticDefinitionKey` order, expands declaration-shape nominal references as
+tag-29 paths, computes and collision-checks every final `DefinitionId`, and
+publishes the complete semantic-key-to-definition-ID map for that frontier.
+DefinitionId declaration shapes keep tag-30/tag-31 and every other nested type
+as symbolic path-expanded children; no TypeId may be used to construct a
+DefinitionId. Only after the complete definition barrier may the producer
+replace nominal-path leaves with tag-24 IDs and build the type-dependency DAG
+required by nested final TypeId fields. It repeatedly selects dependency-ready
+type trees in complete pre-identity byte order, computes and collision-checks
+their TypeIds, and publishes a TypeId only after every child dependency exists.
+A missing dependency or structural type cycle is `IDENTITY001`. Final definition
+and type vectors are independently raw-ID sorted and duplicate-free. No
+temporary or provisional ID is legal. The already-verified embedded-Core
+authority is input to this process, not a workspace identity produced out of
+order. Const-dependent definitions and types remain absent together until their
+C5 frontier.
+
+The verifier repeats the same barrier and rejects a self-consistent raw-ID
+remap, a TypeId produced before its required DefinitionId map, or any identity
+derived from a pending placeholder, just as it rejects a single wrong ID.
 
 Every SemanticDefinitionInventory row carries the declaration's explicit-or-
 defaulted declared visibility and one complete MemberVisibilityPath row for each
@@ -3787,7 +4097,9 @@ projected result and is rechecked rather than trusted.
 Operand ownership is closed. `Constant` produces the constant's typed value;
 `Copy(place)` is legal only for an initialized `Copy` path and leaves it
 initialized; `Move(place)` transfers ownership and deinitializes the exact move
-path. For `Value(v)`, the verifier derives Copy from `v`'s CoreType. A Copy SSA
+path. For `Value(v)`, the verifier rederives Copy from `v`'s CoreType, the
+canonical predicate environment, the verified ordinary Copy-impl universe, and
+the exact `SealedCopy` rule above. A Copy SSA
 value may be used any number of times. Every non-Copy SSA definition or block
 parameter is affine: on each reachable dynamic path it is consumed exactly once
 by one ownership-taking operand position, transferred once through the selected
@@ -3962,6 +4274,25 @@ CallableToFunctionPointer { callable:Operand, target_signature:TypeId }
 are CFG branches. `CompareOp` is exactly `Equal`, `NotEqual`, `Less`,
 `LessEqual`, `Greater`, or `GreaterEqual`. The scalar field determines width/
 signedness, is part of verification, and cannot request an unsupported pair.
+
+The supported pairs exactly match C2's sealed matrix and primitive exceptions.
+`WrappingNeg` admits `SignedInt`; `FloatNeg` admits `Float`; `BitNot` admits
+`Int`; and `BoolNot` admits only bool. Wrapping add/subtract/multiply, masked
+shifts, and integer bitwise operations admit `Int`; float add/subtract/multiply/
+divide admit `Float`; both operands and the result use one exact same type.
+Integer divide/remainder are never `PrimitiveBinaryTotal`: they use
+`InvokeOperation::IntegerDivide`/`IntegerRemainder` for `Int` and preserve the
+zero and signed-MIN/-1 traps. `PrimitiveCompare` admits identical
+`Int`/bool/char/entity operands for all six operations, identical `Float`
+operands for all six under the frozen NaN rules, and one byte-identical raw-
+pointer type only for Equal/NotEqual. C3 lowers sealed primitive `Eq::eq` to
+one Equal comparison over the already-evaluated operand pair. Sealed primitive
+`Ord::compare` uses that pair once, tests Less first and returns `-1i32` when
+true, otherwise tests Greater and returns `1i32` when true, otherwise returns
+`0i32`. Those two comparisons and branches are the exact Generic Core/CTFE step
+order. Source comparison operators use the one requested `PrimitiveCompare`.
+Unit uses constant Eq-true/compare-zero results rather than `PrimitiveCompare`.
+Any other pair is `CORE002`.
 
 Instructions introduce no source-visible control edge. For verified safe
 operands they are total except for the already-specified external CTFE
@@ -4267,12 +4598,18 @@ TraitSelection = ConcreteImpl {
 EcsKeyBoundEvidence { structural_path:Vec<u64>, environment_index:u64 }
 ```
 
+`SealedCopy` is deliberately absent from this sum: Copy has no callable method
+or Core TraitCall, and operand ownership verification rederives its exact proof.
+
 A ConcreteImpl is used only when generic selection already has one unique
 implementation and records its complete substitution/evidence. A BoundWitness
 must be byte-identical to the indexed canonical body predicate and is used when
 selection depends on a bound type. C verifies that witness without guessing an
 implementation. A SealedEcsKeyComparison is legal only for an exact embedded-
-core `Eq<K,K>` or `Ord<K,K>` obligation whose `K` equals key_type. The verifier
+core `Eq<K,K>` or `Ord<K,K>` obligation whose `K` equals key_type and whose root
+is not `PrimitiveKey`; a primitive root must already have been rewritten through
+`SealedPrimitiveOperator`. PrimitiveKey leaves inside a nonprimitive structural
+proof remain legal and use the exact primitive operation above. The verifier
 constructs one finite canonical structural-EcsKey proof graph from key_type.
 Each node's child vector is the comparator order fixed above: an array, Box, or
 Vec has element/pointee child zero; a tuple or record uses element/field order;
@@ -4294,14 +4631,30 @@ alternate evidence. The verifier rejects any overlapping user Eq/Ord selection,
 and the selection invokes the compiler-sealed structural comparator rather than
 an ImplRow method.
 
+`SealedPrimitiveOperator` is C2/C3 rewrite evidence and is deliberately not a
+Generic Core `TraitSelection` variant. A parameterized template may retain its
+ordinary `BoundWitness`; after closed substitution, C5 and M27-D independently
+rederive the sealed matrix and replace the call with `PrimitiveUnary`,
+`PrimitiveBinaryTotal`, `PrimitiveCompare`, or integer divide/remainder as
+assigned above, or with the canonical unit Eq/Ord constant result. A closed
+primitive TraitCall left unreduced, a fabricated
+ConcreteImpl, or sealed evidence for a nonmatrix pair is `CORE004`; an otherwise
+malformed primitive opcode/pair is `CORE002`.
+
 M27-D substitutes each instance and reruns the same deterministic selection,
-specialization, and sealed-EcsKey rules. It replaces every BoundWitness with one
-ConcreteImpl before `VerifiedInstanceCore`, but preserves the
-SealedEcsKeyComparison variant, substitutes its obligation/key type, and
-independently rebuilds its exact path-qualified bound evidence from the
-instantiated type and predicate environment. A fully closed instance has zero
-rows. The variant never becomes a user or synthetic ConcreteImpl and lowers only
-to the sealed comparator operation. Compiler-
+specialization, primitive, callable, and sealed-EcsKey rules. Before
+`VerifiedInstanceCore`, each closed BoundWitness becomes exactly one ordinary
+ConcreteImpl, sealed primitive opcode rewrite, closed callable rewrite, or
+SealedEcsKeyComparison. The EcsKey variant substitutes its obligation/key type
+and independently rebuilds its exact path-qualified bound evidence from the
+instantiated type and predicate environment. RootSlice construction and M27-D
+then rederive the root category: if substitution closes that root to a
+`PrimitiveKey`, they replace the variant through `SealedPrimitiveOperator` (or
+the canonical unit Eq/Ord constant) and retain no `SealedEcsKeyComparison`; only
+a still-bound or nonprimitive structural root preserves that variant and its
+rebuilt rows. A fully closed nonprimitive instance has zero rows. The variant
+never becomes a user or synthetic ConcreteImpl and lowers only to the sealed
+comparator operation. Compiler-
 derived Fn/FnMut/FnOnce
 implementations have no forgeable ImplRow or ConcreteImpl. Once a callable
 substitution is closed, RootSlice construction and M27-D use one exact rewrite
@@ -4682,7 +5035,7 @@ M27-C reserves these exact deterministic codes:
 | `MOVE002` | Illegal move or partial move |
 | `BORROW001` | Conflicting shared or mutable borrow |
 | `BORROW002` | Escaping reference or unsatisfied lifetime |
-| `DROP001` | Invalid `Copy`, `Clone`, or `Drop` contract |
+| `DROP001` | Invalid Copy or Drop ownership/destruction contract |
 | `UNSAFE001` | Unsafe operation outside a verified unsafe region |
 | `EFFECT001` | Duplicate, malformed, or noncanonical effect declaration |
 | `EFFECT002` | Missing or incompatible throws/requires effect |
@@ -4756,6 +5109,34 @@ item count, declaration ordinal, body digest, or exact source bytes may affect a
 production code path. Each slice grows both workspaces without accepting syntax
 whose semantics belong to a later slice.
 
+`tests/m27c1` is an immutable predecessor corpus. C2's two real-workspace
+descendants live under `tests/m27c2/v1/language-game` and
+`tests/m27c2/v1/language-environment`; focused vectors live under
+`tests/m27c2/v1/vectors`. `v1` is a test-corpus version, not a language or
+artifact version. Later incompatible fixture changes create `v2` rather than
+rewriting a closed corpus. C2 tests always name the version explicitly and
+continue running the complete C1 suite unchanged. Before the C2 corpus is
+frozen, `.gitattributes` adds exact `tests/m27c2/**/*.arc text eol=lf`,
+`tests/m27c2/**/Arche.toml text eol=lf`, and
+`tests/m27c2/**/*.txt text eol=lf` rules plus
+`tests/m27c2/**/*.bin binary`. Every corpus golden first proves byte-for-byte
+agreement among the Git blob, index, current worktree, and a fresh detached
+checkout, matching the immutable C1 cross-host rule.
+
+A semantic descendant may repair a C1 syntax-only form that has no 0.1 semantic
+authority; it does not turn that form into an implicit compiler feature. C2 v1
+removes unused concrete primitive-`Clone` requirements, retains Clone coverage
+through a package-owned nominal ordinary impl whose borrowed receiver calls the
+bound child's `clone`, and uses package-owned `CounterSource`/`CounterIter`
+nominals with ordinary `IntoIterator<CounterSource,CounterIter>` and
+`Iterator<CounterIter,i32>` impls for its positive ordinary `for`. The original
+raw-array loop remains in the immutable C1 parser/HIR corpus and becomes an
+exact `TRAIT002` focused C2 negative. The descendant also removes every inherited
+visibility spelling from trait-impl methods and retains one focused exact
+`TRAIT001` visibility-spelling negative. The complete positive semantic
+categories remain represented without claiming `CloneByCopy`, `ArrayIntoIter`,
+or a synthetic compiler ImplRow.
+
 The positive/golden matrix is mandatory:
 
 - C1 snapshots every lexical token/literal form, item/type/generic/path form,
@@ -4790,27 +5171,77 @@ The positive/golden matrix is mandatory:
   `1..=2`, `1.`, and invalid `1.foo`; grammar negatives cover every empty-comma
   delimiter form and singleton/multielement tuple double comma.
 - C2 covers every scalar and const-independent aggregate type plus symbolic
-  array/const-generic obligations, safe coercion and explicit conversion,
-  direct/generic/method/operator selection, orphan/overlap/default
-  specialization, ordinary Map ordering, match ergonomics, every pattern form,
-  guards, reachability, and exhaustive decision trees. Literal/type goldens pin
-  decimal and hexadecimal f32/f64 round-to-nearest-even results at halfway,
-  subnormal, signed-zero, maximum-finite, and overflow boundaries. Ord goldens
-  prove negative/zero/positive interpretation, zero/Eq consistency, and that
-  result magnitude is ignored. Paired otherwise-identical impls flip only
-  `is_default` and prove the impl, owned-method DefinitionIds, specialization
-  choice, coherence row, and InterfaceHash change while an inherent impl rejects
-  the marker. Two conditional inherent impls over the same nominal target use
-  the same method name/signature but different canonical predicates and prove
-  distinct owner chains, owned-method DefinitionIds, and public interface rows;
-  changing one predicate changes that method ID and InterfaceHash, while
-  repeating the method under a byte-identical canonical inherent head is
-  rejected.
+  array/const-generic obligations, safe coercion and explicit conversion
+  selection, direct/generic/method/operator selection, orphan/overlap/default
+  specialization, ordinary Map comparison selection, match ergonomics, every
+  pattern form, guards, and const-independent reachability and exhaustive
+  decision trees. Const-dependent pattern leaves use the checked `NeedsCtfe`
+  form above. Literal/type goldens pin decimal and hexadecimal f32/f64 round-to-
+  nearest-even results at halfway, subnormal, signed-zero, maximum-finite, and
+  overflow boundaries. Map/Ord goldens pin the selected trait/method, exact
+  empty throws, declared requires, `i32` result, and sealed-versus-user evidence;
+  C2 neither executes the comparator nor claims that arbitrary user impls obey
+  its semantic laws. Paired otherwise-identical trait impl fixtures flip only
+  source `is_default` and prove that the exact pre-identity impl symbolic-shape
+  bytes, trait-impl method owner-path bytes, semantic-keyed specialization
+  choice, and pending public-projection input change; an inherent impl rejects
+  the marker. They assert no stable ID or final InterfaceHash. Two conditional
+  inherent impls with one method name/signature and different canonical
+  predicates prove distinct pre-identity owner-head and method-owner inputs,
+  while a byte-identical canonical head rejects the duplicate before any ID is
+  minted.
+- C2 authority-focused goldens pin zero-generic and generic trait-`Self`
+  coordinates, method outer-binder depth, impl-target relowering, all four
+  receiver modes, explicit versus hidden receiver lifetimes, static methods,
+  exact trait-method-set conformance, and every compiler-trait designated-`Self`
+  relation. Candidate-vector permutations produce the same selected semantic
+  key; Development/unrelated packages add no candidates; and a potentially
+  viable `NeedsCtfe` candidate defers rather than disappearing. A nested
+  `PendingC2` leaf remains detectable beside simultaneous `PendingC4` and
+  `NeedsCtfe` state. One package-owned nominal `From` and `TryFrom` pair succeeds,
+  while a primitive pair with no declared impl is `TRAIT002`. A const-pattern
+  and a const-ended range retain exact checked pending decision leaves without
+  claiming value-dependent reachability or exhaustiveness. Every
+  `SealedPrimitiveOperator` row and its unsigned-Neg, float-Rem, pointer-Ord,
+  bool-bitwise, explicit-bool-LogicalNot, mixed-type, explicit-float-Eq/Ord, and
+  `Map<f32,_>` near misses are pinned; none creates `From`/`TryFrom` evidence.
+  `SealedCopy` goldens pin every scalar, unit, never, shared reference, both raw
+  pointer mutabilities, safe/unsafe function pointer, `[i32;0]`, `[i32;3]`,
+  symbolic `[T;N] where T:Copy`, and tuple row. Mutable reference, slice, `str`,
+  `[String;1]`, `(i32,String)`, `Option<i32>`, and an otherwise eligible nominal
+  without an explicit impl are negative. An ordinary package-owned Copy impl,
+  its generic i32/String substitutions, non-Copy field, and Copy/Drop overlap
+  pin selection, `TRAIT002`, and `DROP001`. Ordinary package-owned Clone and an
+  indexed `T:Clone` witness succeed, while concrete i32/String Clone and deriving
+  Clone from only `T:Copy` are `TRAIT002`; `Rc.clone`/`Arc.clone` select only
+  their intrinsic registry rows. A package-owned source/iterator pair drives a
+  positive ordinary `for`; raw array, Vec, Map, and MapIter ordinary loops are
+  `TRAIT002`; and a query loop remains sealed with zero iterator-trait
+  selections. Corruption vectors
+  reject a wrong `Self` depth/index/kind, source-supplied implicit slot, nominal
+  `Self`, receiver/method-set mismatch, masked `PendingC2`, extra or missing
+  candidate, fabricated `SealedCopy` as exact `DROP001`, and provisional stable
+  identity with the exact assigned diagnostic.
 - C3 covers direct/mutual recursion, all place projections, partial/full moves,
   definite initialization, Copy/Clone/Drop, assignment staging, temporary and
   lexical drop order, NLL reborrows, lifetime variance/elision, raw operations,
   Pin/MaybeUninit, safe/unsafe named-generator construction boundaries, and
-  normal/checked/panic/trap cleanup CFGs. Binder-keyed region substitutions are
+  normal/checked/panic/trap cleanup CFGs. Repeated scalar/shared-reference/raw-
+  pointer/function-pointer uses lower as Copy, mutable references and unlisted
+  nominals lower as Move, recursive array/tuple cases match the C2 proof, and an
+  ordinary user Copy impl enables duplication that becomes a move when the impl
+  is removed. Pattern-binding and capture pairs prove C3, not C2, makes the
+  source ownership decision. `CounterSource`/`CounterIter` proves one source
+  evaluation, one ordinary IntoIterator call, repeated mutable-reborrow
+  Iterator calls, Some/None branching, exact item/iterator cleanup on continue,
+  break, normal, panic, and unwind paths, and both effect-empty ordinary call
+  edges. Query iteration still lowers only through its sealed query operation;
+  raw array, Vec, Map, and MapIter negatives never reach MIR. Operator goldens lower every sealed
+  primitive row to its exact unary/binary/compare instruction or trapping
+  integer divide/remainder Invoke or canonical unit constant, lower bool short-
+  circuit to CFG, and preserve
+  the selected three-way Map comparison sign branches while ignoring magnitude.
+  Binder-keyed region substitutions are
   golden-tested for `pick<'a,'b>` through direct, trait, function-pointer, and
   closure calls with different local loans, including nested `&'a &'b T`
   referent projection. Bound-region bundles round-trip `id<T>`, pointwise-union
@@ -4849,12 +5280,21 @@ The positive/golden matrix is mandatory:
   families restricted to Static origins. A first-class named function is
   normalized to its exact tag-25 function-pointer value before the closed
   Send/Sync/Unpin table is applied, while the same syntactic named-path call
-  remains a DirectCall. Other cases cover atomic ordering, EcsValue/EcsKey, const-
-  independent DefinitionId/TypeId vectors including same-named trait and impl
-  methods under their distinct owner chains, a trait/impl method rename that
-  changes the enclosing DefinitionId/InterfaceHash, and two differently named
-  same-signature methods that retain distinct entries; explicitly pending identity/
-  interface skeletons. `verify_semantic_inventory` seals the exact immutable
+  remains a DirectCall. Other cases cover atomic ordering, EcsValue/EcsKey, and
+  const-independent DefinitionId/TypeId vectors including same-named trait and
+  impl methods under their distinct owner chains. C4 mints the const-independent
+  impl and owned-method DefinitionIds from C2's pre-identity inputs, records
+  final-ID specialization-parent/coherence relations, and builds the matching
+  `PendingSkeleton` interface projection. The C2 `is_default` flip, inherent-
+  predicate pair, and trait/impl method rename change exactly their expected IDs
+  and pending coherence/member payloads; two differently named same-signature
+  methods retain distinct entries. Reversing HIR/inventory producer traversal
+  yields identical raw ID vectors. Focused dependency-DAG vectors cover a
+  nominal TypeId after its complete DefinitionId map and a nested TypeId after
+  every child; an early TypeId, missing child, cycle, single wrong ID, duplicate
+  raw ID, and self-consistent global remap each fail `IDENTITY001`. C4 claims no
+  final InterfaceHash.
+  `verify_semantic_inventory` seals the exact immutable
   workspace/target/module/declaration/body inventory with symbolic pending shapes
   before C5 consumes it. One mutual-recursion fixture changes its actual effect
   set inside an unchanged declared superset and proves its DefinitionIds remain
@@ -4944,8 +5384,24 @@ The positive/golden matrix is mandatory:
   the exact Drop(K) requires summary. Direct `K`, `Vec<Option<K>>`, and two-bound
   key Eq/Ord Core calls carry the exact path-qualified SealedEcsKeyComparison
   rows, and Map intrinsic bounds use the same structural entailment. Closed
-  substitution preserves the selection variant, empties its bound rows, and
-  independently rederives the comparator without an ImplRow. Generic Core cases transfer non-Copy SSA
+  substitution that remains nonprimitive structural preserves the selection
+  variant, empties its bound rows, and independently rederives the comparator
+  without an ImplRow; substitution closing the root to PrimitiveKey instead
+  removes that variant and rewrites through `SealedPrimitiveOperator` or the
+  canonical unit constant. Copy-verification vectors cover sealed base,
+  recursive array/tuple, indexed-bound, and ordinary-user-impl proofs for
+  `Copy(place)`, `PlaceCopy`, and reusable SSA in Generic Core and after M27-D
+  substitution; every fully closed case has rederived its children and retains
+  no Copy BoundWitness. Mutable reference, unlisted nominal, nominal without its
+  selected impl, and a closed generic substitution whose Copy predicate fails
+  are `CORE003`; any producer-supplied Copy TraitSelection or remaining Copy
+  TraitCall is `CORE004`. Ordinary-`for` Core/D vectors retain two exact
+  BoundWitness TraitCalls while their source and iterator types remain bound;
+  closed substitution reselects the unique ordinary IntoIterator and Iterator
+  ConcreteImpls and retains no sealed iterator evidence. A swapped, missing, or
+  wrong impl/evidence row, or an unresolved closed iterator witness, is
+  `CORE004`; query iteration uses only its sealed query operation, and every
+  ordinary built-in-container negative was rejected before MIR/Core. Generic Core cases transfer non-Copy SSA
   owners through block parameters, install otherwise-unused values into cleanup
   Places, and project non-Copy aggregates only after Place materialization.
   One-byte heap-limit edges cover Box and Vec payloads containing
@@ -4967,7 +5423,13 @@ The positive/golden matrix is mandatory:
   sealed provenance/relocation rows. An immutable static containing String and
   custom Drop is read twice: its initializer executes once as its own root, each
   consumer mounts one shared external slot without heap recharge, and no read or
-  evaluator teardown runs its Drop. Successful CTFE values normalize and
+  evaluator teardown runs its Drop. Map CTFE goldens prove negative/zero/positive
+  comparator interpretation, zero/Eq consistency, and that result magnitude is
+  ignored. The paired C2/C4 `is_default`, inherent-predicate, and method-rename
+  fixtures finalize their public projections and prove the expected final
+  InterfaceHash changes. Each newly dependency-ready trait selection replays in
+  raw DefinitionId order and maps to its retained semantic impl key; a remapped
+  selection fails `IDENTITY001`. Successful CTFE values normalize and
   complete every const-dependent DefinitionId and TypeId; result digests certify
   provenance and enter exported const/static InterfaceHash
   vector. CompleteWorkspace independently rebuilds each PackageId, every
@@ -5009,8 +5471,14 @@ reserved keyword; invalid path roots, aliases, NFC/case/physical identities,
 PackageNodeId/TargetId checked exhaustion (`IDENTITY001`), a missing or corrupt
 registry package-manifest span (`DEPENDENCY003` before allocation), visibility,
 entry/root-world signatures, types/generic kinds/sized recursion,
-integer and finite-float literal fit/rounding/coercion; missing/ambiguous trait selection, orphan/overlap/invalid
-specialization and method lookup; invalid/refutable/nonexhaustive/unreachable
+integer and finite-float literal fit/rounding/coercion; wrong implicit-`Self`
+coordinate/kind/arity or nominal spelling; receiver, trait-method-set, and trait-
+impl visibility mismatch; missing/ambiguous trait or explicit-conversion
+selection, including unsigned Neg, float Rem, pointer Ord, bool bitwise, mixed
+primitive rows, explicit bool LogicalNot, explicit float Eq/Ord, and
+`Map<f32,_>` as `TRAIT002`; a
+nonidentical float comparison as `TYPE002`; orphan/overlap/invalid specialization
+and method lookup; invalid/refutable/nonexhaustive/unreachable
 patterns and binding modes; every move/init/borrow/lifetime/drop/unsafe/Pin
 violation; every effect mismatch, nonexhaustive catch, invalid throw/rethrow,
 capability forge/static/capture/environment path; a duplicate inherent method
@@ -5057,6 +5525,8 @@ final-ID state, or CtfeRoot owner; wrong
 arity/result/effect/evidence; forged
 actual-effect summary, either declared/inferred boundary discriminator, its independent boundary subset/equality,
 compiler-callable ConcreteImpl, unrewritten closed callable witness, or
+unrewritten closed primitive TraitCall, fabricated sealed primitive evidence,
+unsupported primitive opcode/pair, or
 SealedEcsKeyComparison with the wrong obligation/key/path/index, a missing,
 extra, duplicate, or reordered bound-leaf row, a nonleaf path, zero rows despite
 an unresolved bound leaf, no complete structural proof, or a competing user
@@ -5400,10 +5870,10 @@ M27-D cannot begin merely because an earlier slice merges.
 |---|---|
 | **M27-C0 — exact contract** | The full grammar, semantic edge rules, identity inputs, Core opcode/verifier schema, CTFE accounting/includes, diagnostic taxonomy/order, golden formats, and later-gate exclusions are normative. It adds no production language implementation. |
 | **M27-C1 — syntax/HIR/type shapes** | Immutable snapshots produce complete AST bodies and package-aware resolved symbolic HIR; every selected type/generic kind and byte-exact identity input tree is represented; AST/HIR/type-shape/generic encoder goldens pass; no accepted body is skipped, reopened, or assigned a provisional stable ID. |
-| **M27-C2 — traits/operators/patterns** | Const-independent type checking, explicit conversions, symbolic type-level-const obligations, static trait selection, orphan/coherence/`impl default`, operator dispatch, exhaustive pattern decision trees, and their exact positive/negative goldens pass without a concrete instance graph. Pattern ownership validity remains integrated with C3. A const-dependent type/selection remains explicitly pending and cannot make a target successful before C5. |
+| **M27-C2 — traits/operators/patterns** | Const-independent type checking, explicit conversion selection, symbolic type-level-const obligations, static trait selection, orphan/coherence/`impl default`, operator dispatch, const-independent exhaustive decision trees, checked `NeedsCtfe` pattern leaves, and their exact positive/negative goldens pass without a concrete instance graph. Pattern ownership validity remains integrated with C3. A const-dependent type, selection, or pattern decision remains explicitly pending and cannot make a target successful before C5. |
 | **M27-C3 — MIR/calls/ownership** | Typed generic MIR contains CFGs, direct/mutual recursion, move paths, pattern binding moves, NLL, unsafe regions, definite initialization, Drop, and cleanup tokens/edges driven by declared effects; RHS-before-replacement and exact-once cleanup proofs pass. Runtime allocation/glue, native frames, and native unwind remain later. |
 | **M27-C4 — effects/stateful abstractions/semantic IDs** | Deterministic recursive throws/requires fixed points, schedule unions, capability/environment restrictions, closure captures/Fn classes, pinned generators, structural Send/Sync, atomic typing, and generic EcsValue/EcsKey judgments pass. The immutable semantic workspace inventory is sealed. Const-independent semantic shapes produce final DefinitionId/TypeId vectors; const-dependent identities and the interface remain explicitly pending. It performs no host/world/thread execution. |
-| **M27-C5 — verified Core/CTFE/interface** | Each dependency-ready closed root first lowers to and passes the RootSlice Generic Core verifier, then one explicit-frame hermetic evaluator covers the complete CTFE language, owned logical values, cleanup, includes, and all budgets across two structurally different workspaces. Successful results finalize const-dependent type/trait judgments and DefinitionId/TypeId/InterfaceHash inputs; only then does every accepted body lower into independently verified CompleteWorkspace Generic Core. Parameterized const templates are verified for D-time substitution. It emits no object, serialized Core, runtime value, observation, Machine IR, or executable. |
+| **M27-C5 — verified Core/CTFE/interface** | Each dependency-ready closed root first lowers to and passes the RootSlice Generic Core verifier, then one explicit-frame hermetic evaluator covers the complete CTFE language, owned logical values, cleanup, includes, and all budgets across two structurally different workspaces. Successful results finalize const-dependent type/trait judgments, pattern decisions, and DefinitionId/TypeId/InterfaceHash inputs; only then does every accepted body lower into independently verified CompleteWorkspace Generic Core. Parameterized const templates are verified for D-time substitution. It emits no object, serialized Core, runtime value, observation, Machine IR, or executable. |
 | **M27-C6 — public closure** | `arche check` runs the complete B-to-C pipeline before atomic lock publication; failures preserve locks and leave no temporary/snapshot; deterministic repetition, M26 isolation, both PowerShell editions, strict/full local gates, adversarial audit, and exact PR-head/merged-main protected CI pass and are recorded in the sole M27-C closure entry in `WORK_LOG.md`. Only C6 marks M27-C Done and promotes M27-D. |
 
 No gate may weaken or silently defer a contract assigned to it. If an external service, hosted runner, production domain, credential, signing root, or package namespace required by a gate is unavailable, that gate and M27 remain blocked.
