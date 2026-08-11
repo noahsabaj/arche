@@ -11159,7 +11159,7 @@ mod tests {
         let digest = uppercase_hex(&digest.finalize());
         assert_eq!(
             digest,
-            "FA1B997691E535F5B02E6DA8FD85087EAFF66048049B5658EABAFB89AEC199EC"
+            "7429C71C3AD17941CD845ECBCD4877935F0CCD94B725926D76668A0BADB81D08"
         );
     }
 

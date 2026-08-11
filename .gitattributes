@@ -1,0 +1,6 @@
+# Frozen cross-host source corpora must expose their committed bytes verbatim.
+.gitattributes text eol=lf
+tests/m27c1/**/*.arc text eol=lf
+tests/m27c1/**/Arche.toml text eol=lf
+tests/m27c1/**/*.txt text eol=lf
+tests/m27c1/**/*.bin binary
