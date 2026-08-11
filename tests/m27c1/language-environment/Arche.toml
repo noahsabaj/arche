@@ -1,0 +1,32 @@
+schema = 1
+
+[package]
+name = "fixtures/language-environment"
+version = "0.1.0"
+edition = "2026"
+arche = ">=0.0.0"
+publish = false
+
+[workspace]
+members = [".", "packages/collections", "packages/empty", "packages/test-support"]
+default-members = ["."]
+
+[lib]
+path = "src/lib.arc"
+
+[[environment]]
+name = "training"
+path = "src/environment.arc"
+world = "package::TrainingWorld"
+profile = "training"
+
+[environment-profile.training]
+reset = "package::Reset"
+step = "package::Step"
+self-play = "package::SelfPlay"
+
+[dependencies.collections]
+path = "packages/collections"
+
+[dev-dependencies.test_support]
+path = "packages/test-support"
