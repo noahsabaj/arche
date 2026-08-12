@@ -9,6 +9,6 @@ publish = false
 [dependencies]
 arche-foundation = { path = "../arche-foundation" }
 arche-frontend = { path = "../arche-frontend" }
-
-[dev-dependencies]
 arche-package = { path = "../arche-package" }
+num-bigint = "=0.4.8"
+num-traits = "=0.2.19"
