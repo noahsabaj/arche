@@ -1,0 +1,27 @@
+schema = 1
+
+[package]
+name = "fixtures/language-game"
+version = "0.1.0"
+edition = "2026"
+arche = ">=0.0.0"
+publish = false
+
+[workspace]
+members = [".", "packages/empty", "packages/math", "packages/test-support"]
+default-members = ["."]
+
+[lib]
+path = "src/lib.arc"
+
+[[bin]]
+name = "server"
+path = "src/main.arc"
+world = "package::ArenaWorld"
+capabilities = ["stdio", "udp"]
+
+[dependencies.math]
+path = "packages/math"
+
+[dev-dependencies.test_support]
+path = "packages/test-support"
