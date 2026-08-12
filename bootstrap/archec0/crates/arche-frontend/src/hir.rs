@@ -21,11 +21,11 @@ mod shape;
 mod workspace_frontend;
 
 pub use self::inventory::{
-    encode_inventory_c1, CtfeBudgetsSkeleton, DependencyKind, ManifestCapability,
-    MemberVisibilityPath, ModuleRef, Namespace, PackageDependencySkeleton,
-    PackageProvenanceSkeleton, PackageSourceSkeleton, SemanticBindingInventorySkeleton,
-    SemanticBindingOrigin, SemanticBindingPath, SemanticBindingTarget,
-    SemanticBodyInventorySkeleton, SemanticBodyKey, SemanticBodyKind,
+    encode_inventory_c1, encode_semantic_definition_key_session, CtfeBudgetsSkeleton,
+    DependencyKind, ManifestCapability, MemberVisibilityPath, ModuleRef, Namespace,
+    PackageDependencySkeleton, PackageProvenanceSkeleton, PackageSourceSkeleton,
+    SemanticBindingInventorySkeleton, SemanticBindingOrigin, SemanticBindingPath,
+    SemanticBindingTarget, SemanticBodyInventorySkeleton, SemanticBodyKey, SemanticBodyKind,
     SemanticDefinitionInventorySkeleton, SemanticDefinitionKey, SemanticInventorySkeleton,
     SemanticMemberVisibility, SemanticModuleInventorySkeleton, SemanticPackageInventorySkeleton,
     SemanticTargetContractSkeleton, SemanticTargetInventorySkeleton, Visibility,
@@ -53,14 +53,16 @@ pub use self::shape::{
 };
 pub use self::workspace_frontend::{
     check_workspace_c1, dump_hir_c1, AssociatedPathCandidate, AssociatedPathOwner,
-    AssociatedPathResolution, BuiltinRes, BuiltinResTarget, FrontendOutput, GenericParameterId,
-    HiddenLifetimeBinder, HiddenLifetimeBinderSource, HirBinding, HirBindingOrigin,
-    HirBindingTarget, HirBodySource, HirGenericArgumentUse, HirGenericArgumentsUse, HirItemRes,
-    HirItemSource, HirLocalBinding, HirPathUse, HirSelfUse, LocalId, MaterializedRegistryPackage,
-    PathResolution, Res, ResolvedGenericArgument, ResolvedSymbolicBody, ResolvedSymbolicConst,
-    ResolvedSymbolicEffect, ResolvedSymbolicItem, ResolvedSymbolicLifetime, ResolvedSymbolicModule,
-    ResolvedSymbolicPackageHir, ResolvedSymbolicShape, ResolvedSymbolicTargetHir,
-    ResolvedSymbolicType, ResolvedSymbolicWorkspaceHir, ResolvedTargetContract, UnresolvedPathKind,
+    AssociatedPathResolution, BuiltinRes, BuiltinResTarget, C2ContextualSelfTypeTemplate,
+    C2TypeTemplateBlocker, C2TypeTemplateInstantiationError, C2TypeTemplateLookupError,
+    FrontendOutput, GenericParameterId, HiddenLifetimeBinder, HiddenLifetimeBinderSource,
+    HirBinding, HirBindingOrigin, HirBindingTarget, HirBodySource, HirGenericArgumentUse,
+    HirGenericArgumentsUse, HirItemRes, HirItemSource, HirLocalBinding, HirPathUse, HirSelfUse,
+    LocalId, MaterializedRegistryPackage, PathResolution, Res, ResolvedGenericArgument,
+    ResolvedSymbolicBody, ResolvedSymbolicConst, ResolvedSymbolicEffect, ResolvedSymbolicItem,
+    ResolvedSymbolicLifetime, ResolvedSymbolicModule, ResolvedSymbolicPackageHir,
+    ResolvedSymbolicShape, ResolvedSymbolicTargetHir, ResolvedSymbolicType,
+    ResolvedSymbolicWorkspaceHir, ResolvedTargetContract, UnresolvedPathKind,
     WorkspaceInventorySkeleton,
 };
 

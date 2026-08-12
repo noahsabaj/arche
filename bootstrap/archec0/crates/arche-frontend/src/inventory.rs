@@ -1083,7 +1083,15 @@ fn module_bytes(module: &ModuleRef) -> Result<Vec<u8>, ShapeEncodingError> {
     Ok(output)
 }
 
-fn definition_key_bytes(key: &SemanticDefinitionKey) -> Result<Vec<u8>, ShapeEncodingError> {
+/// Encodes the complete C1 definition key for deterministic traversal inside
+/// one semantic-checking session.
+///
+/// These bytes retain session-local spans and symbolic owner readiness. They
+/// are deliberately not a stable definition identity, an interface identity,
+/// or an authority that may be persisted across compiler sessions.
+pub fn encode_semantic_definition_key_session(
+    key: &SemanticDefinitionKey,
+) -> Result<Vec<u8>, ShapeEncodingError> {
     let mut output = module_bytes(&key.module)?;
     bytes(
         &mut output,
@@ -1094,6 +1102,10 @@ fn definition_key_bytes(key: &SemanticDefinitionKey) -> Result<Vec<u8>, ShapeEnc
     string(&mut output, &key.name, "definition name")?;
     span(&mut output, key.span);
     Ok(output)
+}
+
+fn definition_key_bytes(key: &SemanticDefinitionKey) -> Result<Vec<u8>, ShapeEncodingError> {
+    encode_semantic_definition_key_session(key)
 }
 
 fn body_key_bytes(key: &SemanticBodyKey) -> Result<Vec<u8>, ShapeEncodingError> {
