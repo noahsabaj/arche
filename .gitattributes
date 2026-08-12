@@ -5,3 +5,7 @@ tests/m27c1/**/*.arc text eol=lf
 tests/m27c1/**/Arche.toml text eol=lf
 tests/m27c1/**/*.txt text eol=lf
 tests/m27c1/**/*.bin binary
+tests/m27c2/**/*.arc text eol=lf
+tests/m27c2/**/Arche.toml text eol=lf
+tests/m27c2/**/*.txt text eol=lf
+tests/m27c2/**/*.bin binary
