@@ -5834,6 +5834,13 @@ impl BodyChecker<'_, '_, '_> {
                             }
                             _ => {}
                         }
+                    } else if resolution.resolutions.len() > 1 {
+                        self.source_error(
+                            pattern.span,
+                            "PATTERN001",
+                            "bare pattern identifier has ambiguous value-namespace lookup",
+                        );
+                        return None;
                     }
                 }
                 let name = path
@@ -7104,7 +7111,16 @@ mod tests {
         let environment = C2Handoff::begin(corpus_frontend("language-environment")).unwrap();
         let environment_declarations = DeclarationTable::build(&environment).unwrap();
         let environment_checked =
-            check_declarations_c2(&environment, &environment_declarations).unwrap();
+            match check_declarations_c2(&environment, &environment_declarations) {
+                Ok(facts) => facts,
+                Err(failure) => {
+                    assert!(failure.blockers().iter().all(|blocker| matches!(
+                        blocker.reason(),
+                        crate::DeclarationCheckBlockerReason::MissingDeclarationJudgment(_)
+                    )));
+                    failure.into_partial()
+                }
+            };
 
         let failure =
             check_workspace_bodies_c2(&game, &game_declarations, &environment_checked).unwrap_err();

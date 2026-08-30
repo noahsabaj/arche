@@ -216,6 +216,33 @@ pub enum DeclarationCheckBlockerReason {
     /// but does not yet furnish the exact raw stable trait `DefinitionId`
     /// required by the compiler-known `SemanticTraitKey` encoding.
     MissingFinalEmbeddedTraitIdentity(CompilerTraitKind),
+    /// The named declaration-level judgment is not implemented yet. The
+    /// candidate declaration fails closed instead of letting its target mint a
+    /// successful `Complete` resolution by omission. Unlike authority
+    /// blockers, this reason does not suppress independently collected source
+    /// diagnostics: implemented checks stay trustworthy while an absent one
+    /// can only prevent success.
+    MissingDeclarationJudgment(UnimplementedDeclarationJudgment),
+}
+
+/// Closed inventory of C2 declaration judgments this checker does not yet
+/// implement. Every candidate declaration records one explicit blocker per
+/// applicable judgment, so absence of a required check can never look like
+/// success. Removing a member is a reviewed API change that lands together
+/// with the implementation of that judgment.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum UnimplementedDeclarationJudgment {
+    /// Sizedness, direct/indirect recursive storage cycles, nonregular
+    /// recursive re-entry, and bare slice/`str` fields.
+    SizednessRecursion,
+    /// Transparent type-alias acyclicity.
+    TypeAliasCycle,
+    /// Byte-identical inherent-head method-name uniqueness across blocks.
+    InherentMethodUniqueness,
+    /// Impl overlap, `default` containment, and coherence selection.
+    ImplCoherenceOverlap,
+    /// `Map<K, V>` key comparator selection (`K: Eq + Ord`).
+    MapKeyComparison,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -332,6 +359,25 @@ impl DeclarationCheckFailure {
     pub fn is_blocked(&self) -> bool {
         !self.blockers.is_empty() || self.internal_error.is_some()
     }
+
+    /// Returns whether this failure invalidates trusting collected source
+    /// diagnostics. A missing-judgment blocker only forbids minting success;
+    /// every other blocker and every internal error marks compiler authority
+    /// itself as incomplete, so the session must not blame valid source.
+    pub fn suppresses_source_diagnostics(&self) -> bool {
+        self.internal_error.is_some()
+            || self.blockers.iter().any(|blocker| {
+                !matches!(
+                    blocker.reason(),
+                    DeclarationCheckBlockerReason::MissingDeclarationJudgment(_)
+                )
+            })
+    }
+
+    /// Consumes the failure and returns its partial checked facts.
+    pub fn into_partial(self) -> CheckedDeclarationFacts {
+        *self.partial
+    }
 }
 
 /// Internal retained-input contract failure. These are deliberately not
@@ -429,6 +475,7 @@ pub fn check_declarations_c2(
             &mut blockers,
         );
         let owner = resolve_owner_contextual_self(input, &inputs, &mut blockers);
+        record_unimplemented_judgments(input, &shape, catalog.embedded, &mut blockers);
         let definition_audit = audit_declaration_shape(&shape);
         let owner_audit = audit_definition_owner(&owner);
         collect_pending_blockers(
@@ -2219,6 +2266,230 @@ fn compiler_trait_for_path<'a>(
         .compiler_trait_for_c1_definition(definition)
 }
 
+fn record_unimplemented_judgments(
+    input: &InputRow<'_>,
+    shape: &SymbolicDeclarationShapeSkeleton,
+    embedded: &VerifiedEmbeddedCoreAuthority,
+    blockers: &mut Vec<DeclarationCheckBlocker>,
+) {
+    let mut judgments = Vec::new();
+    match &shape.payload {
+        SymbolicDeclarationPayloadSkeleton::Record(_)
+        | SymbolicDeclarationPayloadSkeleton::Enum(_) => {
+            judgments.push(UnimplementedDeclarationJudgment::SizednessRecursion);
+        }
+        SymbolicDeclarationPayloadSkeleton::Alias { .. } => {
+            judgments.push(UnimplementedDeclarationJudgment::TypeAliasCycle);
+        }
+        SymbolicDeclarationPayloadSkeleton::Impl { trait_ref, .. } => {
+            judgments.push(if trait_ref.is_none() {
+                UnimplementedDeclarationJudgment::InherentMethodUniqueness
+            } else {
+                UnimplementedDeclarationJudgment::ImplCoherenceOverlap
+            });
+        }
+        _ => {}
+    }
+    if shape_mentions_embedded_map(shape, embedded) {
+        judgments.push(UnimplementedDeclarationJudgment::MapKeyComparison);
+    }
+    for judgment in judgments {
+        blockers.push(DeclarationCheckBlocker {
+            package: package_scope(input),
+            target: input.target,
+            path: input.path.clone(),
+            span: input.definition.key.span,
+            item: input.definition.hir_item,
+            debug_spelling: format!("{judgment:?}"),
+            reason: DeclarationCheckBlockerReason::MissingDeclarationJudgment(judgment),
+        });
+    }
+}
+
+fn shape_mentions_embedded_map(
+    shape: &SymbolicDeclarationShapeSkeleton,
+    embedded: &VerifiedEmbeddedCoreAuthority,
+) -> bool {
+    let map = |ty: &SymbolicType| type_mentions_embedded_map(ty, embedded);
+    let map_shape = |shape: &arche_frontend::SymbolicTypeShapeSkeleton| match shape {
+        arche_frontend::SymbolicTypeShapeSkeleton::Resolved { value, .. } => map(value),
+        arche_frontend::SymbolicTypeShapeSkeleton::Pending(_) => false,
+    };
+    let map_effects = |effects: &arche_frontend::SymbolicEffectSetsSkeleton| {
+        effects
+            .requires
+            .iter()
+            .chain(effects.throws.iter())
+            .any(|effect| match effect {
+                arche_frontend::SymbolicEffectShapeSkeleton::Resolved { value, .. } => map(value),
+                arche_frontend::SymbolicEffectShapeSkeleton::Pending(_) => false,
+            })
+    };
+    let map_callable = |callable: &arche_frontend::SymbolicCallableShapeSkeleton| {
+        callable
+            .parameters
+            .iter()
+            .any(|parameter| map_shape(&parameter.ty))
+            || map_shape(&callable.result)
+            || callable.resume.as_ref().is_some_and(map_shape)
+            || callable.yields.as_ref().is_some_and(map_shape)
+            || map_effects(&callable.effects)
+    };
+    let map_methods = |methods: &[arche_frontend::SymbolicMethodShapeSkeleton]| {
+        methods
+            .iter()
+            .any(|method| shape_mentions_embedded_map(&method.shape, embedded))
+    };
+    let payload = match &shape.payload {
+        SymbolicDeclarationPayloadSkeleton::World
+        | SymbolicDeclarationPayloadSkeleton::Tag
+        | SymbolicDeclarationPayloadSkeleton::Schedule { .. } => false,
+        SymbolicDeclarationPayloadSkeleton::Record(record) => {
+            record.fields.iter().any(|field| map_shape(&field.ty))
+        }
+        SymbolicDeclarationPayloadSkeleton::Enum(variants) => variants
+            .iter()
+            .any(|variant| variant.fields.iter().any(|field| map_shape(&field.ty))),
+        SymbolicDeclarationPayloadSkeleton::Callable(callable) => map_callable(callable),
+        SymbolicDeclarationPayloadSkeleton::System {
+            accesses,
+            implied_requires,
+            result,
+            effects,
+        } => {
+            accesses.iter().any(|access| match access {
+                arche_frontend::SymbolicSystemAccessShapeSkeleton::CapabilityShared(ty)
+                | arche_frontend::SymbolicSystemAccessShapeSkeleton::CapabilityMutable(ty)
+                | arche_frontend::SymbolicSystemAccessShapeSkeleton::ResourceRead(ty)
+                | arche_frontend::SymbolicSystemAccessShapeSkeleton::ResourceWrite(ty) => {
+                    map_shape(ty)
+                }
+                arche_frontend::SymbolicSystemAccessShapeSkeleton::Query(terms) => {
+                    terms.iter().any(|term| map_shape(&term.ty))
+                }
+                arche_frontend::SymbolicSystemAccessShapeSkeleton::Commands => false,
+            }) || implied_requires
+                .iter()
+                .any(|requirement| map_shape(&requirement.referent))
+                || map_shape(result)
+                || map_effects(effects)
+        }
+        SymbolicDeclarationPayloadSkeleton::Trait { methods } => map_methods(methods),
+        SymbolicDeclarationPayloadSkeleton::Impl {
+            trait_ref,
+            target,
+            methods,
+            ..
+        } => trait_ref.as_ref().is_some_and(map_shape) || map_shape(target) || map_methods(methods),
+        SymbolicDeclarationPayloadSkeleton::Alias { target } => map_shape(target),
+        SymbolicDeclarationPayloadSkeleton::Const { ty }
+        | SymbolicDeclarationPayloadSkeleton::Static { ty, .. } => map_shape(ty),
+        SymbolicDeclarationPayloadSkeleton::Query { terms } => {
+            terms.iter().any(|term| map_shape(&term.ty))
+        }
+    };
+    payload
+        || shape.predicates.iter().any(|predicate| match predicate {
+            arche_frontend::SymbolicPredicateShapeSkeleton::Resolved { value, .. } => {
+                match &**value {
+                    SymbolicPredicate::Trait {
+                        self_type,
+                        arguments,
+                        ..
+                    } => {
+                        map(self_type)
+                            || arguments.iter().any(|argument| match argument {
+                                GenericArgumentShape::Type(ty) => map(ty),
+                                _ => false,
+                            })
+                    }
+                    SymbolicPredicate::TypeOutlives { ty, .. } => map(ty),
+                    SymbolicPredicate::LifetimeOutlives { .. } => false,
+                }
+            }
+            arche_frontend::SymbolicPredicateShapeSkeleton::Pending(_) => false,
+        })
+}
+
+fn type_mentions_embedded_map(ty: &SymbolicType, embedded: &VerifiedEmbeddedCoreAuthority) -> bool {
+    let map = |child: &SymbolicType| type_mentions_embedded_map(child, embedded);
+    let map_set = |set: &arche_frontend::SymbolicTypeEffectSet| set.members().iter().any(map);
+    match ty {
+        SymbolicType::NominalPath {
+            declaration,
+            arguments,
+        } => {
+            (declaration.name == "Map" && is_embedded_path(declaration, embedded))
+                || arguments.iter().any(|argument| match argument {
+                    GenericArgumentShape::Type(child) => map(child),
+                    _ => false,
+                })
+        }
+        SymbolicType::Slice(element) => map(element),
+        SymbolicType::Array { element, .. } => map(element),
+        SymbolicType::Tuple(elements) => elements.iter().any(map),
+        SymbolicType::Reference { pointee, .. } | SymbolicType::RawPointer { pointee, .. } => {
+            map(pointee)
+        }
+        SymbolicType::FunctionPointer {
+            parameters,
+            result,
+            requires,
+            throws,
+            ..
+        } => parameters.iter().any(map) || map(result) || map_set(requires) || map_set(throws),
+        SymbolicType::Closure {
+            captures,
+            parameters,
+            result,
+            requires,
+            throws,
+            arguments,
+            ..
+        } => {
+            captures.iter().any(|capture| map(&capture.ty))
+                || parameters.iter().any(map)
+                || map(result)
+                || map_set(requires)
+                || map_set(throws)
+                || arguments.iter().any(|argument| match argument {
+                    GenericArgumentShape::Type(child) => map(child),
+                    _ => false,
+                })
+        }
+        SymbolicType::Generator {
+            captures,
+            parameters,
+            resume,
+            yields,
+            result,
+            requires,
+            throws,
+            ..
+        } => {
+            captures.iter().any(|capture| map(&capture.ty))
+                || parameters.iter().any(map)
+                || map(resume)
+                || map(yields)
+                || map(result)
+                || map_set(requires)
+                || map_set(throws)
+        }
+        SymbolicType::JoinHandle { result, throws } => map(result) || map_set(throws),
+        SymbolicType::GeneratorFactory {
+            captures,
+            parameters,
+            produced_generator,
+            ..
+        } => {
+            captures.iter().any(|capture| map(&capture.ty))
+                || parameters.iter().any(map)
+                || map(produced_generator)
+        }
+        _ => false,
+    }
+}
+
 fn compiler_identity_blocker(
     input: &InputRow<'_>,
     kind: CompilerTraitKind,
@@ -3339,10 +3610,32 @@ mod tests {
         check_workspace_c1(&workspace, &graph, &[]).unwrap()
     }
 
+    fn checked_or_partial(
+        handoff: &C2Handoff,
+        declarations: &DeclarationTable,
+    ) -> CheckedDeclarationFacts {
+        match check_declarations_c2(handoff, declarations) {
+            Ok(facts) => facts,
+            Err(failure) => {
+                assert!(failure.internal_error().is_none());
+                assert!(
+                    failure.diagnostics().is_none(),
+                    "{:?}",
+                    failure.diagnostics()
+                );
+                assert!(failure.blockers().iter().all(|blocker| matches!(
+                    blocker.reason(),
+                    DeclarationCheckBlockerReason::MissingDeclarationJudgment(_)
+                )));
+                failure.into_partial()
+            }
+        }
+    }
+
     fn checked_inline(source: &str) -> CheckedDeclarationFacts {
         let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
         let declarations = DeclarationTable::build(&handoff).unwrap();
-        check_declarations_c2(&handoff, &declarations).unwrap()
+        checked_or_partial(&handoff, &declarations)
     }
 
     fn callable(
@@ -3381,27 +3674,107 @@ mod tests {
         }
     }
 
-    #[test]
-    fn real_c2_v1_declarations_close_or_block_only_on_compiler_trait_identity() {
-        let game = corpus_handoff("language-game");
-        let declarations = DeclarationTable::build(&game).unwrap();
-        let failure = check_declarations_c2(&game, &declarations).unwrap_err();
-        assert_eq!(failure.internal_error(), None);
+    fn judgment_blockers(source: &str) -> Vec<UnimplementedDeclarationJudgment> {
+        let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let failure = check_declarations_c2(&handoff, &declarations).unwrap_err();
+        assert!(failure.internal_error().is_none());
         assert!(
             failure.diagnostics().is_none(),
             "diagnostics={:?}",
             failure.diagnostics()
         );
-        assert!(!failure.blockers().is_empty());
-        assert!(failure.blockers().iter().all(|blocker| matches!(
-            blocker.reason(),
-            DeclarationCheckBlockerReason::MissingFinalEmbeddedTraitIdentity(_)
-        )));
-        assert_eq!(failure.partial().len(), declarations.len());
+        let mut kinds: Vec<_> = failure
+            .blockers()
+            .iter()
+            .filter_map(|blocker| match blocker.reason() {
+                DeclarationCheckBlockerReason::MissingDeclarationJudgment(judgment) => {
+                    Some(*judgment)
+                }
+                _ => None,
+            })
+            .collect();
+        kinds.sort();
+        kinds.dedup();
+        kinds
+    }
 
-        let environment = corpus_handoff("language-environment");
-        let declarations = DeclarationTable::build(&environment).unwrap();
-        assert!(check_declarations_c2(&environment, &declarations).is_ok());
+    #[test]
+    fn unimplemented_declaration_judgments_fail_closed() {
+        use UnimplementedDeclarationJudgment as J;
+        assert_eq!(
+            judgment_blockers("pub struct Loopy { pub next: Loopy }\n"),
+            vec![J::SizednessRecursion]
+        );
+        assert_eq!(
+            judgment_blockers("pub struct A { pub b: B }\npub struct B { pub a: A }\n"),
+            vec![J::SizednessRecursion]
+        );
+        assert_eq!(
+            judgment_blockers("pub enum Tree { Node { left: Tree, right: Tree } }\n"),
+            vec![J::SizednessRecursion]
+        );
+        assert_eq!(
+            judgment_blockers("pub struct Holder { pub raw: str }\n"),
+            vec![J::SizednessRecursion]
+        );
+        assert_eq!(
+            judgment_blockers("pub type A = B;\npub type B = A;\n"),
+            vec![J::TypeAliasCycle]
+        );
+        assert_eq!(
+            judgment_blockers(concat!(
+                "pub struct Holder { pub value: i32 }\n",
+                "impl Holder { pub fn value(&self) -> i32 { self.value } }\n",
+                "impl Holder { pub fn value(&self) -> i32 { self.value } }\n",
+            )),
+            vec![J::SizednessRecursion, J::InherentMethodUniqueness]
+        );
+        assert_eq!(
+            judgment_blockers(concat!(
+                "pub struct Holder { pub value: i32 }\n",
+                "pub trait One { fn one(&self) -> i32; }\n",
+                "impl One for Holder { fn one(&self) -> i32 { 1i32 } }\n",
+                "impl One for Holder { fn one(&self) -> i32 { 2i32 } }\n",
+            )),
+            vec![J::SizednessRecursion, J::ImplCoherenceOverlap]
+        );
+        assert_eq!(
+            judgment_blockers("pub struct Table { pub scores: Map<f32, i32> }\n"),
+            vec![J::SizednessRecursion, J::MapKeyComparison]
+        );
+        assert_eq!(
+            judgment_blockers(
+                "pub fn lookup(table: &Map<i32, i32>) -> usize {\n    table.len()\n}\n"
+            ),
+            vec![J::MapKeyComparison]
+        );
+    }
+
+    #[test]
+    fn real_c2_v1_declarations_block_only_on_recorded_authority_gaps() {
+        for corpus in ["language-game", "language-environment"] {
+            let handoff = corpus_handoff(corpus);
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            let failure = check_declarations_c2(&handoff, &declarations).unwrap_err();
+            assert_eq!(failure.internal_error(), None, "{corpus}");
+            assert!(
+                failure.diagnostics().is_none(),
+                "{corpus}: {:?}",
+                failure.diagnostics()
+            );
+            assert!(!failure.blockers().is_empty(), "{corpus}");
+            assert!(
+                failure.blockers().iter().all(|blocker| matches!(
+                    blocker.reason(),
+                    DeclarationCheckBlockerReason::MissingDeclarationJudgment(_)
+                        | DeclarationCheckBlockerReason::MissingFinalEmbeddedTraitIdentity(_)
+                )),
+                "{corpus}: {:#?}",
+                failure.blockers()
+            );
+            assert_eq!(failure.partial().len(), declarations.len(), "{corpus}");
+        }
     }
 
     #[test]
@@ -3628,7 +4001,7 @@ mod tests {
         );
         let first = C2Handoff::begin(inline_frontend(source)).unwrap();
         let first_declarations = DeclarationTable::build(&first).unwrap();
-        let first_facts = check_declarations_c2(&first, &first_declarations).unwrap();
+        let first_facts = checked_or_partial(&first, &first_declarations);
         let second = C2Handoff::begin(inline_frontend(source)).unwrap();
         let second_declarations = DeclarationTable::build(&second).unwrap();
 

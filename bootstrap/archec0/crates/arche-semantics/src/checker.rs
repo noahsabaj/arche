@@ -47,9 +47,12 @@ pub fn check_workspace_c2(frontend: FrontendOutput) -> Result<C2CheckedWorkspace
         Err(failure) => failure.partial(),
     };
     let body_result = check_workspace_bodies_c2(&handoff, &declarations, checked_declarations);
+    // Missing-judgment blockers forbid success but do not cast doubt on the
+    // diagnostics implemented checks produced; only genuine authority gaps
+    // suppress source rejection.
     let authority_blocked = declaration_result
         .as_ref()
-        .is_err_and(DeclarationCheckFailure::is_blocked)
+        .is_err_and(DeclarationCheckFailure::suppresses_source_diagnostics)
         || body_result
             .as_ref()
             .is_err_and(|failure| !failure.incompleteness().is_empty());
