@@ -2743,6 +2743,16 @@ impl BodyChecker<'_, '_, '_> {
                         )
                     }) {
                         handled?
+                    } else if let Some(handled) = receiver.as_ref().and_then(|receiver| {
+                        self.lower_nominal_user_method(
+                            receiver,
+                            name.as_str(),
+                            generic_arguments.as_ref(),
+                            arguments,
+                            part.span,
+                        )
+                    }) {
+                        handled?
                     } else {
                         for argument in arguments {
                             self.check_expression(argument, None);
@@ -3927,6 +3937,314 @@ impl BodyChecker<'_, '_, '_> {
             VirtualFunctionLowering::Intrinsic { .. } => return None,
         };
         Some((value, &parts[1..]))
+    }
+
+    /// Attempts inherent and trait-impl method selection for a receiver whose
+    /// peeled type is a user nominal path, over the current target's impl
+    /// declarations.
+    ///
+    /// Returns `None` when not applicable or when a potentially viable
+    /// candidate is still pending authority, keeping the caller's fail-closed
+    /// gap. Impls with declared predicates need entailment authority and are
+    /// treated as pending for now.
+    fn lower_nominal_user_method(
+        &mut self,
+        receiver: &CheckedExpression,
+        name: &str,
+        generic_arguments: Option<&arche_frontend::ast::AstGenericArguments>,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<Option<LoweredValue>> {
+        let SymbolicType::NominalPath {
+            declaration: receiver_declaration,
+            arguments: receiver_arguments,
+        } = peel_references(receiver.ty())
+        else {
+            return None;
+        };
+        if self
+            .embedded_core_definition_for_path(receiver_declaration)
+            .is_some()
+        {
+            return None;
+        }
+        let explicit_actuals = match generic_arguments {
+            Some(generic_arguments) => Some(self.postfix_actuals(generic_arguments.span)?),
+            None => None,
+        };
+        let mut pending_candidates = false;
+        let mut selected: Vec<(
+            HirItemId,
+            SymbolicDeclarationShapeSkeleton,
+            Vec<GenericArgumentShape>,
+        )> = Vec::new();
+        for item in &self.scope.target.items {
+            if item.kind != DeclarationKind::Impl {
+                continue;
+            }
+            let Some(entry) = self.catalog.definitions.get(&item.id) else {
+                pending_candidates = true;
+                continue;
+            };
+            let Some(shape) = entry.declaration_shape else {
+                pending_candidates = true;
+                continue;
+            };
+            let SymbolicDeclarationPayloadSkeleton::Impl {
+                target, methods, ..
+            } = &shape.payload
+            else {
+                continue;
+            };
+            let target_ty = match target {
+                SymbolicTypeShapeSkeleton::Resolved { value, .. } => value,
+                SymbolicTypeShapeSkeleton::Pending(_) => {
+                    pending_candidates = true;
+                    continue;
+                }
+            };
+            let SymbolicType::NominalPath {
+                declaration: target_declaration,
+                arguments: target_arguments,
+            } = target_ty
+            else {
+                continue;
+            };
+            if target_declaration != receiver_declaration
+                || target_arguments.len() != receiver_arguments.len()
+            {
+                continue;
+            }
+            let Some(method) = methods.iter().find(|method| method.name == name) else {
+                continue;
+            };
+            if !shape.predicates.is_empty() {
+                // Predicate entailment for impl selection needs the solver;
+                // fail closed rather than guessing viability.
+                pending_candidates = true;
+                continue;
+            }
+            // First-order head match: an impl-frame bound type binds the
+            // receiver's argument; a concrete argument must match exactly.
+            let mut impl_actuals: Vec<Option<GenericArgumentShape>> =
+                vec![None; shape.generic_parameters.len()];
+            let mut viable = true;
+            for (target_argument, receiver_argument) in
+                target_arguments.iter().zip(receiver_arguments)
+            {
+                match target_argument {
+                    GenericArgumentShape::Type(SymbolicType::BoundType { depth: 0, index }) => {
+                        let Ok(slot) = usize::try_from(*index) else {
+                            viable = false;
+                            break;
+                        };
+                        match impl_actuals.get_mut(slot) {
+                            Some(entry @ None) => *entry = Some(receiver_argument.clone()),
+                            Some(Some(previous)) if previous == receiver_argument => {}
+                            _ => {
+                                viable = false;
+                                break;
+                            }
+                        }
+                    }
+                    other => {
+                        if other != receiver_argument {
+                            viable = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !viable {
+                continue;
+            }
+            let impl_arguments = match impl_actuals.into_iter().collect::<Option<Vec<_>>>() {
+                Some(arguments) => arguments,
+                None => {
+                    // An impl generic not determined by the head cannot be
+                    // inferred here; keep the fail-closed gap.
+                    pending_candidates = true;
+                    continue;
+                }
+            };
+            selected.push((item.id, (*method.shape).clone(), impl_arguments));
+        }
+        match selected.len() {
+            0 => {
+                if pending_candidates {
+                    return None;
+                }
+                None
+            }
+            1 => {
+                let (impl_item, method_shape, impl_arguments) =
+                    selected.pop().expect("one selection row");
+                Some(self.type_nominal_user_method_call(
+                    receiver,
+                    impl_item,
+                    method_shape,
+                    impl_arguments,
+                    explicit_actuals,
+                    name,
+                    arguments,
+                    span,
+                ))
+            }
+            _ => {
+                for argument in arguments {
+                    self.check_expression(argument, None);
+                }
+                self.source_error(
+                    span,
+                    "TRAIT002",
+                    format!("method `{name}` has multiple viable impl candidates"),
+                );
+                Some(None)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn type_nominal_user_method_call(
+        &mut self,
+        receiver: &CheckedExpression,
+        impl_item: HirItemId,
+        method_shape: SymbolicDeclarationShapeSkeleton,
+        impl_arguments: Vec<GenericArgumentShape>,
+        explicit_actuals: Option<Vec<GenericArgumentShape>>,
+        name: &str,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let entry = self.catalog.definitions.get(&impl_item)?;
+        let impl_formals = entry
+            .declaration_shape
+            .map(|shape| shape.generic_parameters.clone())
+            .unwrap_or_default();
+        let impl_frame = match TraitFrameSubstitution::new(
+            impl_formals,
+            impl_arguments,
+            peel_references(receiver.ty()).clone(),
+        ) {
+            Ok(frame) => frame,
+            Err(error) => {
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingMethodSelection,
+                    format!("impl head is not a usable frame: {error:?}"),
+                );
+                return None;
+            }
+        };
+        let SymbolicDeclarationPayloadSkeleton::Callable(callable) = &method_shape.payload else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingMethodSelection,
+                "impl method entry is not a callable shape",
+            );
+            return None;
+        };
+        let explicit_actuals = explicit_actuals.unwrap_or_default();
+        let resolve = |shape: &SymbolicTypeShapeSkeleton| -> Option<SymbolicType> {
+            let ty = match shape {
+                SymbolicTypeShapeSkeleton::Resolved { value, .. } => value.clone(),
+                SymbolicTypeShapeSkeleton::Pending(_) => return None,
+            };
+            let ty = impl_frame.substitute_type(&ty, 1).ok()?;
+            instantiate_method_frame(&ty, &explicit_actuals)
+        };
+        let Some((receiver_parameter, value_parameters)) = callable.parameters.split_first() else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingMethodSelection,
+                "receiverless impl method reached postfix selection",
+            );
+            return None;
+        };
+        let Some(expected_receiver) = resolve(&receiver_parameter.ty) else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingMethodSelection,
+                "impl method receiver type is pending",
+            );
+            return None;
+        };
+        let receiver_ok = match receiver_parameter.mode {
+            SymbolicCallableParameterMode::ReceiverShared
+            | SymbolicCallableParameterMode::ReceiverMutable => {
+                let SymbolicType::Reference { pointee, .. } = &expected_receiver else {
+                    return None;
+                };
+                let actual = receiver.ty();
+                let borrowable = actual == &**pointee;
+                let reborrowable = match actual {
+                    SymbolicType::Reference {
+                        mutability,
+                        pointee: actual_pointee,
+                        ..
+                    } => {
+                        actual_pointee == pointee
+                            && (receiver_parameter.mode
+                                == SymbolicCallableParameterMode::ReceiverShared
+                                || *mutability == Mutability::Mutable)
+                    }
+                    _ => false,
+                };
+                borrowable || reborrowable
+            }
+            SymbolicCallableParameterMode::ReceiverValue => receiver.ty() == &expected_receiver,
+            SymbolicCallableParameterMode::Value => return None,
+        };
+        if !receiver_ok {
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
+            self.source_error(
+                span,
+                "TYPE002",
+                format!("method `{name}` receiver mode does not accept this receiver type"),
+            );
+            return None;
+        }
+        let mut parameter_types = Vec::new();
+        for parameter in value_parameters {
+            let Some(ty) = resolve(&parameter.ty) else {
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingMethodSelection,
+                    "impl method parameter type is pending",
+                );
+                return None;
+            };
+            parameter_types.push(ty);
+        }
+        self.check_call_arguments(&parameter_types, arguments, span);
+        let Some(result) = resolve(&callable.result) else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingMethodSelection,
+                "impl method result type is pending",
+            );
+            return None;
+        };
+        let method_item = self
+            .scope
+            .target
+            .items
+            .iter()
+            .find(|candidate| {
+                candidate.owner == Some(impl_item) && candidate.name.as_deref() == Some(name)
+            })
+            .map(|candidate| candidate.id);
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: match method_item {
+                Some(item) => CheckedBodyCallee::AssociatedItem(item),
+                None => CheckedBodyCallee::DirectItem(impl_item),
+            },
+            result: result.clone(),
+        });
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)))
     }
 
     /// Attempts bound-witness trait-method selection for a receiver whose
@@ -7173,6 +7491,78 @@ fn shift_type_binders(ty: &SymbolicType, by: u64) -> SymbolicType {
         },
         other => other.clone(),
     }
+}
+
+/// Instantiates a method's own binder frame: depth-0 type/const slots take
+/// the explicit turbofish actuals, depth-0 lifetimes erase to the body-local
+/// marker, and an uninstantiable slot fails closed with `None`.
+fn instantiate_method_frame(
+    ty: &SymbolicType,
+    explicit_actuals: &[GenericArgumentShape],
+) -> Option<SymbolicType> {
+    Some(match ty {
+        SymbolicType::BoundType { depth: 0, index } => {
+            let slot = usize::try_from(*index).ok()?;
+            match explicit_actuals.get(slot)? {
+                GenericArgumentShape::Type(actual) => actual.clone(),
+                _ => return None,
+            }
+        }
+        SymbolicType::Reference {
+            mutability,
+            lifetime,
+            pointee,
+        } => SymbolicType::Reference {
+            mutability: *mutability,
+            lifetime: match lifetime {
+                SymbolicLifetime::Bound { depth: 0, .. } => SymbolicLifetime::ErasedLocal,
+                other => other.clone(),
+            },
+            pointee: Box::new(instantiate_method_frame(pointee, explicit_actuals)?),
+        },
+        SymbolicType::RawPointer {
+            mutability,
+            pointee,
+        } => SymbolicType::RawPointer {
+            mutability: *mutability,
+            pointee: Box::new(instantiate_method_frame(pointee, explicit_actuals)?),
+        },
+        SymbolicType::Slice(element) => SymbolicType::Slice(Box::new(instantiate_method_frame(
+            element,
+            explicit_actuals,
+        )?)),
+        SymbolicType::Array { element, length } => SymbolicType::Array {
+            element: Box::new(instantiate_method_frame(element, explicit_actuals)?),
+            length: length.clone(),
+        },
+        SymbolicType::Tuple(elements) => SymbolicType::Tuple(
+            elements
+                .iter()
+                .map(|element| instantiate_method_frame(element, explicit_actuals))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        SymbolicType::NominalPath {
+            declaration,
+            arguments,
+        } => SymbolicType::NominalPath {
+            declaration: declaration.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| match argument {
+                    GenericArgumentShape::Type(ty) => Some(GenericArgumentShape::Type(
+                        instantiate_method_frame(ty, explicit_actuals)?,
+                    )),
+                    GenericArgumentShape::Lifetime(SymbolicLifetime::Bound {
+                        depth: 0, ..
+                    }) => Some(GenericArgumentShape::Lifetime(
+                        SymbolicLifetime::ErasedLocal,
+                    )),
+                    other => Some(other.clone()),
+                })
+                .collect::<Option<Vec<_>>>()?,
+        },
+        other => other.clone(),
+    })
 }
 
 /// Replaces method-frame bound lifetimes (depth 0 inside the method shape)
