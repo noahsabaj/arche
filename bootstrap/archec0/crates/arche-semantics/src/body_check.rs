@@ -6621,7 +6621,11 @@ impl BodyChecker<'_, '_, '_> {
             return None;
         };
         let scrutinee_ty = if catch {
-            match self.catch_operand_throws(operand).as_deref() {
+            match self
+                .catch_operand_throws(operand)
+                .filter(|members| !members.iter().any(symbolic_type_mentions_bound))
+                .as_deref()
+            {
                 Some([thrown]) => {
                     // The declared singleton throws set types the catch arms;
                     // canonical escaping-set accounting stays C4 authority.
@@ -6651,6 +6655,28 @@ impl BodyChecker<'_, '_, '_> {
 
         let mut joined = expected.cloned();
         let mut complete = patterns_valid;
+        if catch && scrutinee_ty.is_some() {
+            // The non-throwing path yields the operand's result, so the catch
+            // expression's type joins it with every arm value.
+            let operand_ty = operand_checked.ty();
+            match &joined {
+                None => joined = Some(operand_ty.clone()),
+                Some(expected_ty) => {
+                    let outlives = LifetimeOutlives::new([]);
+                    let accepted = expected_ty == operand_ty
+                        || types_match_with_erased_body_lifetime(expected_ty, operand_ty)
+                        || classify_coercion(operand_ty, expected_ty, &outlives).is_some();
+                    if !accepted {
+                        self.source_error(
+                            operand.span,
+                            "TYPE002",
+                            format!("expected {expected_ty:?}, found {operand_ty:?}"),
+                        );
+                        complete = false;
+                    }
+                }
+            }
+        }
         let mut all_arms_diverge = !arms.is_empty();
         for arm in arms {
             if !patterns_valid {
@@ -8102,6 +8128,38 @@ fn collect_binding_spans(pattern: &AstPattern, output: &mut BTreeMap<String, Spa
         | AstPatternKind::Unit
         | AstPatternKind::Literal(_)
         | AstPatternKind::Range { .. } => {}
+    }
+}
+
+/// True when the type mentions a bound generic coordinate anywhere — such a
+/// declared throws member needs the call's substitution before a catch can
+/// type against it.
+fn symbolic_type_mentions_bound(ty: &SymbolicType) -> bool {
+    match ty {
+        SymbolicType::BoundType { .. } => true,
+        SymbolicType::Reference { pointee, .. } | SymbolicType::RawPointer { pointee, .. } => {
+            symbolic_type_mentions_bound(pointee)
+        }
+        SymbolicType::Slice(element) | SymbolicType::Array { element, .. } => {
+            symbolic_type_mentions_bound(element)
+        }
+        SymbolicType::Tuple(fields) => fields.iter().any(symbolic_type_mentions_bound),
+        SymbolicType::NominalPath { arguments, .. } => arguments.iter().any(|argument| {
+            matches!(argument, GenericArgumentShape::Type(ty) if symbolic_type_mentions_bound(ty))
+        }),
+        SymbolicType::FunctionPointer {
+            parameters,
+            result,
+            requires,
+            throws,
+            ..
+        } => parameters
+            .iter()
+            .chain(std::iter::once(result.as_ref()))
+            .chain(requires.members())
+            .chain(throws.members())
+            .any(symbolic_type_mentions_bound),
+        _ => false,
     }
 }
 
@@ -10196,5 +10254,105 @@ mod tests {
             diagnostics.contains("PATTERN002"),
             "diagnostics={diagnostics}"
         );
+    }
+
+    #[test]
+    fn catch_joins_the_operand_result_with_the_arms() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault {\n",
+            "    Soft,\n",
+            "    Hard(i32),\n",
+            "}\n",
+            "pub fn risky(x: i32) throws { Fault } -> i32 {\n",
+            "    if x <= 0i32 {\n",
+            "        throw Fault::Soft;\n",
+            "    }\n",
+            "    x\n",
+            "}\n",
+            "pub fn leaked(x: i32) -> i32 {\n",
+            "    let v = catch risky(x) {\n",
+            "        Fault::Soft => 'a',\n",
+            "        Fault::Hard(_) => 'b',\n",
+            "    };\n",
+            "    x\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(failure.diagnostics().is_some());
+        assert!(diagnostics.contains("TYPE002"), "diagnostics={diagnostics}");
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault {\n",
+            "    Soft,\n",
+            "    Hard(i32),\n",
+            "}\n",
+            "pub fn risky(x: i32) throws { Fault } -> i32 {\n",
+            "    if x <= 0i32 {\n",
+            "        throw Fault::Soft;\n",
+            "    }\n",
+            "    x\n",
+            "}\n",
+            "pub fn diverging_arms(x: i32) -> i32 {\n",
+            "    let v: i32 = catch risky(x) {\n",
+            "        Fault::Soft => return 7i32,\n",
+            "        Fault::Hard(_) => return 9i32,\n",
+            "    };\n",
+            "    v\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies =
+            check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_or_else(|failure| {
+                panic!("diverging arms take the operand result: {failure:#?}")
+            });
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn generic_declared_throws_keep_the_effect_gap() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault {\n",
+            "    Soft,\n",
+            "}\n",
+            "pub fn risky<E>(x: i32, seed: E) throws { E } -> i32 {\n",
+            "    x\n",
+            "}\n",
+            "pub fn caught(x: i32) -> i32 {\n",
+            "    catch risky(x, Fault::Soft) {\n",
+            "        _ => 0i32,\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "an unsubstituted throws set is later authority: {:?}",
+            failure.diagnostics()
+        );
+        assert!(failure
+            .incompleteness()
+            .iter()
+            .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingEffectAuthority));
     }
 }
