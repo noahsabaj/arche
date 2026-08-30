@@ -172,6 +172,13 @@ pub enum IntegerType {
     Unsigned(u8),
 }
 
+/// IEEE binary float width admitted as an opaque, binding-only pattern domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum FloatType {
+    F32,
+    F64,
+}
+
 impl IntegerType {
     fn validate(self) -> bool {
         matches!(self.bits(), 8 | 16 | 32 | 64 | 128)
@@ -383,6 +390,15 @@ pub enum PatternType {
         mutability: ReferenceMutability,
         referent: Box<PatternType>,
     },
+    /// An IEEE float scrutinee: bindable and wildcard-matchable, with no
+    /// structural constructor space. Float structural patterns are rejected
+    /// by the surface contract, so no literal or range can inhabit this
+    /// domain; exhaustiveness requires a binding or wildcard row.
+    Float(FloatType),
+    /// An opaque scrutinee domain outside structural matching (currently a
+    /// bound generic parameter): bindable and wildcard-matchable, with no
+    /// structural constructor space.
+    Opaque(Box<str>),
     /// Explicit fail-closed representation for a type outside C2's algebra.
     Unsupported(Box<str>),
 }
@@ -1227,7 +1243,9 @@ fn validate_type(ty: &PatternType) -> Result<(), PatternError> {
         | PatternType::Bool
         | PatternType::Char
         | PatternType::String
-        | PatternType::Str => Ok(()),
+        | PatternType::Str
+        | PatternType::Float(_)
+        | PatternType::Opaque(_) => Ok(()),
         PatternType::Integer(integer) if integer.validate() => Ok(()),
         PatternType::Integer(integer) => Err(pattern001(
             PatternErrorKind::InvalidType,
@@ -1801,6 +1819,8 @@ fn is_finite_structural_type(ty: &PatternType) -> bool {
         | PatternType::Str
         | PatternType::Slice(_)
         | PatternType::Reference { .. }
+        | PatternType::Float(_)
+        | PatternType::Opaque(_)
         | PatternType::Unsupported(_) => false,
     }
 }
@@ -2228,6 +2248,10 @@ enum ConstructorTag {
     Reference(ReferenceMutability),
     String(Box<str>),
     StringOther,
+    /// The single catch-all constructor of an opaque domain (floats and
+    /// bound generic parameters): only a wildcard or binding covers it, so
+    /// exhaustiveness always requires one.
+    Opaque,
     SliceLength {
         minimum: usize,
         maximum: Option<usize>,
@@ -2670,6 +2694,10 @@ fn constructor_partition(
         }
         PatternType::Char => char_partition(matrix, candidate),
         PatternType::String | PatternType::Str => string_partition(matrix, candidate),
+        PatternType::Float(_) | PatternType::Opaque(_) => vec![ConstructorSpec {
+            tag: ConstructorTag::Opaque,
+            fields: Vec::new(),
+        }],
         PatternType::Unsupported(_) => Vec::new(),
     }
 }
@@ -4401,6 +4429,26 @@ mod tests {
         assert_eq!(
             errors.as_slice()[0].code(),
             PatternDiagnosticCode::Pattern001
+        );
+    }
+
+    #[test]
+    fn float_scrutinees_bind_and_require_a_wildcard() {
+        let analysis = analyze_pattern_match(
+            &immutable(PatternType::Float(FloatType::F32)),
+            &[arm(wildcard())],
+        )
+        .unwrap();
+        let PatternMatchAnalysis::Complete(complete) = analysis else {
+            panic!("a wildcard over a float domain needs no CTFE");
+        };
+        assert!(matches!(complete.tree(), DecisionTree::Leaf { .. }));
+
+        let errors =
+            analyze_pattern_match(&immutable(PatternType::Float(FloatType::F64)), &[]).unwrap_err();
+        assert_eq!(
+            errors.as_slice()[0].code(),
+            PatternDiagnosticCode::Pattern002
         );
     }
 }

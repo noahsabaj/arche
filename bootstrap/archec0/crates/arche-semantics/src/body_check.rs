@@ -54,10 +54,11 @@ use crate::model::{
 };
 use crate::pattern::{
     analyze_pattern_match, check_irrefutable_pattern, BindingAnnotation, BindingMode, EnumType,
-    EnumVariant, IntegerType as PatternIntegerType, IrrefutablePatternAnalysis, Pattern,
-    PatternArm, PatternBinding, PatternConst, PatternErrors, PatternLiteral, PatternMatchAnalysis,
-    PatternScrutinee, PatternType, PlaceMutability, RangeEndpoint, RecordField, RecordPatternField,
-    RecordType, ReferenceMutability, TypedPattern, TypedPatternKind,
+    EnumVariant, FloatType as PatternFloatType, IntegerType as PatternIntegerType,
+    IrrefutablePatternAnalysis, Pattern, PatternArm, PatternBinding, PatternConst,
+    PatternErrorKind, PatternErrors, PatternLiteral, PatternMatchAnalysis, PatternScrutinee,
+    PatternType, PlaceMutability, RangeEndpoint, RecordField, RecordPatternField, RecordType,
+    ReferenceMutability, TypedPattern, TypedPatternKind,
 };
 use crate::typing::{
     check_typed_expression, BinaryTypeOperator, CheckedExpression, CheckedExpressionKind,
@@ -6874,7 +6875,7 @@ impl BodyChecker<'_, '_, '_> {
             return;
         };
         let arms = [
-            PatternArm::new(lowered, false),
+            PatternArm::new(lowered.clone(), false),
             PatternArm::new(Pattern::Wildcard, false),
         ];
         let scrutinee = PatternScrutinee::new(pattern_ty, mutability);
@@ -6888,6 +6889,22 @@ impl BodyChecker<'_, '_, '_> {
                     span: pattern.span,
                     analysis: CheckedBodyPatternAnalysis::Refutable(analysis),
                 });
+            }
+            Err(errors) if helper_wildcard_unreachable(&errors) => {
+                // An irrefutable pattern in a refutable position covers every
+                // value; analyze it as irrefutable rather than minting an
+                // unreachable-arm rejection for the helper wildcard row.
+                match check_irrefutable_pattern(&scrutinee, &lowered) {
+                    Ok(analysis) => {
+                        self.collect_irrefutable_ctfe(&analysis);
+                        self.bind_pattern_locals(pattern, irrefutable_typed_pattern(&analysis));
+                        self.patterns.push(CheckedBodyPattern {
+                            span: pattern.span,
+                            analysis: CheckedBodyPatternAnalysis::Irrefutable(analysis),
+                        });
+                    }
+                    Err(errors) => self.pattern_errors_simple(pattern.span, errors),
+                }
             }
             Err(errors) => self.pattern_errors_simple(pattern.span, errors),
         }
@@ -6939,16 +6956,25 @@ impl BodyChecker<'_, '_, '_> {
             return;
         };
         let arms = [
-            PatternArm::new(lowered, false),
+            PatternArm::new(lowered.clone(), false),
             PatternArm::new(Pattern::Wildcard, false),
         ];
-        if let Ok(analysis) = analyze_pattern_match(
-            &PatternScrutinee::new(pattern_ty, PlaceMutability::Mutable),
-            &arms,
-        ) {
-            if let Some(typed) = match_first_typed_pattern(&analysis) {
-                self.bind_pattern_locals(pattern, typed);
+        let scrutinee = PatternScrutinee::new(pattern_ty, PlaceMutability::Mutable);
+        match analyze_pattern_match(&scrutinee, &arms) {
+            Ok(analysis) => {
+                if let Some(typed) = match_first_typed_pattern(&analysis) {
+                    self.bind_pattern_locals(pattern, typed);
+                }
             }
+            Err(errors) if helper_wildcard_unreachable(&errors) => {
+                // The arm is irrefutable, so the helper wildcard row is
+                // unreachable; recover the bindings through the irrefutable
+                // analysis instead of silently dropping them.
+                if let Ok(analysis) = check_irrefutable_pattern(&scrutinee, &lowered) {
+                    self.bind_pattern_locals(pattern, irrefutable_typed_pattern(&analysis));
+                }
+            }
+            Err(_) => {}
         }
     }
 
@@ -6961,6 +6987,11 @@ impl BodyChecker<'_, '_, '_> {
     fn pattern_type(&mut self, ty: &SymbolicType, span: Span) -> Option<PatternType> {
         let output = match ty {
             SymbolicType::Unit => PatternType::Unit,
+            SymbolicType::F32 => PatternType::Float(PatternFloatType::F32),
+            SymbolicType::F64 => PatternType::Float(PatternFloatType::F64),
+            SymbolicType::BoundType { depth, index } => {
+                PatternType::Opaque(format!("bound-type:{depth}#{index}").into())
+            }
             SymbolicType::Bool => PatternType::Bool,
             SymbolicType::Char => PatternType::Char,
             SymbolicType::I8 => PatternType::Integer(PatternIntegerType::Signed(8)),
@@ -7669,6 +7700,8 @@ fn pattern_constructor_fields<'a>(
         | PatternType::Slice(_)
         | PatternType::Record(_)
         | PatternType::Reference { .. }
+        | PatternType::Float(_)
+        | PatternType::Opaque(_)
         | PatternType::Unsupported(_) => (Vec::new(), Vec::new(), false),
     }
 }
@@ -7777,6 +7810,15 @@ fn collect_binding_spans(pattern: &AstPattern, output: &mut BTreeMap<String, Spa
     }
 }
 
+/// True when a helper two-arm analysis failed only because the appended
+/// wildcard row is unreachable — i.e. the real arm is irrefutable.
+fn helper_wildcard_unreachable(errors: &PatternErrors) -> bool {
+    !errors.as_slice().is_empty()
+        && errors.as_slice().iter().all(|error| {
+            error.kind() == &PatternErrorKind::UnreachableArm && error.arm_index() == Some(1)
+        })
+}
+
 fn pattern_type_to_symbolic(ty: &PatternType) -> Option<SymbolicType> {
     match ty {
         PatternType::Unit => Some(SymbolicType::Unit),
@@ -7825,7 +7867,10 @@ fn pattern_type_to_symbolic(ty: &PatternType) -> Option<SymbolicType> {
         | PatternType::SymbolicArray { .. }
         | PatternType::Record(_)
         | PatternType::Enum(_)
+        | PatternType::Opaque(_)
         | PatternType::Unsupported(_) => None,
+        PatternType::Float(PatternFloatType::F32) => Some(SymbolicType::F32),
+        PatternType::Float(PatternFloatType::F64) => Some(SymbolicType::F64),
     }
 }
 
@@ -9494,6 +9539,35 @@ mod tests {
         };
         let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
             .unwrap_or_else(|failure| panic!("never-typed arms must not seed: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn float_fields_are_bindable_without_poisoning_the_match_domain() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct Location {\n",
+            "    pub x: f32,\n",
+            "    pub y: f32,\n",
+            "}\n",
+            "pub fn pick(pair: (Location, i32)) -> i32 {\n",
+            "    match pair {\n",
+            "        (position, n) => n,\n",
+            "    }\n",
+            "}\n",
+            "pub fn keep(value: f64) -> f64 {\n",
+            "    let held = value;\n",
+            "    held\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("float bindings must close: {failure:#?}"));
         assert!(bodies.all_authority_complete());
     }
 }
