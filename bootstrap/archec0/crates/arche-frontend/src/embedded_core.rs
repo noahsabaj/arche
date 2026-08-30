@@ -14,10 +14,19 @@ use std::fmt;
 use std::str::FromStr as _;
 use std::sync::{Arc, OnceLock};
 
-use arche_foundation::identity::{InterfaceHash, PackageId};
+use arche_foundation::identity::{DefinitionId, InterfaceHash, PackageId};
 use arche_package::{canonical_package_id, PackageName, OFFICIAL_REGISTRY_IDENTITY};
 use sha2::{Digest as _, Sha256};
 
+use crate::{
+    mint_definition_id, try_canonicalize_declaration_shape, try_canonicalize_definition_owner,
+    CanonicalDefinitionOwner, DeclarationKind, GenericArgumentShape, GenericParameterKind,
+    Mutability, SemanticDeclarationPath, SymbolicCallableKind, SymbolicCallableParameterMode,
+    SymbolicCallableParameterSkeleton, SymbolicCallableShapeSkeleton,
+    SymbolicDeclarationPayloadSkeleton, SymbolicDeclarationShapeSkeleton,
+    SymbolicDefinitionOwnerSkeleton, SymbolicEffectSetsSkeleton, SymbolicLifetime,
+    SymbolicMethodShapeSkeleton, SymbolicType, SymbolicTypeShapeSkeleton, TargetRoot,
+};
 use crate::{FileId, SourcePosition, Span, EMBEDDED_CORE_FILE_ID};
 
 /// The selected embedded interface release.
@@ -582,6 +591,7 @@ pub struct CompilerTraitMethodAuthority {
     receiver: CompilerTraitReceiverMode,
     callable: CompilerTraitCallablePattern,
     effects: CompilerTraitEffectPattern,
+    definition: Option<DefinitionId>,
 }
 
 impl CompilerTraitMethodAuthority {
@@ -608,6 +618,15 @@ impl CompilerTraitMethodAuthority {
     pub const fn effects(&self) -> CompilerTraitEffectPattern {
         self.effects
     }
+
+    /// Returns the stable `DefinitionId` minted for this required method.
+    ///
+    /// Compiler-derived callable traits (`Fn`, `FnMut`, `FnOnce`) adopt their
+    /// `call` shape from the `Signature` argument, so they own no fixed source
+    /// method entry and no method identity.
+    pub const fn definition_id(&self) -> Option<DefinitionId> {
+        self.definition
+    }
 }
 
 /// Verified typed authority for one compiler-known trait.
@@ -619,6 +638,8 @@ pub struct CompilerTraitAuthority {
     designated_self: CompilerTraitSelfRelation,
     user_impl_policy: UserImplPolicy,
     method: Option<CompilerTraitMethodAuthority>,
+    shape: SymbolicDeclarationShapeSkeleton,
+    definition: DefinitionId,
 }
 
 impl CompilerTraitAuthority {
@@ -644,6 +665,19 @@ impl CompilerTraitAuthority {
 
     pub const fn method(&self) -> Option<&CompilerTraitMethodAuthority> {
         self.method.as_ref()
+    }
+
+    /// Returns the canonical declaration shape this trait row was minted from.
+    pub const fn declaration_shape(&self) -> &SymbolicDeclarationShapeSkeleton {
+        &self.shape
+    }
+
+    /// Returns the exact raw stable `DefinitionId` of this trait row.
+    ///
+    /// It is the identity a compiler-known `SemanticTraitKey` encodes after the
+    /// branded interface version and digest.
+    pub const fn definition_id(&self) -> DefinitionId {
+        self.definition
     }
 }
 
@@ -1215,6 +1249,33 @@ pub struct EmbeddedCoreC1PackageProjection {
 }
 
 impl EmbeddedCoreC1PackageProjection {
+    /// Returns the canonical declaration path of one virtual definition row.
+    ///
+    /// The embedded package is a single public library root with no module
+    /// segments. Primitive rows are keywords rather than declarations and have
+    /// no declaration path.
+    pub fn declaration_path(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<SemanticDeclarationPath> {
+        let row = self.definitions.get(usize::from(definition.0))?;
+        let kind = match row.declaration_kind {
+            VirtualDeclarationKind::Struct => DeclarationKind::Struct,
+            VirtualDeclarationKind::Enum => DeclarationKind::Enum,
+            VirtualDeclarationKind::Trait => DeclarationKind::Trait,
+            VirtualDeclarationKind::Function => DeclarationKind::Function,
+            VirtualDeclarationKind::Primitive => return None,
+        };
+        Some(SemanticDeclarationPath {
+            registry_origin: self.registry_origin.clone(),
+            package_name: self.scoped_name.clone(),
+            target: TargetRoot::Library,
+            modules: Vec::new(),
+            kind,
+            name: row.name.clone(),
+        })
+    }
+
     pub const fn package(&self) -> PackageId {
         self.package
     }
@@ -3292,7 +3353,7 @@ fn build_typed_compiler_trait(
     let explicit_generic_arity = u8::try_from(spec.generic_names.len())
         .map_err(|_| EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?;
     verify_self_relation_coordinate(spec.designated_self, explicit_generic_arity)?;
-    let method = match spec.method {
+    let parsed_method = match spec.method {
         Some(method_spec) => {
             if trait_row.methods.len() != 1 {
                 return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority);
@@ -3312,14 +3373,13 @@ fn build_typed_compiler_trait(
                 return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority);
             }
             let (callable, effects) = parse_trait_callable(spec, &method_spec)?;
-            Some(CompilerTraitMethodAuthority {
-                kind: method_spec.kind,
-                c1_method: row.id,
-                source_name: row.source_name.clone(),
-                receiver: method_spec.receiver,
+            Some((
+                method_spec,
+                row.id,
+                row.source_name.clone(),
                 callable,
                 effects,
-            })
+            ))
         }
         None => {
             if !trait_row.methods.is_empty() {
@@ -3328,6 +3388,74 @@ fn build_typed_compiler_trait(
             None
         }
     };
+    let trait_path = projection
+        .declaration_path(definition)
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?;
+    let method_shape = match &parsed_method {
+        Some((method_spec, _, source_name, callable, _)) => compiler_trait_method_shape(
+            projection,
+            spec,
+            method_spec.receiver,
+            callable,
+            explicit_generic_arity,
+        )?
+        .map(|shape| (source_name.clone(), shape)),
+        None => None,
+    };
+    let shape = SymbolicDeclarationShapeSkeleton {
+        generic_parameters: vec![GenericParameterKind::Type; usize::from(explicit_generic_arity)],
+        predicates: Vec::new(),
+        payload: SymbolicDeclarationPayloadSkeleton::Trait {
+            methods: method_shape
+                .iter()
+                .map(|(name, shape)| SymbolicMethodShapeSkeleton {
+                    name: name.clone(),
+                    shape: Box::new(shape.clone()),
+                })
+                .collect(),
+        },
+    };
+    let trait_identity = mint_embedded_definition_id(&trait_path, &[], &shape)?;
+    let method = match parsed_method {
+        Some((method_spec, c1_method, source_name, callable, effects)) => {
+            let definition = match &method_shape {
+                Some((name, method_shape)) => {
+                    let owner = try_canonicalize_definition_owner(
+                        &SymbolicDefinitionOwnerSkeleton::Trait {
+                            path: trait_path.clone(),
+                            shape: Box::new(shape.clone()),
+                        },
+                    )
+                    .map_err(|_| EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+                    let method_path = SemanticDeclarationPath {
+                        registry_origin: trait_path.registry_origin.clone(),
+                        package_name: trait_path.package_name.clone(),
+                        target: TargetRoot::Library,
+                        modules: Vec::new(),
+                        kind: DeclarationKind::Function,
+                        name: name.clone(),
+                    };
+                    Some(mint_embedded_definition_id(
+                        &method_path,
+                        std::slice::from_ref(&owner),
+                        method_shape,
+                    )?)
+                }
+                None => None,
+            };
+            Some(CompilerTraitMethodAuthority {
+                kind: method_spec.kind,
+                c1_method,
+                source_name,
+                receiver: method_spec.receiver,
+                callable,
+                effects,
+                definition,
+            })
+        }
+        None => None,
+    };
     Ok(CompilerTraitAuthority {
         kind: spec.kind,
         c1_definition: definition,
@@ -3335,7 +3463,226 @@ fn build_typed_compiler_trait(
         designated_self: spec.designated_self,
         user_impl_policy: spec.user_impl_policy,
         method,
+        shape,
+        definition: trait_identity,
     })
+}
+
+/// Lowers compiler-trait type patterns into the exact symbolic types C1 would
+/// produce for an equivalent source trait: explicit trait generics occupy
+/// binder indices `0..N` one frame above an owned method, implicit `Self` is
+/// index `N` in that same frame, and every elided reference in the method
+/// signature allocates one hidden lifetime binder at method depth in
+/// receiver-first, preorder first-occurrence order.
+struct CompilerTraitShapeLowering<'a> {
+    projection: &'a EmbeddedCoreC1PackageProjection,
+    explicit_generic_arity: u8,
+    designated_self: CompilerTraitSelfRelation,
+    hidden_lifetime_count: u64,
+}
+
+impl CompilerTraitShapeLowering<'_> {
+    /// Binder depth of the enclosing trait frame as seen from an owned method.
+    const TRAIT_DEPTH: u64 = 1;
+    /// Binder depth of the method's own frame, which owns hidden lifetimes.
+    const METHOD_DEPTH: u64 = 0;
+
+    fn designated_self_type(&self) -> SymbolicType {
+        let index = match self.designated_self {
+            CompilerTraitSelfRelation::OperatedType | CompilerTraitSelfRelation::CallableType => {
+                u64::from(self.explicit_generic_arity)
+            }
+            CompilerTraitSelfRelation::Target(parameter)
+            | CompilerTraitSelfRelation::LeftHandSide(parameter)
+            | CompilerTraitSelfRelation::Input(parameter)
+            | CompilerTraitSelfRelation::Source(parameter)
+            | CompilerTraitSelfRelation::Iterator(parameter) => u64::from(parameter.index()),
+        };
+        SymbolicType::BoundType {
+            depth: Self::TRAIT_DEPTH,
+            index,
+        }
+    }
+
+    fn hidden_lifetime(&mut self) -> Result<SymbolicLifetime, EmbeddedCoreVerificationError> {
+        let index = self.hidden_lifetime_count;
+        self.hidden_lifetime_count = index
+            .checked_add(1)
+            .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+        Ok(SymbolicLifetime::Bound {
+            depth: Self::METHOD_DEPTH,
+            index,
+        })
+    }
+
+    fn lower(
+        &mut self,
+        pattern: &CompilerTraitTypePattern,
+    ) -> Result<SymbolicType, EmbeddedCoreVerificationError> {
+        Ok(match pattern {
+            CompilerTraitTypePattern::SelfType => self.designated_self_type(),
+            CompilerTraitTypePattern::ExplicitGeneric(parameter) => SymbolicType::BoundType {
+                depth: Self::TRAIT_DEPTH,
+                index: u64::from(parameter.index()),
+            },
+            CompilerTraitTypePattern::SharedReference(inner) => {
+                let lifetime = self.hidden_lifetime()?;
+                SymbolicType::Reference {
+                    mutability: Mutability::Shared,
+                    lifetime,
+                    pointee: Box::new(self.lower(inner)?),
+                }
+            }
+            CompilerTraitTypePattern::MutableReference(inner) => {
+                let lifetime = self.hidden_lifetime()?;
+                SymbolicType::Reference {
+                    mutability: Mutability::Mutable,
+                    lifetime,
+                    pointee: Box::new(self.lower(inner)?),
+                }
+            }
+            CompilerTraitTypePattern::Primitive(primitive) => primitive_symbolic_type(*primitive),
+            CompilerTraitTypePattern::Nominal { kind, arguments } => {
+                let name = compiler_nominal_name(*kind)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+                let definition =
+                    find_definition_id(&self.projection.definitions, name, VirtualNamespace::Type)
+                        .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+                let declaration = self
+                    .projection
+                    .declaration_path(definition)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+                let arguments = arguments
+                    .iter()
+                    .map(|argument| Ok(GenericArgumentShape::Type(self.lower(argument)?)))
+                    .collect::<Result<Vec<_>, EmbeddedCoreVerificationError>>()?;
+                SymbolicType::NominalPath {
+                    declaration,
+                    arguments,
+                }
+            }
+        })
+    }
+}
+
+const fn primitive_symbolic_type(primitive: CompilerPrimitiveTypePattern) -> SymbolicType {
+    match primitive {
+        CompilerPrimitiveTypePattern::Never => SymbolicType::Never,
+        CompilerPrimitiveTypePattern::Unit => SymbolicType::Unit,
+        CompilerPrimitiveTypePattern::Bool => SymbolicType::Bool,
+        CompilerPrimitiveTypePattern::Char => SymbolicType::Char,
+        CompilerPrimitiveTypePattern::Entity => SymbolicType::Entity,
+        CompilerPrimitiveTypePattern::F32 => SymbolicType::F32,
+        CompilerPrimitiveTypePattern::F64 => SymbolicType::F64,
+        CompilerPrimitiveTypePattern::I8 => SymbolicType::I8,
+        CompilerPrimitiveTypePattern::I16 => SymbolicType::I16,
+        CompilerPrimitiveTypePattern::I32 => SymbolicType::I32,
+        CompilerPrimitiveTypePattern::I64 => SymbolicType::I64,
+        CompilerPrimitiveTypePattern::Isize => SymbolicType::Isize,
+        CompilerPrimitiveTypePattern::Str => SymbolicType::Str,
+        CompilerPrimitiveTypePattern::U8 => SymbolicType::U8,
+        CompilerPrimitiveTypePattern::U16 => SymbolicType::U16,
+        CompilerPrimitiveTypePattern::U32 => SymbolicType::U32,
+        CompilerPrimitiveTypePattern::U64 => SymbolicType::U64,
+        CompilerPrimitiveTypePattern::Usize => SymbolicType::Usize,
+    }
+}
+
+fn compiler_nominal_name(kind: CompilerNominalKind) -> Option<&'static str> {
+    NOMINAL_TYPES
+        .iter()
+        .find(|(candidate, _, _, _, _)| *candidate == kind)
+        .map(|(_, name, _, _, _)| *name)
+}
+
+/// Builds the declaration shape of one compiler-trait required method, or
+/// `None` for a compiler-derived `call` whose shape is adopted from the
+/// `Signature` argument rather than fixed by the trait declaration.
+fn compiler_trait_method_shape(
+    projection: &EmbeddedCoreC1PackageProjection,
+    spec: &CompilerTraitSpec,
+    receiver: CompilerTraitReceiverMode,
+    callable: &CompilerTraitCallablePattern,
+    explicit_generic_arity: u8,
+) -> Result<Option<SymbolicDeclarationShapeSkeleton>, EmbeddedCoreVerificationError> {
+    let CompilerTraitCallablePattern::Fixed { parameters, result } = callable else {
+        return Ok(None);
+    };
+    let mut lowering = CompilerTraitShapeLowering {
+        projection,
+        explicit_generic_arity,
+        designated_self: spec.designated_self,
+        hidden_lifetime_count: 0,
+    };
+    let mut lowered = Vec::new();
+    match receiver {
+        CompilerTraitReceiverMode::None => {}
+        CompilerTraitReceiverMode::Value => lowered.push(SymbolicCallableParameterSkeleton {
+            mode: SymbolicCallableParameterMode::ReceiverValue,
+            ty: SymbolicTypeShapeSkeleton::resolved(lowering.designated_self_type()),
+        }),
+        CompilerTraitReceiverMode::Shared => {
+            let lifetime = lowering.hidden_lifetime()?;
+            lowered.push(SymbolicCallableParameterSkeleton {
+                mode: SymbolicCallableParameterMode::ReceiverShared,
+                ty: SymbolicTypeShapeSkeleton::resolved(SymbolicType::Reference {
+                    mutability: Mutability::Shared,
+                    lifetime,
+                    pointee: Box::new(lowering.designated_self_type()),
+                }),
+            });
+        }
+        CompilerTraitReceiverMode::Mutable => {
+            let lifetime = lowering.hidden_lifetime()?;
+            lowered.push(SymbolicCallableParameterSkeleton {
+                mode: SymbolicCallableParameterMode::ReceiverMutable,
+                ty: SymbolicTypeShapeSkeleton::resolved(SymbolicType::Reference {
+                    mutability: Mutability::Mutable,
+                    lifetime,
+                    pointee: Box::new(lowering.designated_self_type()),
+                }),
+            });
+        }
+    }
+    for parameter in parameters.iter() {
+        lowered.push(SymbolicCallableParameterSkeleton {
+            mode: SymbolicCallableParameterMode::Value,
+            ty: SymbolicTypeShapeSkeleton::resolved(lowering.lower(parameter)?),
+        });
+    }
+    let result = SymbolicTypeShapeSkeleton::resolved(lowering.lower(result)?);
+    let hidden = usize::try_from(lowering.hidden_lifetime_count)
+        .map_err(|_| EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+    Ok(Some(SymbolicDeclarationShapeSkeleton {
+        generic_parameters: vec![GenericParameterKind::Lifetime; hidden],
+        predicates: Vec::new(),
+        payload: SymbolicDeclarationPayloadSkeleton::Callable(Box::new(
+            SymbolicCallableShapeSkeleton {
+                kind: SymbolicCallableKind::Function,
+                parameters: lowered,
+                result,
+                unsafe_: false,
+                resume: None,
+                yields: None,
+                effects: SymbolicEffectSetsSkeleton::default(),
+            },
+        )),
+    }))
+}
+
+/// Mints one embedded-core `DefinitionId` from a fully closed shape. Embedded
+/// rows carry no const dependency, so canonicalization never leaves a pending
+/// placeholder; any failure is an authority construction defect.
+fn mint_embedded_definition_id(
+    path: &SemanticDeclarationPath,
+    owners: &[CanonicalDefinitionOwner],
+    shape: &SymbolicDeclarationShapeSkeleton,
+) -> Result<DefinitionId, EmbeddedCoreVerificationError> {
+    let shape = try_canonicalize_declaration_shape(shape)
+        .map_err(|_| EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?;
+    mint_definition_id(path, owners, &shape)
+        .map_err(|_| EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)
 }
 
 fn verify_self_relation_coordinate(
@@ -6198,6 +6545,344 @@ mod tests {
         assert_eq!(
             hex(projection.public_interface_hash.as_bytes()),
             "95fa41304eff6470a116e4097d7be22d"
+        );
+    }
+
+    #[test]
+    fn compiler_trait_definition_ids_are_frozen() {
+        const FROZEN: &[(CompilerTraitKind, &str, Option<&str>)] = &[
+            (
+                CompilerTraitKind::Add,
+                "6D23F57B7C92B04CAAC9BC07045F971A",
+                Some("ACA28A85B0C34B76ABDACAD2A89AA2D3"),
+            ),
+            (
+                CompilerTraitKind::BitAnd,
+                "E1A74CA0A0D056CA25BF3E4D042CC1C8",
+                Some("FB31D40A8E96A0E06490A5EC352B6443"),
+            ),
+            (
+                CompilerTraitKind::BitNot,
+                "668EA68BF7122A9B3DB097FE7AE00242",
+                Some("97DAD38485D39DE899F24BC05BA1091F"),
+            ),
+            (
+                CompilerTraitKind::BitOr,
+                "A36208E74E09E7A84479E2B657EB62BB",
+                Some("048A9FDF64EDFA4C19A19F80B1BFCE5F"),
+            ),
+            (
+                CompilerTraitKind::BitXor,
+                "E9824E96A0AC96F710BE9796CC660A17",
+                Some("5AA4E75F103CDABA81DB535D24B52FEB"),
+            ),
+            (
+                CompilerTraitKind::Clone,
+                "D94CC0F06DD83560F793D4DC0F7555C9",
+                Some("34A4FB5729BE8B3B259A75AC18529C0A"),
+            ),
+            (
+                CompilerTraitKind::Copy,
+                "832E6D3D3FFDC9358E0727D7B8741EAE",
+                None,
+            ),
+            (
+                CompilerTraitKind::Div,
+                "01A10BEC637E3EAD6F52456A67A8D8CA",
+                Some("BB69176A68E64784AB0E769454C87ABC"),
+            ),
+            (
+                CompilerTraitKind::Drop,
+                "6B892E49982851736DA45B87536124ED",
+                Some("DAE96F32E375F046C630EF32C4F20003"),
+            ),
+            (
+                CompilerTraitKind::EcsKey,
+                "093E95581BBC14DF994BFB00851DE986",
+                None,
+            ),
+            (
+                CompilerTraitKind::EcsValue,
+                "F02D4DE3121895CE2BBD90981A41F65A",
+                None,
+            ),
+            (
+                CompilerTraitKind::Eq,
+                "10A669786233C6D8D98637DC7BCA2D66",
+                Some("C3B6D9C990D4294937C0BC48F793AE7E"),
+            ),
+            (
+                CompilerTraitKind::Fn,
+                "7091FE1A80B4064E3FC6742228F2DF0B",
+                None,
+            ),
+            (
+                CompilerTraitKind::FnMut,
+                "00AB6E280865F2E07BA011F3D0193DE5",
+                None,
+            ),
+            (
+                CompilerTraitKind::FnOnce,
+                "9F6A169B779D5C818EE3168134FCE056",
+                None,
+            ),
+            (
+                CompilerTraitKind::From,
+                "B5CEE2F07C8723F51704F2E939298485",
+                Some("901B4B33EE99068FF523DD542AF0FB03"),
+            ),
+            (
+                CompilerTraitKind::IntoIterator,
+                "9925C21361D2179F6043B9563332F1C9",
+                Some("EA74D3442D46A5A06A2E83FE95988D32"),
+            ),
+            (
+                CompilerTraitKind::Iterator,
+                "B6D35EEF8DD5076EB0FEF4ADFDD4A19F",
+                Some("5ECFF4FCFF45797BD8FBF77615933A90"),
+            ),
+            (
+                CompilerTraitKind::LogicalNot,
+                "1CD8481CBA19924CCE1B125D8C809EB2",
+                Some("494719C6FAFFBEF9DAD29211DB2849F8"),
+            ),
+            (
+                CompilerTraitKind::Mul,
+                "3CA779DE9C28829A3CEC3F0BEA74648C",
+                Some("01222553FFD40811BFAE843E3F81F9CB"),
+            ),
+            (
+                CompilerTraitKind::Neg,
+                "E34E160F23F0CBDEC777F9168D906F17",
+                Some("522A683F7991A1C70EB43968B27C9FE8"),
+            ),
+            (
+                CompilerTraitKind::Ord,
+                "262BD292328B8DF8B695E0A14839759E",
+                Some("E29C57D1404786D776BC4A51AB5CFBBA"),
+            ),
+            (
+                CompilerTraitKind::Rem,
+                "DDDAB6F5C9501EF29F5E759C73BB899E",
+                Some("F64A42535A2CC746EC859C9EDC329ADC"),
+            ),
+            (
+                CompilerTraitKind::Send,
+                "428B54820CD80DE61582A6A0D950A434",
+                None,
+            ),
+            (
+                CompilerTraitKind::ShiftLeft,
+                "871A5456B755C6C7675DF6CB4251E201",
+                Some("38629F8F099F1082763D9E908E1488C1"),
+            ),
+            (
+                CompilerTraitKind::ShiftRight,
+                "37E0196CDF4D1E57556D63A76026A753",
+                Some("96039654654CFE2D62A301D3D952FB84"),
+            ),
+            (
+                CompilerTraitKind::Sub,
+                "CA7A2C7246AD8B4D478053F2DEF5F329",
+                Some("FD39E7C21F248D76B5ACC09E4C28F9C2"),
+            ),
+            (
+                CompilerTraitKind::Sync,
+                "BFA02FE694214A0538F6CF708E3FA8D4",
+                None,
+            ),
+            (
+                CompilerTraitKind::TryFrom,
+                "AE09E8A5EE7AEDABA0E49962A8B5D09B",
+                Some("7BE9D9823E3B252B37FEE7F03408D756"),
+            ),
+            (
+                CompilerTraitKind::Unpin,
+                "CCEFFC114A2C9303648C1B1FBEC4B8BE",
+                None,
+            ),
+            (
+                CompilerTraitKind::UnwindPayload,
+                "C586363B35E60F89C18DD55652E618CE",
+                None,
+            ),
+        ];
+        let core = verified_embedded_core_authority().unwrap();
+        let rows = core.typed_c2().compiler_traits();
+        assert_eq!(rows.len(), FROZEN.len());
+        for (row, (kind, trait_id, method_id)) in rows.iter().zip(FROZEN) {
+            assert_eq!(row.kind(), *kind);
+            assert_eq!(row.definition_id().to_string(), *trait_id, "{kind:?}");
+            assert_eq!(
+                row.method()
+                    .and_then(|method| method.definition_id())
+                    .map(|id| id.to_string()),
+                method_id.map(str::to_owned),
+                "{kind:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn compiler_trait_shapes_mirror_c1_source_lowering() {
+        let core = verified_embedded_core_authority().unwrap();
+        let typed = core.typed_c2();
+
+        let clone = typed.compiler_trait(CompilerTraitKind::Clone);
+        let shape = clone.declaration_shape();
+        assert!(shape.generic_parameters.is_empty());
+        assert!(shape.predicates.is_empty());
+        let SymbolicDeclarationPayloadSkeleton::Trait { methods } = &shape.payload else {
+            panic!("Clone shape must be a trait payload");
+        };
+        assert_eq!(methods.len(), 1);
+        assert_eq!(methods[0].name, "clone");
+        let method = &*methods[0].shape;
+        assert_eq!(
+            method.generic_parameters,
+            vec![GenericParameterKind::Lifetime]
+        );
+        let SymbolicDeclarationPayloadSkeleton::Callable(callable) = &method.payload else {
+            panic!("clone must be a callable payload");
+        };
+        assert_eq!(callable.parameters.len(), 1);
+        assert_eq!(
+            callable.parameters[0].mode,
+            SymbolicCallableParameterMode::ReceiverShared
+        );
+        assert_eq!(
+            callable.parameters[0].ty,
+            SymbolicTypeShapeSkeleton::resolved(SymbolicType::Reference {
+                mutability: Mutability::Shared,
+                lifetime: SymbolicLifetime::Bound { depth: 0, index: 0 },
+                pointee: Box::new(SymbolicType::BoundType { depth: 1, index: 0 }),
+            })
+        );
+        assert_eq!(
+            callable.result,
+            SymbolicTypeShapeSkeleton::resolved(SymbolicType::BoundType { depth: 1, index: 0 })
+        );
+
+        let eq = typed.compiler_trait(CompilerTraitKind::Eq);
+        let SymbolicDeclarationPayloadSkeleton::Trait { methods } = &eq.declaration_shape().payload
+        else {
+            panic!("Eq shape must be a trait payload");
+        };
+        let method = &*methods[0].shape;
+        assert_eq!(
+            method.generic_parameters,
+            vec![
+                GenericParameterKind::Lifetime,
+                GenericParameterKind::Lifetime
+            ]
+        );
+        let SymbolicDeclarationPayloadSkeleton::Callable(callable) = &method.payload else {
+            panic!("eq must be a callable payload");
+        };
+        assert_eq!(callable.parameters.len(), 2);
+        for (index, parameter) in callable.parameters.iter().enumerate() {
+            assert_eq!(parameter.mode, SymbolicCallableParameterMode::Value);
+            assert_eq!(
+                parameter.ty,
+                SymbolicTypeShapeSkeleton::resolved(SymbolicType::Reference {
+                    mutability: Mutability::Shared,
+                    lifetime: SymbolicLifetime::Bound {
+                        depth: 0,
+                        index: index as u64,
+                    },
+                    pointee: Box::new(SymbolicType::BoundType {
+                        depth: 1,
+                        index: index as u64,
+                    }),
+                })
+            );
+        }
+        assert_eq!(
+            callable.result,
+            SymbolicTypeShapeSkeleton::resolved(SymbolicType::Bool)
+        );
+
+        let iterator = typed.compiler_trait(CompilerTraitKind::Iterator);
+        let SymbolicDeclarationPayloadSkeleton::Trait { methods } =
+            &iterator.declaration_shape().payload
+        else {
+            panic!("Iterator shape must be a trait payload");
+        };
+        let SymbolicDeclarationPayloadSkeleton::Callable(callable) = &methods[0].shape.payload
+        else {
+            panic!("next must be a callable payload");
+        };
+        assert_eq!(callable.parameters.len(), 1);
+        assert_eq!(
+            callable.parameters[0].mode,
+            SymbolicCallableParameterMode::ReceiverMutable
+        );
+        assert_eq!(
+            callable.result,
+            SymbolicTypeShapeSkeleton::resolved(SymbolicType::NominalPath {
+                declaration: SemanticDeclarationPath {
+                    registry_origin: OFFICIAL_REGISTRY_IDENTITY.to_owned(),
+                    package_name: EMBEDDED_CORE_SCOPED_NAME.to_owned(),
+                    target: TargetRoot::Library,
+                    modules: Vec::new(),
+                    kind: DeclarationKind::Enum,
+                    name: "Option".to_owned(),
+                },
+                arguments: vec![GenericArgumentShape::Type(SymbolicType::BoundType {
+                    depth: 1,
+                    index: 1,
+                })],
+            })
+        );
+
+        let fn_trait = typed.compiler_trait(CompilerTraitKind::Fn);
+        let SymbolicDeclarationPayloadSkeleton::Trait { methods } =
+            &fn_trait.declaration_shape().payload
+        else {
+            panic!("Fn shape must be a trait payload");
+        };
+        assert!(
+            methods.is_empty(),
+            "compiler-derived call adopts its Signature shape and owns no fixed method entry"
+        );
+        assert_eq!(fn_trait.method().unwrap().definition_id(), None);
+    }
+
+    #[test]
+    fn clone_definition_id_preimage_is_byte_exact() {
+        use crate::{encode_definition_identity_preimage, encode_final_declaration_shape_identity};
+
+        let core = verified_embedded_core_authority().unwrap();
+        let row = core.typed_c2().compiler_trait(CompilerTraitKind::Clone);
+        let projection = core.projection();
+        let path = projection.declaration_path(row.c1_definition()).unwrap();
+        assert_eq!(path.kind, DeclarationKind::Trait);
+        let shape = try_canonicalize_declaration_shape(row.declaration_shape())
+            .unwrap()
+            .unwrap();
+        let preimage = encode_definition_identity_preimage(&path, &[], &shape).unwrap();
+
+        let mut expected = Vec::new();
+        let origin = OFFICIAL_REGISTRY_IDENTITY.as_bytes();
+        expected.extend_from_slice(&u64::try_from(origin.len()).unwrap().to_le_bytes());
+        expected.extend_from_slice(origin);
+        let package = EMBEDDED_CORE_SCOPED_NAME.as_bytes();
+        expected.extend_from_slice(&u64::try_from(package.len()).unwrap().to_le_bytes());
+        expected.extend_from_slice(package);
+        expected.push(1);
+        expected.extend_from_slice(&0_u64.to_le_bytes());
+        expected.extend_from_slice(&0_u64.to_le_bytes());
+        expected.push(11);
+        let name = b"Clone";
+        expected.extend_from_slice(&u64::try_from(name.len()).unwrap().to_le_bytes());
+        expected.extend_from_slice(name);
+        let shape_bytes = encode_final_declaration_shape_identity(&shape).unwrap();
+        expected.extend_from_slice(&u64::try_from(shape_bytes.len()).unwrap().to_le_bytes());
+        expected.extend_from_slice(&shape_bytes);
+        assert_eq!(preimage, expected);
+        assert_eq!(
+            row.definition_id().to_string(),
+            "D94CC0F06DD83560F793D4DC0F7555C9"
         );
     }
 
