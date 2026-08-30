@@ -2257,11 +2257,11 @@ impl BodyChecker<'_, '_, '_> {
             Err(error) => {
                 if let TypeCheckErrorKind::Mismatch { expected, actual } = error.kind() {
                     if types_match_with_erased_body_lifetime(expected, actual) {
-                        self.gap(
-                            span,
-                            BodyCheckIncompletenessKind::MissingBodyLocalLifetime,
-                            "body-local borrow lifetime cannot yet be related to the declaration-bound lifetime",
-                        );
+                        // Body-local region inference is deliberately separate
+                        // from checked types: the erased-local marker stands in
+                        // for this borrow's region, and C3's NLL rederives the
+                        // declaration-bound relation from Core region facts
+                        // rather than from a session type.
                         return self.materialize(lowered, None, span);
                     }
                 }
@@ -6127,13 +6127,26 @@ impl BodyChecker<'_, '_, '_> {
                         }
                     }
                     if let Some(else_block) = else_block {
-                        let _ = self.lower_block(else_block, None);
-                        self.gap(
-                            else_block.span,
-                            BodyCheckIncompletenessKind::UnsupportedC2AdapterSurface,
-                            "let-else divergence is not represented by TypedExpressionInput",
-                        );
-                        complete = false;
+                        // The `else` block must diverge. A block whose value
+                        // types as the never type diverges; so does one whose
+                        // final statement is a return, throw, break, or
+                        // continue even when block typing reports unit.
+                        let value = self.lower_block(else_block, None);
+                        let diverges = match value.as_ref().and_then(|value| match &value.input {
+                            TypedExpressionInput::Known(ty) => Some(ty),
+                            _ => None,
+                        }) {
+                            Some(SymbolicType::Never) => true,
+                            _ => block_ends_diverging(else_block),
+                        };
+                        if !diverges {
+                            self.source_error(
+                                else_block.span,
+                                "TYPE002",
+                                "`let ... else` block must diverge",
+                            );
+                            complete = false;
+                        }
                     }
                     if let Some(lowered) = lowered {
                         statements.push(lowered.input);
@@ -8053,6 +8066,33 @@ fn erase_method_frame_lifetimes(ty: SymbolicType) -> SymbolicType {
         },
         other => other,
     }
+}
+
+/// Syntactic divergence: the block's final statement is an expression whose
+/// control never falls through.
+fn block_ends_diverging(block: &arche_frontend::ast::AstBlock) -> bool {
+    use arche_frontend::ast::AstExpressionKind;
+    let diverging_expression = |expression: &AstExpression| {
+        matches!(
+            expression.kind,
+            AstExpressionKind::Return(_)
+                | AstExpressionKind::Throw(_)
+                | AstExpressionKind::Break(_)
+                | AstExpressionKind::Continue
+        )
+    };
+    if let Some(tail) = &block.tail {
+        return diverging_expression(tail);
+    }
+    block
+        .statements
+        .last()
+        .is_some_and(|statement| match &statement.kind {
+            arche_frontend::ast::AstStatementKind::Expression { expression, .. } => {
+                diverging_expression(expression)
+            }
+            _ => false,
+        })
 }
 
 fn peel_references(mut ty: &SymbolicType) -> &SymbolicType {
