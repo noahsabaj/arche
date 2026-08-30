@@ -6382,23 +6382,30 @@ impl BodyChecker<'_, '_, '_> {
                                 callee: CheckedBodyCallee::QueryIteration,
                                 result: item.clone(),
                             });
-                            Some(item.clone())
+                            Some(Some(item.clone()))
                         }
                         Some(_) => {
+                            // A compound source (a literal, block, or if) is
+                            // materialized for its type; every failure path
+                            // inside records its own gap or diagnostic.
                             let source =
                                 iterator_value
                                     .as_ref()
                                     .and_then(|value| match &value.input {
                                         TypedExpressionInput::Known(ty) => Some(ty.clone()),
-                                        _ => None,
+                                        _ => self
+                                            .materialize(value, None, iterator.span)
+                                            .map(|checked| checked.ty().clone()),
                                     });
                             match source {
                                 Some(source) => {
                                     match self.lower_ordinary_for_items(&source, iterator.span) {
-                                        Some(Some((_, item))) => Some(item),
+                                        Some(Some((_, item))) => Some(Some(item)),
+                                        // A definitive ambiguity rejection was
+                                        // minted for this loop.
                                         Some(None) => {
                                             complete = false;
-                                            None
+                                            Some(None)
                                         }
                                         None => {
                                             self.gap(
@@ -6422,23 +6429,30 @@ impl BodyChecker<'_, '_, '_> {
                             None
                         }
                     };
-                    if let Some(item_type) = &item_type {
+                    if let Some(Some(item_type)) = &item_type {
                         self.check_and_bind_irrefutable(
                             pattern,
                             item_type,
                             PlaceMutability::Mutable,
                         );
                     }
-                    let lowered_body = self.lower_loop_body(body);
-                    if lowered_body.is_none() {
-                        complete = false;
-                    }
-                    if let (Some(_), Some(body)) = (item_type, lowered_body) {
-                        // `for` has while-like break/continue typing and unit result.
-                        statements.push(TypedExpressionInput::While {
-                            condition: Box::new(TypedExpressionInput::Boolean(true)),
-                            body: Box::new(body.input),
-                        });
+                    if matches!(item_type, Some(None)) {
+                        // The ambiguity rejection stands for this loop; do not
+                        // manufacture missing-local gaps from a body whose
+                        // binding cannot have a typed selection.
+                    } else {
+                        let lowered_body = self.lower_loop_body(body);
+                        if lowered_body.is_none() {
+                            complete = false;
+                        }
+                        if let (Some(Some(_)), Some(body)) = (item_type, lowered_body) {
+                            // `for` has while-like break/continue typing and
+                            // unit result.
+                            statements.push(TypedExpressionInput::While {
+                                condition: Box::new(TypedExpressionInput::Boolean(true)),
+                                body: Box::new(body.input),
+                            });
+                        }
                     }
                 }
                 AstStatementKind::Assignment {
@@ -9876,5 +9890,129 @@ mod tests {
             .incompleteness()
             .iter()
             .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingMethodSelection));
+    }
+
+    #[test]
+    fn compound_for_sources_are_never_silently_dropped() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn raw_array() -> i32 {\n",
+            "    for _ in [1i32, 2i32, 3i32] {\n",
+            "    }\n",
+            "    0i32\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "a raw-array for keeps its selection gap until the negative matrix: {:?}",
+            failure.diagnostics()
+        );
+        assert!(failure
+            .incompleteness()
+            .iter()
+            .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingMethodSelection));
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct Src {\n",
+            "    pub start: i32,\n",
+            "}\n",
+            "pub struct It {\n",
+            "    current: i32,\n",
+            "}\n",
+            "impl IntoIterator<Src, It> for Src {\n",
+            "    fn into_iter(self) -> It {\n",
+            "        It { current: self.start }\n",
+            "    }\n",
+            "}\n",
+            "impl Iterator<It, i32> for It {\n",
+            "    fn next(&mut self) -> Option<i32> {\n",
+            "        Option::None\n",
+            "    }\n",
+            "}\n",
+            "pub fn block_source(source: Src) -> i32 {\n",
+            "    let mut sum = 0i32;\n",
+            "    for element in { source } {\n",
+            "        sum += element;\n",
+            "    }\n",
+            "    sum\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("a block source must select: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn ambiguous_iterator_impls_reject_even_when_the_binding_is_used() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct Src {\n",
+            "    pub start: i32,\n",
+            "}\n",
+            "pub struct It {\n",
+            "    current: i32,\n",
+            "}\n",
+            "pub struct It2 {\n",
+            "    current: i32,\n",
+            "}\n",
+            "impl IntoIterator<Src, It> for Src {\n",
+            "    fn into_iter(self) -> It {\n",
+            "        It { current: self.start }\n",
+            "    }\n",
+            "}\n",
+            "impl IntoIterator<Src, It2> for Src {\n",
+            "    fn into_iter(self) -> It2 {\n",
+            "        It2 { current: self.start }\n",
+            "    }\n",
+            "}\n",
+            "impl Iterator<It, i32> for It {\n",
+            "    fn next(&mut self) -> Option<i32> {\n",
+            "        Option::None\n",
+            "    }\n",
+            "}\n",
+            "impl Iterator<It2, i32> for It2 {\n",
+            "    fn next(&mut self) -> Option<i32> {\n",
+            "        Option::None\n",
+            "    }\n",
+            "}\n",
+            "pub fn used_binding(source: Src) -> i32 {\n",
+            "    let mut total = 0i32;\n",
+            "    for element in source {\n",
+            "        total += element;\n",
+            "    }\n",
+            "    total\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(
+            failure.diagnostics().is_some(),
+            "gaps={:?}",
+            failure.incompleteness()
+        );
+        assert!(
+            diagnostics.contains("TRAIT002"),
+            "diagnostics={diagnostics}"
+        );
     }
 }
