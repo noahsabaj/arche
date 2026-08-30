@@ -451,6 +451,7 @@ pub fn check_declarations_c2(
     }
     let catalog = build_catalog(handoff, &inputs);
     let sizedness = check_workspace_sizedness(handoff, &inputs, catalog.embedded);
+    let impl_family = check_workspace_impl_family(&inputs);
     let alias_cycles = {
         let paths = declaration_path_index(handoff, &inputs);
         check_workspace_alias_cycles(&inputs, &paths)
@@ -478,7 +479,6 @@ pub fn check_declarations_c2(
             &mut blockers,
         );
         let owner = resolve_owner_contextual_self(input, &inputs, &mut blockers);
-        record_unimplemented_judgments(input, &shape, &mut blockers);
         let definition_audit = audit_declaration_shape(&shape);
         let owner_audit = audit_definition_owner(&owner);
         collect_pending_blockers(
@@ -545,6 +545,34 @@ pub fn check_declarations_c2(
                     push_diagnostic(
                         input,
                         "TYPE001",
+                        message.clone(),
+                        input.definition.key.span,
+                        &mut diagnostics,
+                    );
+                }
+                provisional.push(None);
+                continue;
+            }
+        }
+
+        match &impl_family[input_index] {
+            ImplFamilyOutcome::Discharged => {}
+            ImplFamilyOutcome::Blocked(judgment) => {
+                blockers.push(DeclarationCheckBlocker {
+                    package: package_scope(input),
+                    target: input.target,
+                    path: input.path.clone(),
+                    span: input.definition.key.span,
+                    item: input.definition.hir_item,
+                    debug_spelling: format!("{judgment:?}"),
+                    reason: DeclarationCheckBlockerReason::MissingDeclarationJudgment(*judgment),
+                });
+            }
+            ImplFamilyOutcome::Rejected(messages) => {
+                for (code, message) in messages {
+                    push_diagnostic(
+                        input,
+                        code,
                         message.clone(),
                         input.definition.key.span,
                         &mut diagnostics,
@@ -2888,6 +2916,316 @@ fn check_workspace_sizedness(
     outcomes
 }
 
+/// Outcome of the impl-family judgments for one declaration.
+enum ImplFamilyOutcome {
+    /// Not an impl, or an impl whose orphan, overlap, and uniqueness
+    /// obligations all discharge.
+    Discharged,
+    /// The impl violates a decided rule; (code, message) pairs become
+    /// rejections.
+    Rejected(Vec<(&'static str, String)>),
+    /// The impl needs authority this judgment does not yet carry
+    /// (default-specialization containment, unresolved shapes).
+    Blocked(UnimplementedDeclarationJudgment),
+}
+
+/// The outermost nominal owner of an impl target, when one exists.
+fn outermost_nominal_package(ty: &SymbolicType) -> Option<&str> {
+    match ty {
+        SymbolicType::NominalPath { declaration, .. } => Some(&declaration.package_name),
+        _ => None,
+    }
+}
+
+/// First-order overlap test between two impl heads: bound coordinates on
+/// either side unify with anything, concrete constructors must agree. With
+/// 0.1's closed entailment there is no disjointness reasoning beyond heads,
+/// so a unifiable pair genuinely overlaps.
+fn impl_heads_unify(left: &SymbolicType, right: &SymbolicType) -> bool {
+    match (left, right) {
+        (SymbolicType::BoundType { .. }, _) | (_, SymbolicType::BoundType { .. }) => true,
+        (
+            SymbolicType::NominalPath {
+                declaration: left_declaration,
+                arguments: left_arguments,
+            },
+            SymbolicType::NominalPath {
+                declaration: right_declaration,
+                arguments: right_arguments,
+            },
+        ) => {
+            left_declaration == right_declaration
+                && left_arguments.len() == right_arguments.len()
+                && left_arguments
+                    .iter()
+                    .zip(right_arguments)
+                    .all(|(left, right)| match (left, right) {
+                        (GenericArgumentShape::Type(left), GenericArgumentShape::Type(right)) => {
+                            impl_heads_unify(left, right)
+                        }
+                        (left, right) => left == right,
+                    })
+        }
+        (
+            SymbolicType::Reference {
+                mutability: left_mutability,
+                pointee: left_pointee,
+                ..
+            },
+            SymbolicType::Reference {
+                mutability: right_mutability,
+                pointee: right_pointee,
+                ..
+            },
+        ) => left_mutability == right_mutability && impl_heads_unify(left_pointee, right_pointee),
+        (
+            SymbolicType::RawPointer {
+                mutability: left_mutability,
+                pointee: left_pointee,
+            },
+            SymbolicType::RawPointer {
+                mutability: right_mutability,
+                pointee: right_pointee,
+            },
+        ) => left_mutability == right_mutability && impl_heads_unify(left_pointee, right_pointee),
+        (SymbolicType::Tuple(left), SymbolicType::Tuple(right)) => {
+            left.len() == right.len()
+                && left
+                    .iter()
+                    .zip(right)
+                    .all(|(left, right)| impl_heads_unify(left, right))
+        }
+        (SymbolicType::Slice(left), SymbolicType::Slice(right)) => impl_heads_unify(left, right),
+        (
+            SymbolicType::Array {
+                element: left_element,
+                length: left_length,
+            },
+            SymbolicType::Array {
+                element: right_element,
+                length: right_length,
+            },
+        ) => left_length == right_length && impl_heads_unify(left_element, right_element),
+        (left, right) => left == right,
+    }
+}
+
+struct ImplRowFacts<'a> {
+    input: usize,
+    trait_head: Option<(&'a SemanticDeclarationPath, SymbolicType)>,
+    target: SymbolicType,
+    is_default: bool,
+    method_names: Vec<&'a str>,
+    generic_parameters: &'a [GenericParameterKind],
+    predicates: &'a [SymbolicPredicateShapeSkeleton],
+    resolved: bool,
+}
+
+/// The impl-family judgments: the orphan rule (COHERENCE001), non-default
+/// overlap (COHERENCE002), the default marker on inherent impls and duplicate
+/// inherent methods under one byte-identical canonical head (TRAIT001).
+/// Default-parent specialization containment stays behind the fail-closed
+/// blocker until the strict-subset calculus exists.
+fn check_workspace_impl_family(inputs: &[InputRow<'_>]) -> Vec<ImplFamilyOutcome> {
+    let mut rows: Vec<Option<ImplRowFacts<'_>>> = Vec::with_capacity(inputs.len());
+    for (index, input) in inputs.iter().enumerate() {
+        let shape = &input.definition.symbolic_shape;
+        let SymbolicDeclarationPayloadSkeleton::Impl {
+            trait_ref,
+            target,
+            is_default,
+            methods,
+        } = &shape.payload
+        else {
+            rows.push(None);
+            continue;
+        };
+        let mut resolved = true;
+        let target_ty = match target {
+            SymbolicTypeShapeSkeleton::Resolved { value, .. } => value.clone(),
+            SymbolicTypeShapeSkeleton::Pending(_) => {
+                resolved = false;
+                SymbolicType::Unit
+            }
+        };
+        let trait_head = match trait_ref {
+            None => None,
+            Some(SymbolicTypeShapeSkeleton::Resolved { value, .. }) => match value {
+                SymbolicType::NominalPath { declaration, .. } => Some((declaration, value.clone())),
+                _ => {
+                    resolved = false;
+                    None
+                }
+            },
+            Some(SymbolicTypeShapeSkeleton::Pending(_)) => {
+                resolved = false;
+                None
+            }
+        };
+        rows.push(Some(ImplRowFacts {
+            input: index,
+            trait_head,
+            target: target_ty,
+            is_default: *is_default,
+            method_names: methods.iter().map(|method| method.name.as_str()).collect(),
+            generic_parameters: &shape.generic_parameters,
+            predicates: &shape.predicates,
+            resolved,
+        }));
+    }
+
+    let mut outcomes: Vec<ImplFamilyOutcome> = inputs
+        .iter()
+        .map(|_| ImplFamilyOutcome::Discharged)
+        .collect();
+    let reject = |outcomes: &mut Vec<ImplFamilyOutcome>,
+                  index: usize,
+                  code: &'static str,
+                  message: String| {
+        match &mut outcomes[index] {
+            ImplFamilyOutcome::Rejected(list) => list.push((code, message)),
+            slot => *slot = ImplFamilyOutcome::Rejected(vec![(code, message)]),
+        }
+    };
+    let block = |outcomes: &mut Vec<ImplFamilyOutcome>,
+                 index: usize,
+                 judgment: UnimplementedDeclarationJudgment| {
+        if matches!(outcomes[index], ImplFamilyOutcome::Discharged) {
+            outcomes[index] = ImplFamilyOutcome::Blocked(judgment);
+        }
+    };
+
+    let facts: Vec<&ImplRowFacts<'_>> = rows.iter().flatten().collect();
+    for row in &facts {
+        let judgment = if row.trait_head.is_some() {
+            UnimplementedDeclarationJudgment::ImplCoherenceOverlap
+        } else {
+            UnimplementedDeclarationJudgment::InherentMethodUniqueness
+        };
+        if !row.resolved {
+            block(&mut outcomes, row.input, judgment);
+            continue;
+        }
+        match &row.trait_head {
+            Some((trait_path, _)) => {
+                // Orphan: the package must own the trait or the outermost
+                // nominal target.
+                let package = inputs[row.input].package_scope;
+                let owns_trait = trait_path.package_name == package;
+                let owns_target = outermost_nominal_package(&row.target) == Some(package);
+                if !owns_trait && !owns_target {
+                    if matches!(row.target, SymbolicType::BoundType { .. }) {
+                        block(&mut outcomes, row.input, judgment);
+                    } else {
+                        reject(
+                            &mut outcomes,
+                            row.input,
+                            "COHERENCE001",
+                            format!(
+                                "impl of `{}` violates the orphan rule: the package owns \
+                                 neither the trait nor the outermost nominal target",
+                                trait_path.name
+                            ),
+                        );
+                    }
+                }
+            }
+            None => {
+                if row.is_default {
+                    reject(
+                        &mut outcomes,
+                        row.input,
+                        "TRAIT001",
+                        "an inherent impl never uses the default specialization marker".to_owned(),
+                    );
+                }
+            }
+        }
+    }
+
+    // Same-trait overlap.
+    for (a_position, a) in facts.iter().enumerate() {
+        let Some((a_path, a_head)) = &a.trait_head else {
+            continue;
+        };
+        for b in facts.iter().skip(a_position + 1) {
+            let Some((b_path, b_head)) = &b.trait_head else {
+                continue;
+            };
+            if a_path != b_path || !a.resolved || !b.resolved {
+                continue;
+            }
+            if !(impl_heads_unify(&a.target, &b.target) && impl_heads_unify(a_head, b_head)) {
+                continue;
+            }
+            if a.is_default || b.is_default {
+                // Specialization containment needs the strict-subset calculus.
+                block(
+                    &mut outcomes,
+                    a.input,
+                    UnimplementedDeclarationJudgment::ImplCoherenceOverlap,
+                );
+                block(
+                    &mut outcomes,
+                    b.input,
+                    UnimplementedDeclarationJudgment::ImplCoherenceOverlap,
+                );
+            } else {
+                for index in [a.input, b.input] {
+                    reject(
+                        &mut outcomes,
+                        index,
+                        "COHERENCE002",
+                        format!(
+                            "impls of `{}` have overlapping match sets and neither is a \
+                             default specialization parent",
+                            a_path.name
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    // Inherent duplicate methods under byte-identical canonical heads.
+    for (a_position, a) in facts.iter().enumerate() {
+        if a.trait_head.is_some() || !a.resolved {
+            continue;
+        }
+        for b in facts.iter().skip(a_position + 1) {
+            if b.trait_head.is_some() || !b.resolved {
+                continue;
+            }
+            let identical_head = a.target == b.target
+                && a.generic_parameters == b.generic_parameters
+                && a.predicates == b.predicates;
+            if !identical_head {
+                continue;
+            }
+            let duplicates: Vec<&str> = a
+                .method_names
+                .iter()
+                .filter(|name| b.method_names.contains(name))
+                .copied()
+                .collect();
+            for name in duplicates {
+                for index in [a.input, b.input] {
+                    reject(
+                        &mut outcomes,
+                        index,
+                        "TRAIT001",
+                        format!(
+                            "inherent method `{name}` is declared more than once under one \
+                             byte-identical canonical impl head"
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    outcomes
+}
+
 /// Outcome of the map-key comparison judgment for one declaration.
 enum MapKeyOutcome {
     /// No embedded map mention, or every key is eligible.
@@ -3241,32 +3579,6 @@ fn map_key_judgment(
         MapKeyOutcome::Blocked
     } else {
         MapKeyOutcome::Discharged
-    }
-}
-
-fn record_unimplemented_judgments(
-    input: &InputRow<'_>,
-    shape: &SymbolicDeclarationShapeSkeleton,
-    blockers: &mut Vec<DeclarationCheckBlocker>,
-) {
-    let mut judgments = Vec::new();
-    if let SymbolicDeclarationPayloadSkeleton::Impl { trait_ref, .. } = &shape.payload {
-        judgments.push(if trait_ref.is_none() {
-            UnimplementedDeclarationJudgment::InherentMethodUniqueness
-        } else {
-            UnimplementedDeclarationJudgment::ImplCoherenceOverlap
-        });
-    }
-    for judgment in judgments {
-        blockers.push(DeclarationCheckBlocker {
-            package: package_scope(input),
-            target: input.target,
-            path: input.path.clone(),
-            span: input.definition.key.span,
-            item: input.definition.hir_item,
-            debug_spelling: format!("{judgment:?}"),
-            reason: DeclarationCheckBlockerReason::MissingDeclarationJudgment(judgment),
-        });
     }
 }
 
@@ -4471,23 +4783,6 @@ mod tests {
         assert_eq!(
             judgment_blockers(concat!(
                 "pub struct Holder { pub value: i32 }\n",
-                "impl Holder { pub fn value(&self) -> i32 { self.value } }\n",
-                "impl Holder { pub fn value(&self) -> i32 { self.value } }\n",
-            )),
-            vec![J::InherentMethodUniqueness]
-        );
-        assert_eq!(
-            judgment_blockers(concat!(
-                "pub struct Holder { pub value: i32 }\n",
-                "pub trait One { fn one(&self) -> i32; }\n",
-                "impl One for Holder { fn one(&self) -> i32 { 1i32 } }\n",
-                "impl One for Holder { fn one(&self) -> i32 { 2i32 } }\n",
-            )),
-            vec![J::ImplCoherenceOverlap]
-        );
-        assert_eq!(
-            judgment_blockers(concat!(
-                "pub struct Holder { pub value: i32 }\n",
                 "pub struct Boxed { pub scores: Map<Holder, i32> }\n",
             )),
             vec![J::MapKeyComparison]
@@ -4495,41 +4790,22 @@ mod tests {
     }
 
     #[test]
-    fn real_c2_v1_declarations_block_only_on_recorded_authority_gaps() {
-        // The game corpus still blocks on the remaining impl-family judgments.
-        let handoff = corpus_handoff("language-game");
-        let declarations = DeclarationTable::build(&handoff).unwrap();
-        let failure = check_declarations_c2(&handoff, &declarations).unwrap_err();
-        assert_eq!(failure.internal_error(), None);
-        assert!(
-            failure.diagnostics().is_none(),
-            "{:?}",
-            failure.diagnostics()
-        );
-        assert!(!failure.blockers().is_empty());
-        assert!(
-            failure.blockers().iter().all(|blocker| matches!(
-                blocker.reason(),
-                DeclarationCheckBlockerReason::MissingDeclarationJudgment(_)
-            )),
-            "{:#?}",
-            failure.blockers()
-        );
-        assert_eq!(failure.partial().len(), declarations.len());
-
-        // The environment corpus's declarations now check completely.
-        let handoff = corpus_handoff("language-environment");
-        let declarations = DeclarationTable::build(&handoff).unwrap();
-        let facts = check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
-            panic!(
-                "environment declarations must close: {:?} {:?}",
-                failure.diagnostics(),
-                failure.blockers()
-            )
-        });
-        assert_eq!(facts.len(), declarations.len());
+    fn real_c2_v1_declarations_check_completely() {
+        // Every declaration judgment is implemented and both corpora's
+        // declarations discharge them with zero blockers and diagnostics.
+        for corpus in ["language-game", "language-environment"] {
+            let handoff = corpus_handoff(corpus);
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            let facts = check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!(
+                    "{corpus} declarations must close: {:?} {:?}",
+                    failure.diagnostics(),
+                    failure.blockers()
+                )
+            });
+            assert_eq!(facts.len(), declarations.len(), "{corpus}");
+        }
     }
-
     #[test]
     fn nested_contextual_self_closes_with_exact_trait_method_binders() {
         let facts = checked_inline(concat!(
@@ -4974,5 +5250,59 @@ mod tests {
             )),
             vec![J::MapKeyComparison]
         );
+    }
+
+    #[test]
+    fn impl_family_judgments_reject_duplicates_overlap_and_orphans() {
+        let duplicate = declaration_rejection(concat!(
+            "pub struct Holder { pub value: i32 }\n",
+            "impl Holder { pub fn value(&self) -> i32 { self.value } }\n",
+            "impl Holder { pub fn value(&self) -> i32 { self.value } }\n",
+        ));
+        assert!(duplicate.contains("TRAIT001"), "{duplicate}");
+        assert!(duplicate.contains("declared more than once"), "{duplicate}");
+
+        let overlap = declaration_rejection(concat!(
+            "pub struct Holder { pub value: i32 }\n",
+            "pub trait One { fn one(&self) -> i32; }\n",
+            "impl One for Holder { fn one(&self) -> i32 { 1i32 } }\n",
+            "impl One for Holder { fn one(&self) -> i32 { 2i32 } }\n",
+        ));
+        assert!(overlap.contains("COHERENCE002"), "{overlap}");
+
+        let orphan = declaration_rejection(concat!(
+            "pub fn keep(value: i32) -> i32 { value }\n",
+            "impl Clone for i32 {\n",
+            "    fn clone(&self) -> i32 {\n",
+            "        *self\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(orphan.contains("COHERENCE001"), "{orphan}");
+
+        // Distinct heads and distinct traits stay coherent.
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct A {\n",
+            "    pub value: i32,\n",
+            "}\n",
+            "pub struct B {\n",
+            "    pub value: i32,\n",
+            "}\n",
+            "impl A { pub fn read(&self) -> i32 { self.value } }\n",
+            "impl B { pub fn read(&self) -> i32 { self.value } }\n",
+            "pub trait One { fn one(&self) -> i32; }\n",
+            "pub trait Two { fn two(&self) -> i32; }\n",
+            "impl One for A { fn one(&self) -> i32 { 1i32 } }\n",
+            "impl Two for A { fn two(&self) -> i32 { 2i32 } }\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+            panic!(
+                "coherent impls must close: {:?} {:?}",
+                failure.diagnostics(),
+                failure.blockers()
+            )
+        });
     }
 }
