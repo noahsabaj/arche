@@ -6620,19 +6620,68 @@ impl BodyChecker<'_, '_, '_> {
             }
             return None;
         };
-        let patterns_valid = if catch {
-            self.gap(
-                span,
-                BodyCheckIncompletenessKind::MissingEffectAuthority,
-                "catch pattern scrutinee requires the C4 canonical throws-set authority",
-            );
-            false
+        let scrutinee_ty = if catch {
+            match self
+                .catch_operand_throws(operand)
+                .filter(|members| !members.iter().any(symbolic_type_mentions_bound))
+                .as_deref()
+            {
+                Some([thrown]) => {
+                    // The declared singleton throws set types the catch arms;
+                    // canonical escaping-set accounting stays C4 authority.
+                    self.pending_c4(
+                        span,
+                        b"catch-canonical-throws-set".to_vec(),
+                        "catch escaping-set accounting is finalized by C4",
+                    );
+                    Some(thrown.clone())
+                }
+                _ => {
+                    self.gap(
+                        span,
+                        BodyCheckIncompletenessKind::MissingEffectAuthority,
+                        "catch scrutinee needs one resolved declared throws type; wider sets await the C4 canonical throws-set authority",
+                    );
+                    None
+                }
+            }
         } else {
-            self.check_match_patterns(operand_checked.ty(), arms, operand.span)
+            Some(operand_checked.ty().clone())
+        };
+        let patterns_valid = match &scrutinee_ty {
+            Some(ty) => self.check_match_patterns(ty, arms, operand.span),
+            None => false,
         };
 
         let mut joined = expected.cloned();
         let mut complete = patterns_valid;
+        if catch && scrutinee_ty.is_some() {
+            // The non-throwing path yields the operand's result, so the catch
+            // expression's type joins it with every arm value.
+            let operand_ty = operand_checked.ty();
+            match &joined {
+                // A never-typed operand is the join identity: it constrains
+                // nothing and must not poison the arm join.
+                None if operand_ty != &SymbolicType::Never => {
+                    joined = Some(operand_ty.clone());
+                }
+                None => {}
+                Some(expected_ty) => {
+                    let outlives = LifetimeOutlives::new([]);
+                    let accepted = expected_ty == operand_ty
+                        || types_match_with_erased_body_lifetime(expected_ty, operand_ty)
+                        || classify_coercion(operand_ty, expected_ty, &outlives).is_some();
+                    if !accepted {
+                        self.source_error(
+                            operand.span,
+                            "TYPE002",
+                            format!("expected {expected_ty:?}, found {operand_ty:?}"),
+                        );
+                        complete = false;
+                    }
+                }
+            }
+        }
         let mut all_arms_diverge = !arms.is_empty();
         for arm in arms {
             if !patterns_valid {
@@ -6641,7 +6690,10 @@ impl BodyChecker<'_, '_, '_> {
                 // bindings cannot have a successful typed-pattern analysis.
                 continue;
             }
-            self.bind_refutable_arm(&arm.pattern, operand_checked.ty());
+            let Some(scrutinee) = &scrutinee_ty else {
+                continue;
+            };
+            self.bind_refutable_arm(&arm.pattern, scrutinee);
             if let Some(guard) = &arm.guard {
                 let bool_type = SymbolicType::Bool;
                 if self.check_expression(guard, Some(&bool_type)).is_none() {
@@ -6676,13 +6728,75 @@ impl BodyChecker<'_, '_, '_> {
             return None;
         }
         if all_arms_diverge {
-            // Every arm diverges, so the match itself can never complete
-            // normally; it joins to the never type.
-            return Some(LoweredValue::ordinary(TypedExpressionInput::Known(
-                SymbolicType::Never,
-            )));
+            // Every arm diverges. A plain match can then never complete
+            // normally and joins to the never type — but a typed catch still
+            // completes through its non-throwing path, whose seeded operand
+            // result remains the expression's type.
+            let result = if catch && scrutinee_ty.is_some() {
+                joined.unwrap_or(SymbolicType::Never)
+            } else {
+                SymbolicType::Never
+            };
+            return Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)));
         }
         joined.map(|ty| LoweredValue::ordinary(TypedExpressionInput::Known(ty)))
+    }
+
+    /// Reads the declared throws set of a catch operand: a direct call whose
+    /// callee is a resolved item with a resolved declared throws list, or a
+    /// local of function-pointer type. Anything else is `None` and keeps the
+    /// caller's fail-closed gap.
+    fn catch_operand_throws(&self, operand: &AstExpression) -> Option<Vec<SymbolicType>> {
+        let AstExpressionKind::Postfix { base, parts } = &operand.kind else {
+            return None;
+        };
+        let [part] = parts.as_slice() else {
+            return None;
+        };
+        let AstPostfixKind::Call(_) = &part.kind else {
+            return None;
+        };
+        let AstExpressionKind::Path(path) = &base.kind else {
+            return None;
+        };
+        let resolution = self
+            .scope
+            .target
+            .path_resolutions
+            .iter()
+            .find(|resolution| resolution.span == path.span)?;
+        if resolution.unresolved.is_some() {
+            return None;
+        }
+        match resolution.resolutions.as_slice() {
+            [Res::Item(HirItemRes::Definition(item))] => {
+                let entry = self.catalog.definitions.get(item)?;
+                let shape = entry.declaration_shape?;
+                let SymbolicDeclarationPayloadSkeleton::Callable(callable) = &shape.payload else {
+                    return None;
+                };
+                callable
+                    .effects
+                    .throws
+                    .iter()
+                    .map(|effect| match effect {
+                        arche_frontend::SymbolicEffectShapeSkeleton::Resolved { value, .. } => {
+                            Some(value.clone())
+                        }
+                        arche_frontend::SymbolicEffectShapeSkeleton::Pending(_) => None,
+                    })
+                    .collect()
+            }
+            [Res::Local(local)] => {
+                let LocalValue::Typed(SymbolicType::FunctionPointer { throws, .. }) =
+                    self.cross_body_locals.get(local)?
+                else {
+                    return None;
+                };
+                Some(throws.members().to_vec())
+            }
+            _ => None,
+        }
     }
 
     fn pending_c4(&mut self, span: Span, mut bytes: Vec<u8>, detail: &'static str) {
@@ -8024,6 +8138,38 @@ fn collect_binding_spans(pattern: &AstPattern, output: &mut BTreeMap<String, Spa
         | AstPatternKind::Unit
         | AstPatternKind::Literal(_)
         | AstPatternKind::Range { .. } => {}
+    }
+}
+
+/// True when the type mentions a bound generic coordinate anywhere — such a
+/// declared throws member needs the call's substitution before a catch can
+/// type against it.
+fn symbolic_type_mentions_bound(ty: &SymbolicType) -> bool {
+    match ty {
+        SymbolicType::BoundType { .. } => true,
+        SymbolicType::Reference { pointee, .. } | SymbolicType::RawPointer { pointee, .. } => {
+            symbolic_type_mentions_bound(pointee)
+        }
+        SymbolicType::Slice(element) | SymbolicType::Array { element, .. } => {
+            symbolic_type_mentions_bound(element)
+        }
+        SymbolicType::Tuple(fields) => fields.iter().any(symbolic_type_mentions_bound),
+        SymbolicType::NominalPath { arguments, .. } => arguments.iter().any(|argument| {
+            matches!(argument, GenericArgumentShape::Type(ty) if symbolic_type_mentions_bound(ty))
+        }),
+        SymbolicType::FunctionPointer {
+            parameters,
+            result,
+            requires,
+            throws,
+            ..
+        } => parameters
+            .iter()
+            .chain(std::iter::once(result.as_ref()))
+            .chain(requires.members())
+            .chain(throws.members())
+            .any(symbolic_type_mentions_bound),
+        _ => false,
     }
 }
 
@@ -10014,5 +10160,249 @@ mod tests {
             diagnostics.contains("TRAIT002"),
             "diagnostics={diagnostics}"
         );
+    }
+
+    #[test]
+    fn catch_types_arms_against_the_declared_singleton_throws_set() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault {\n",
+            "    Soft,\n",
+            "    Hard(i32),\n",
+            "}\n",
+            "pub fn risky(x: i32) throws { Fault } -> i32 {\n",
+            "    if x <= 0i32 {\n",
+            "        throw Fault::Soft;\n",
+            "    }\n",
+            "    x\n",
+            "}\n",
+            "pub fn direct(x: i32) -> i32 {\n",
+            "    catch risky(x) {\n",
+            "        Fault::Soft => 0i32,\n",
+            "        Fault::Hard(code) => code,\n",
+            "    }\n",
+            "}\n",
+            "pub fn through_pointer(\n",
+            "    callback: fn(i32) requires {} throws { Fault } -> i32,\n",
+            "    x: i32,\n",
+            ") -> i32 {\n",
+            "    catch callback(x) {\n",
+            "        Fault::Soft => 0i32,\n",
+            "        Fault::Hard(code) => code,\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("declared singleton catch must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn catch_over_an_unknown_throws_set_stays_an_honest_gap() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn opaque(x: i32) -> i32 {\n",
+            "    catch x {\n",
+            "        _ => 0i32,\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "a non-call catch operand is a recorded gap: {:?}",
+            failure.diagnostics()
+        );
+        assert!(failure
+            .incompleteness()
+            .iter()
+            .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingEffectAuthority));
+    }
+
+    #[test]
+    fn nonexhaustive_catch_arms_are_pattern002() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault {\n",
+            "    Soft,\n",
+            "    Hard(i32),\n",
+            "}\n",
+            "pub fn risky(x: i32) throws { Fault } -> i32 {\n",
+            "    if x <= 0i32 {\n",
+            "        throw Fault::Soft;\n",
+            "    }\n",
+            "    x\n",
+            "}\n",
+            "pub fn partial_arms(x: i32) -> i32 {\n",
+            "    catch risky(x) {\n",
+            "        Fault::Soft => 0i32,\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(failure.diagnostics().is_some());
+        assert!(
+            diagnostics.contains("PATTERN002"),
+            "diagnostics={diagnostics}"
+        );
+    }
+
+    #[test]
+    fn catch_joins_the_operand_result_with_the_arms() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault {\n",
+            "    Soft,\n",
+            "    Hard(i32),\n",
+            "}\n",
+            "pub fn risky(x: i32) throws { Fault } -> i32 {\n",
+            "    if x <= 0i32 {\n",
+            "        throw Fault::Soft;\n",
+            "    }\n",
+            "    x\n",
+            "}\n",
+            "pub fn leaked(x: i32) -> i32 {\n",
+            "    let v = catch risky(x) {\n",
+            "        Fault::Soft => 'a',\n",
+            "        Fault::Hard(_) => 'b',\n",
+            "    };\n",
+            "    x\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(failure.diagnostics().is_some());
+        assert!(diagnostics.contains("TYPE002"), "diagnostics={diagnostics}");
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault {\n",
+            "    Soft,\n",
+            "    Hard(i32),\n",
+            "}\n",
+            "pub fn risky(x: i32) throws { Fault } -> i32 {\n",
+            "    if x <= 0i32 {\n",
+            "        throw Fault::Soft;\n",
+            "    }\n",
+            "    x\n",
+            "}\n",
+            "pub fn takes_char(c: char) -> i32 {\n",
+            "    0i32\n",
+            "}\n",
+            "pub fn feed(x: i32) -> i32 {\n",
+            "    let v = catch risky(x) {\n",
+            "        Fault::Soft => return 7i32,\n",
+            "        Fault::Hard(_) => return 9i32,\n",
+            "    };\n",
+            "    takes_char(v)\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(
+            failure.diagnostics().is_some(),
+            "the seeded operand result must survive all-diverging arms: {:?}",
+            failure.incompleteness()
+        );
+        assert!(
+            diagnostics.contains("expected Char, found I32"),
+            "diagnostics={diagnostics}"
+        );
+    }
+
+    #[test]
+    fn generic_declared_throws_keep_the_effect_gap() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault {\n",
+            "    Soft,\n",
+            "}\n",
+            "pub fn risky<E>(x: i32, seed: E) throws { E } -> i32 {\n",
+            "    x\n",
+            "}\n",
+            "pub fn caught(x: i32) -> i32 {\n",
+            "    catch risky(x, Fault::Soft) {\n",
+            "        _ => 0i32,\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "an unsubstituted throws set is later authority: {:?}",
+            failure.diagnostics()
+        );
+        assert!(failure
+            .incompleteness()
+            .iter()
+            .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingEffectAuthority));
+    }
+
+    #[test]
+    fn never_operands_are_the_catch_join_identity() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault {\n",
+            "    Soft,\n",
+            "    Hard(i32),\n",
+            "}\n",
+            "pub fn boom(x: i32) throws { Fault } -> ! {\n",
+            "    loop {\n",
+            "    }\n",
+            "}\n",
+            "pub fn consume(x: i32) -> i32 {\n",
+            "    let v = catch boom(x) {\n",
+            "        Fault::Soft => 0i32,\n",
+            "        Fault::Hard(code) => code,\n",
+            "    };\n",
+            "    v\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("a never operand constrains nothing: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
     }
 }
