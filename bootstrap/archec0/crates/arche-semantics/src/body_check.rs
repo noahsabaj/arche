@@ -6660,7 +6660,12 @@ impl BodyChecker<'_, '_, '_> {
             // expression's type joins it with every arm value.
             let operand_ty = operand_checked.ty();
             match &joined {
-                None => joined = Some(operand_ty.clone()),
+                // A never-typed operand is the join identity: it constrains
+                // nothing and must not poison the arm join.
+                None if operand_ty != &SymbolicType::Never => {
+                    joined = Some(operand_ty.clone());
+                }
+                None => {}
                 Some(expected_ty) => {
                     let outlives = LifetimeOutlives::new([]);
                     let accepted = expected_ty == operand_ty
@@ -6723,11 +6728,16 @@ impl BodyChecker<'_, '_, '_> {
             return None;
         }
         if all_arms_diverge {
-            // Every arm diverges, so the match itself can never complete
-            // normally; it joins to the never type.
-            return Some(LoweredValue::ordinary(TypedExpressionInput::Known(
-                SymbolicType::Never,
-            )));
+            // Every arm diverges. A plain match can then never complete
+            // normally and joins to the never type — but a typed catch still
+            // completes through its non-throwing path, whose seeded operand
+            // result remains the expression's type.
+            let result = if catch && scrutinee_ty.is_some() {
+                joined.unwrap_or(SymbolicType::Never)
+            } else {
+                SymbolicType::Never
+            };
+            return Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)));
         }
         joined.map(|ty| LoweredValue::ordinary(TypedExpressionInput::Known(ty)))
     }
@@ -10300,12 +10310,15 @@ mod tests {
             "    }\n",
             "    x\n",
             "}\n",
-            "pub fn diverging_arms(x: i32) -> i32 {\n",
-            "    let v: i32 = catch risky(x) {\n",
+            "pub fn takes_char(c: char) -> i32 {\n",
+            "    0i32\n",
+            "}\n",
+            "pub fn feed(x: i32) -> i32 {\n",
+            "    let v = catch risky(x) {\n",
             "        Fault::Soft => return 7i32,\n",
             "        Fault::Hard(_) => return 9i32,\n",
             "    };\n",
-            "    v\n",
+            "    takes_char(v)\n",
             "}\n",
         )))
         .unwrap();
@@ -10315,11 +10328,17 @@ mod tests {
             Ok(facts) => facts,
             Err(failure) => failure.partial(),
         };
-        let bodies =
-            check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_or_else(|failure| {
-                panic!("diverging arms take the operand result: {failure:#?}")
-            });
-        assert!(bodies.all_authority_complete());
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(
+            failure.diagnostics().is_some(),
+            "the seeded operand result must survive all-diverging arms: {:?}",
+            failure.incompleteness()
+        );
+        assert!(
+            diagnostics.contains("expected Char, found I32"),
+            "diagnostics={diagnostics}"
+        );
     }
 
     #[test]
@@ -10354,5 +10373,36 @@ mod tests {
             .incompleteness()
             .iter()
             .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingEffectAuthority));
+    }
+
+    #[test]
+    fn never_operands_are_the_catch_join_identity() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault {\n",
+            "    Soft,\n",
+            "    Hard(i32),\n",
+            "}\n",
+            "pub fn boom(x: i32) throws { Fault } -> ! {\n",
+            "    loop {\n",
+            "    }\n",
+            "}\n",
+            "pub fn consume(x: i32) -> i32 {\n",
+            "    let v = catch boom(x) {\n",
+            "        Fault::Soft => 0i32,\n",
+            "        Fault::Hard(code) => code,\n",
+            "    };\n",
+            "    v\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("a never operand constrains nothing: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
     }
 }
