@@ -2494,6 +2494,13 @@ impl BodyChecker<'_, '_, '_> {
         expected: Option<&SymbolicType>,
     ) -> Option<LoweredValue> {
         let selected = self.lower_path(constructor, constructor.span, expected)?;
+        if let ValueCategory::Constructor(ConstructorSelection::PendingInference {
+            item,
+            variant,
+        }) = selected.category
+        {
+            return self.infer_record_literal(item, variant, fields, span);
+        }
         let constructed = match &selected.input {
             TypedExpressionInput::Known(ty) => ty.clone(),
             _ => {
@@ -2510,12 +2517,6 @@ impl BodyChecker<'_, '_, '_> {
             _ => Vec::new(),
         };
         let (form, declared_fields) = match selected.category {
-            ValueCategory::Constructor(ConstructorSelection::PendingInference {
-                item,
-                variant,
-            }) => {
-                return self.infer_record_literal(item, variant, fields, span);
-            }
             ValueCategory::Constructor(ConstructorSelection::Item { item, variant }) => {
                 let Some(entry) = self.catalog.definition(item) else {
                     self.gap(
@@ -5291,17 +5292,30 @@ impl BodyChecker<'_, '_, '_> {
         arguments: &[AstExpression],
         span: Span,
     ) -> Option<LoweredValue> {
+        if let ConstructorSelection::PendingInference { item, variant } = selection {
+            return self.infer_tuple_constructor_call(item, variant, arguments, span);
+        }
         let constructed = match &value.input {
             TypedExpressionInput::Known(ty) => ty.clone(),
-            _ => return None,
+            _ => {
+                for argument in arguments {
+                    self.check_expression(argument, None);
+                }
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingRetainedJoin,
+                    "constructor call value did not retain its constructed nominal type",
+                );
+                return None;
+            }
         };
         let actuals = match &constructed {
             SymbolicType::NominalPath { arguments, .. } => arguments.clone(),
             _ => Vec::new(),
         };
         let (callee, form, fields) = match selection {
-            ConstructorSelection::PendingInference { item, variant } => {
-                return self.infer_tuple_constructor_call(item, variant, arguments, span);
+            ConstructorSelection::PendingInference { .. } => {
+                unreachable!("PendingInference is dispatched before value extraction")
             }
             ConstructorSelection::Item { item, variant } => {
                 let Some(entry) = self.catalog.definition(item) else {
@@ -9064,6 +9078,34 @@ mod tests {
         check_workspace_c1(&workspace, &graph, &[]).unwrap()
     }
 
+    fn corpus_body_complete(name: &str) -> C2BodyTable {
+        let handoff = C2Handoff::begin(corpus_frontend(name)).unwrap();
+        let expected_bodies = handoff
+            .frontend()
+            .hir()
+            .packages
+            .iter()
+            .flat_map(|package| &package.targets)
+            .map(|target| target.bodies.len())
+            .sum::<usize>();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_declarations = check_declarations_c2(&handoff, &declarations);
+        let checked_declarations = match &checked_declarations {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let table = check_workspace_bodies_c2(&handoff, &declarations, checked_declarations)
+            .unwrap_or_else(|failure| {
+                panic!(
+                    "corpus={name} bodies must all close, gaps={:?}",
+                    failure.incompleteness()
+                )
+            });
+        assert_eq!(table.len(), expected_bodies, "corpus={name}");
+        assert!(table.all_authority_complete(), "corpus={name}");
+        table
+    }
+
     fn corpus_body_failure(name: &str) -> C2BodyCheckFailure {
         let handoff = C2Handoff::begin(corpus_frontend(name)).unwrap();
         let expected_bodies = handoff
@@ -9093,19 +9135,22 @@ mod tests {
 
     #[test]
     fn real_v1_bodies_retain_every_body_and_never_turn_adapter_gaps_into_diagnostics() {
-        for corpus in ["language-game", "language-environment"] {
-            let failure = corpus_body_failure(corpus);
-            assert!(
-                failure.diagnostics().is_none(),
-                "corpus={corpus}, diagnostics={:?}",
-                failure.diagnostics()
-            );
-            assert!(!failure.incompleteness().is_empty(), "corpus={corpus}");
-            let complete = failure.partial().bodies().count();
-            assert!(complete > 0, "corpus={corpus}");
-            assert!(complete < failure.partial().len(), "corpus={corpus}");
-            assert!(!failure.partial().all_authority_complete());
-        }
+        let failure = corpus_body_failure("language-game");
+        assert!(
+            failure.diagnostics().is_none(),
+            "diagnostics={:?}",
+            failure.diagnostics()
+        );
+        assert!(!failure.incompleteness().is_empty());
+        let complete = failure.partial().bodies().count();
+        assert!(complete > 0);
+        assert!(complete < failure.partial().len());
+        assert!(!failure.partial().all_authority_complete());
+
+        // The environment corpus's bodies now close completely: every body is
+        // retained and authority-complete, with no diagnostics minted.
+        let environment = corpus_body_complete("language-environment");
+        assert_eq!(environment.bodies().count(), environment.len());
     }
 
     #[test]
@@ -9387,16 +9432,16 @@ mod tests {
     #[test]
     fn checked_body_handles_are_owner_branded() {
         let game = corpus_body_failure("language-game");
-        let environment = corpus_body_failure("language-environment");
+        let environment = corpus_body_complete("language-environment");
         let game_body = game.partial().bodies().next().unwrap();
-        let environment_body = environment.partial().bodies().next().unwrap();
+        let environment_body = environment.bodies().next().unwrap();
         let game_handle = game.partial().handle(game_body.id()).unwrap();
-        let environment_handle = environment.partial().handle(environment_body.id()).unwrap();
+        let environment_handle = environment.handle(environment_body.id()).unwrap();
 
         assert!(game.partial().body(&game_handle).is_some());
-        assert!(environment.partial().body(&environment_handle).is_some());
+        assert!(environment.body(&environment_handle).is_some());
         assert!(game.partial().body(&environment_handle).is_none());
-        assert!(environment.partial().body(&game_handle).is_none());
+        assert!(environment.body(&game_handle).is_none());
     }
 
     #[test]
@@ -10403,6 +10448,55 @@ mod tests {
         };
         let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
             .unwrap_or_else(|failure| panic!("a never operand constrains nothing: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn generic_control_flow_bindings_close_end_to_end() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Choice<T> {\n",
+            "    None,\n",
+            "    One(T),\n",
+            "    Pair { left: T, right: T },\n",
+            "}\n",
+            "pub fn walk(seed: i32, bits: i32) -> i32 {\n",
+            "    let mut destination = seed;\n",
+            "    if destination > 0i32 {\n",
+            "        destination += 1i32;\n",
+            "    } else if let Choice::One(inner) = Choice::One(destination) {\n",
+            "        destination = inner;\n",
+            "    }\n",
+            "    while let Choice::One(inner) = Choice::One(destination) {\n",
+            "        destination = inner;\n",
+            "        break;\n",
+            "    }\n",
+            "    let loop_value = loop {\n",
+            "        break destination;\n",
+            "    };\n",
+            "    let matched = match (Choice::Pair { left: loop_value, right: bits }) {\n",
+            "        Choice::None => 0i32,\n",
+            "        Choice::One(0i32..=3i32) => 1i32,\n",
+            "        Choice::One(name @ 4i32..8i32) if name != 6i32 => name,\n",
+            "        Choice::Pair {\n",
+            "            left: left @ -10i32..0i32 | left @ 8i32..16i32,\n",
+            "            right: _,\n",
+            "        } => left,\n",
+            "        _ => -1i32,\n",
+            "    };\n",
+            "    matched\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies =
+            check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_or_else(|failure| {
+                panic!("generic control-flow bindings must close: {failure:#?}")
+            });
         assert!(bodies.all_authority_complete());
     }
 }

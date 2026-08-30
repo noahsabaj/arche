@@ -676,7 +676,18 @@ impl<'a> TypeChecker<'a> {
             } => self.infer_if(condition, then_branch, else_branch.as_deref(), expected)?,
             TypedExpressionInput::While { condition, body } => {
                 let condition = self.infer(condition, Some(&bool_type()))?;
+                // A while loop owns a loop frame: `break` inside it carries
+                // the unit loop value and never escapes to an outer frame.
+                let join_type = self.variable(VariableClass::Any)?;
+                self.loops.push(LoopFrame {
+                    join_type: join_type.clone(),
+                    break_count: 0,
+                });
                 let body = self.infer(body, None)?;
+                let frame = self.loops.pop().expect("while frame was pushed");
+                // The while join is always unit: a valueless `break` supplies
+                // unit and a value-carrying `break` must unify against it.
+                self.unify(&frame.join_type, &InferType::Symbolic(SymbolicType::Unit))?;
                 RawExpression {
                     natural_type: InferType::Symbolic(SymbolicType::Unit),
                     coerced_type: None,
