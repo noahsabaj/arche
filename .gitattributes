@@ -1,3 +1,10 @@
+# Every text file is LF in the repository and in every checkout, on every host.
+* text=auto eol=lf
+
+# Binary assets.
+*.png binary
+*.bin binary
+
 # Frozen cross-host source corpora must expose their committed bytes verbatim.
 .gitattributes text eol=lf
 arche_comprehensive_design_document.md text eol=lf
@@ -5,3 +12,7 @@ tests/m27c1/**/*.arc text eol=lf
 tests/m27c1/**/Arche.toml text eol=lf
 tests/m27c1/**/*.txt text eol=lf
 tests/m27c1/**/*.bin binary
+tests/m27c2/**/*.arc text eol=lf
+tests/m27c2/**/Arche.toml text eol=lf
+tests/m27c2/**/*.txt text eol=lf
+tests/m27c2/**/*.bin binary
