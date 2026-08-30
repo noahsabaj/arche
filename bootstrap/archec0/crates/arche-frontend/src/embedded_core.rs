@@ -274,9 +274,24 @@ pub enum CompilerTraitMethodKind {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CompilerPrimitiveTypePattern {
-    Bool,
-    I32,
+    Never,
     Unit,
+    Bool,
+    Char,
+    Entity,
+    F32,
+    F64,
+    I8,
+    I16,
+    I32,
+    I64,
+    Isize,
+    Str,
+    U8,
+    U16,
+    U32,
+    U64,
+    Usize,
 }
 
 /// A type pattern in a compiler-trait callable. All nominal and generic
@@ -638,6 +653,7 @@ impl CompilerTraitAuthority {
 #[derive(Debug)]
 pub struct EmbeddedCoreC2TypedProjection {
     compiler_traits: Box<[CompilerTraitAuthority]>,
+    primitive_definitions: Box<[(VirtualDefinitionId, CompilerPrimitiveTypePattern)]>,
     nominals: Box<[CompilerNominalAuthority]>,
     nominal_methods: Box<[CompilerNominalMethodAuthority]>,
     _seal: private::TypedSeal,
@@ -670,6 +686,17 @@ impl EmbeddedCoreC2TypedProjection {
         self.compiler_traits
             .iter()
             .find(|row| row.c1_definition == definition)
+    }
+
+    /// Returns the verified primitive semantic kind for one C1 definition
+    /// bridge ID. Consumers never interpret the C1 row name or ordinal.
+    pub fn primitive_for_c1_definition(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<CompilerPrimitiveTypePattern> {
+        self.primitive_definitions
+            .iter()
+            .find_map(|&(candidate, primitive)| (candidate == definition).then_some(primitive))
     }
 
     pub fn compiler_trait_method(
@@ -1320,6 +1347,15 @@ impl VerifiedEmbeddedCoreAuthority {
         self.typed_c2.compiler_trait(kind)
     }
 
+    /// Resolves a verified C1 definition bridge ID to its primitive semantic
+    /// kind without exposing C1 row-order or spelling as authority.
+    pub fn compiler_primitive_for_c1_definition(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<CompilerPrimitiveTypePattern> {
+        self.typed_c2.primitive_for_c1_definition(definition)
+    }
+
     pub fn compiler_nominal(&self, kind: CompilerNominalKind) -> &CompilerNominalAuthority {
         self.typed_c2.nominal(kind)
     }
@@ -1452,6 +1488,7 @@ pub enum EmbeddedCoreVerificationError {
     InvalidReference(&'static str),
     InvalidTypedTraitAuthority,
     InvalidTypedMethodAuthority,
+    InvalidTypedPrimitiveAuthority,
     InvalidTypedNominalAuthority,
     InvalidTypedNominalMethodAuthority,
     InvalidTypedSourceAgreement,
@@ -1494,6 +1531,9 @@ impl fmt::Display for EmbeddedCoreVerificationError {
             }
             Self::InvalidTypedMethodAuthority => formatter
                 .write_str("embedded-core typed compiler-trait method authority is inconsistent"),
+            Self::InvalidTypedPrimitiveAuthority => {
+                formatter.write_str("embedded-core typed primitive authority is inconsistent")
+            }
             Self::InvalidTypedNominalAuthority => {
                 formatter.write_str("embedded-core typed nominal authority is inconsistent")
             }
@@ -2158,6 +2198,25 @@ fn build_typed_c2_projection(
         .map(|spec| build_typed_compiler_trait(projection, spec))
         .collect::<Result<Vec<_>, _>>()?
         .into_boxed_slice();
+    let primitive_definitions = PRIMITIVE_TYPES
+        .iter()
+        .map(|spec| {
+            let definition =
+                find_definition_id(&projection.definitions, spec.name, VirtualNamespace::Type)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority)?;
+            let row = projection
+                .definitions
+                .get(usize::from(definition.0))
+                .ok_or(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority)?;
+            if row.kind != VirtualDefinitionKind::PrimitiveType
+                || row.declaration_kind != VirtualDeclarationKind::Primitive
+            {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority);
+            }
+            Ok((definition, spec.kind))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_boxed_slice();
     let nominals = NOMINAL_TYPES
         .iter()
         .map(|&(kind, name, shape, flavor, declaration_kind)| {
@@ -2193,6 +2252,7 @@ fn build_typed_c2_projection(
     let nominal_methods = build_typed_nominal_methods(projection)?;
     Ok(EmbeddedCoreC2TypedProjection {
         compiler_traits,
+        primitive_definitions,
         nominals,
         nominal_methods,
         _seal: private::TypedSeal,
@@ -3474,12 +3534,35 @@ fn verify_typed_c2_projection(
     if typed.compiler_traits.len() != COMPILER_TRAITS.len() {
         return Err(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority);
     }
+    if typed.primitive_definitions.len() != PRIMITIVE_TYPES.len() {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority);
+    }
     if typed.nominals.len() != NOMINAL_TYPES.len() {
         return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority);
     }
     let expected_nominal_methods = build_typed_nominal_methods(projection)?;
     if typed.nominal_methods.as_ref() != expected_nominal_methods.as_ref() {
         return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+
+    let mut seen_primitives = BTreeSet::new();
+    for (spec, &(definition, primitive)) in PRIMITIVE_TYPES.iter().zip(&typed.primitive_definitions)
+    {
+        if primitive != spec.kind || !seen_primitives.insert(definition) {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority);
+        }
+        let row = projection
+            .definitions
+            .get(usize::from(definition.0))
+            .ok_or(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority)?;
+        if row.name != spec.name
+            || row.semantic_shape != spec.shape
+            || row.kind != VirtualDefinitionKind::PrimitiveType
+            || row.declaration_kind != VirtualDeclarationKind::Primitive
+            || !source_has_definition_line(projection, row)
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority);
+        }
     }
 
     for (spec, authority) in COMPILER_TRAITS.iter().zip(&typed.compiler_traits) {
@@ -3606,13 +3689,13 @@ fn definition_kind_name(kind: VirtualDefinitionKind) -> &'static str {
 fn definition_specs() -> Vec<DefinitionSpec> {
     let mut rows = Vec::new();
 
-    for &(name, shape) in PRIMITIVE_TYPES {
+    for spec in PRIMITIVE_TYPES {
         rows.push(DefinitionSpec {
-            name,
+            name: spec.name,
             namespace: VirtualNamespace::Type,
             kind: VirtualDefinitionKind::PrimitiveType,
             declaration_kind: VirtualDeclarationKind::Primitive,
-            shape,
+            shape: spec.shape,
             flavor: Some(VirtualTypeFlavor::Primitive),
             trait_policy: None,
             prelude: true,
@@ -3682,25 +3765,104 @@ fn definition_specs() -> Vec<DefinitionSpec> {
     rows
 }
 
-const PRIMITIVE_TYPES: &[(&str, &str)] = &[
-    ("!", "never; uninhabited"),
-    ("()", "unit; zero fields"),
-    ("bool", "scalar bool; width=1"),
-    ("char", "scalar Unicode; width=4"),
-    ("entity", "scalar entity; width=8"),
-    ("f32", "scalar IEEE754 binary32"),
-    ("f64", "scalar IEEE754 binary64"),
-    ("i16", "scalar signed; width=2"),
-    ("i32", "scalar signed; width=4"),
-    ("i64", "scalar signed; width=8"),
-    ("i8", "scalar signed; width=1"),
-    ("isize", "scalar signed; width=8"),
-    ("str", "dynamically sized UTF-8 string slice"),
-    ("u16", "scalar unsigned; width=2"),
-    ("u32", "scalar unsigned; width=4"),
-    ("u64", "scalar unsigned; width=8"),
-    ("u8", "scalar unsigned; width=1"),
-    ("usize", "scalar unsigned; width=8"),
+#[derive(Clone, Copy)]
+struct PrimitiveTypeSpec {
+    kind: CompilerPrimitiveTypePattern,
+    name: &'static str,
+    shape: &'static str,
+}
+
+const PRIMITIVE_TYPES: &[PrimitiveTypeSpec] = &[
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Never,
+        name: "!",
+        shape: "never; uninhabited",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Unit,
+        name: "()",
+        shape: "unit; zero fields",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Bool,
+        name: "bool",
+        shape: "scalar bool; width=1",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Char,
+        name: "char",
+        shape: "scalar Unicode; width=4",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Entity,
+        name: "entity",
+        shape: "scalar entity; width=8",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::F32,
+        name: "f32",
+        shape: "scalar IEEE754 binary32",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::F64,
+        name: "f64",
+        shape: "scalar IEEE754 binary64",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::I16,
+        name: "i16",
+        shape: "scalar signed; width=2",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::I32,
+        name: "i32",
+        shape: "scalar signed; width=4",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::I64,
+        name: "i64",
+        shape: "scalar signed; width=8",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::I8,
+        name: "i8",
+        shape: "scalar signed; width=1",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Isize,
+        name: "isize",
+        shape: "scalar signed; width=8",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Str,
+        name: "str",
+        shape: "dynamically sized UTF-8 string slice",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::U16,
+        name: "u16",
+        shape: "scalar unsigned; width=2",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::U32,
+        name: "u32",
+        shape: "scalar unsigned; width=4",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::U64,
+        name: "u64",
+        shape: "scalar unsigned; width=8",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::U8,
+        name: "u8",
+        shape: "scalar unsigned; width=1",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Usize,
+        name: "usize",
+        shape: "scalar unsigned; width=8",
+    },
 ];
 
 const NOMINAL_TYPES: &[(
@@ -6078,7 +6240,23 @@ mod tests {
         let authority = verified_embedded_core_authority().unwrap();
         let typed = authority.typed_c2();
         assert_eq!(typed.compiler_traits().len(), 31);
+        assert_eq!(typed.primitive_definitions.len(), PRIMITIVE_TYPES.len());
         assert_eq!(typed.nominals().len(), 29);
+
+        let unit = find_definition_id(
+            authority.projection().definitions(),
+            "()",
+            VirtualNamespace::Type,
+        )
+        .unwrap();
+        assert_eq!(
+            typed.primitive_for_c1_definition(unit),
+            Some(CompilerPrimitiveTypePattern::Unit)
+        );
+        assert_eq!(
+            authority.compiler_primitive_for_c1_definition(unit),
+            Some(CompilerPrimitiveTypePattern::Unit)
+        );
 
         let clone = typed.compiler_trait(CompilerTraitKind::Clone);
         assert_eq!(clone.explicit_generic_arity(), 0);
@@ -6454,6 +6632,13 @@ mod tests {
 
     #[test]
     fn typed_c2_nominal_and_synthetic_source_mismatches_fail_closed() {
+        let (projection, mut typed) = release_with_typed_projection();
+        typed.primitive_definitions[0].1 = CompilerPrimitiveTypePattern::Unit;
+        assert_eq!(
+            verify_typed_c2_projection(&projection, &typed).unwrap_err(),
+            EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority
+        );
+
         let (mut projection, _) = release_with_typed_projection();
         let option =
             find_definition_id(&projection.definitions, "Option", VirtualNamespace::Type).unwrap();
