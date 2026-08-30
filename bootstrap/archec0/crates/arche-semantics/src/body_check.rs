@@ -2919,7 +2919,10 @@ impl BodyChecker<'_, '_, '_> {
     ) -> Option<LoweredValue> {
         let (mut value, parts) = match self.embedded_prelude_call_head(base, parts) {
             Some((value, rest)) => (value?, rest),
-            None => (self.lower_expression(base, expected)?, parts),
+            None => match self.verified_associated_call_head(base, parts, expected) {
+                Some((value, rest)) => (value?, rest),
+                None => (self.lower_expression(base, expected)?, parts),
+            },
         };
         for part in parts {
             value = match &part.kind {
@@ -5316,6 +5319,187 @@ impl BodyChecker<'_, '_, '_> {
             result: result.clone(),
         });
         Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)))
+    }
+
+    /// Types a direct call of an associated compiler nominal method whose
+    /// generics are only decidable from the call arguments (`Pin::new_unchecked`
+    /// on a concrete referent, say). Engages only when the value path would
+    /// gap: no turbofish, generics present, and the expected type alone does
+    /// not bind every generic. Everything else falls through to the ordinary
+    /// function-value lowering unchanged.
+    fn verified_associated_call_head<'p>(
+        &mut self,
+        base: &AstExpression,
+        parts: &'p [arche_frontend::ast::AstPostfix],
+        expected: Option<&SymbolicType>,
+    ) -> Option<(Option<LoweredValue>, &'p [arche_frontend::ast::AstPostfix])> {
+        let AstExpressionKind::Path(path) = &base.kind else {
+            return None;
+        };
+        if path.generic_arguments.is_some() {
+            return None;
+        }
+        let [first, rest @ ..] = parts else {
+            return None;
+        };
+        let AstPostfixKind::Call(arguments) = &first.kind else {
+            return None;
+        };
+        {
+            let path_uses = self
+                .scope
+                .item
+                .path_uses
+                .iter()
+                .filter(|candidate| candidate.path.span == path.span)
+                .collect::<Vec<_>>();
+            let [path_use] = path_uses.as_slice() else {
+                return None;
+            };
+            if path_use.lexical_local.is_some() || !path_use.generic_arguments.is_empty() {
+                return None;
+            }
+        }
+        let resolution = self
+            .scope
+            .target
+            .path_resolutions
+            .iter()
+            .find(|resolution| resolution.span == path.span)?;
+        if resolution.unresolved.is_some() {
+            return None;
+        }
+        let [Res::Builtin(arche_frontend::BuiltinRes {
+            target: BuiltinResTarget::Method(method),
+        })] = resolution.resolutions.as_slice()
+        else {
+            return None;
+        };
+        let method = *method;
+        let spec = {
+            let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+            let authority = core.compiler_nominal_method_for_c1_method(method)?;
+            CompilerNominalMethodSpec::from_authority(authority)
+        };
+        if spec.receiver != CompilerNominalMethodReceiverMode::None
+            || spec.receiver_type.is_some()
+            || !spec.selectors.is_empty()
+            || spec.generics.is_empty()
+        {
+            return None;
+        }
+        let mut substitution = CompilerMethodSubstitution::default();
+        if rest.is_empty() {
+            if let Some(expected) = expected {
+                match self.bind_compiler_method_pattern(
+                    &spec.result,
+                    expected,
+                    &mut substitution,
+                    false,
+                ) {
+                    Some(true) => {}
+                    // A mismatch or an unrepresentable pattern is the value
+                    // path's diagnostic to mint; stay out of its way.
+                    Some(false) | None => return None,
+                }
+            }
+        }
+        let fully_bound = spec.generics.iter().all(|generic| {
+            let coordinate = generic.coordinate();
+            match generic.kind() {
+                CompilerMethodGenericParameterKind::Type => {
+                    substitution.types.contains_key(&coordinate)
+                        || substitution.capability_packs.contains_key(&coordinate)
+                }
+                CompilerMethodGenericParameterKind::Lifetime => {
+                    substitution.lifetimes.contains_key(&coordinate)
+                }
+            }
+        });
+        if fully_bound {
+            return None;
+        }
+        // Committed: bind the remaining generics from the checked arguments.
+        let checked = match self.lower_arguments_bottom_up(arguments) {
+            Some(checked) => checked,
+            None => return Some((None, rest)),
+        };
+        if spec.parameters.len() != checked.len() {
+            self.source_error(
+                first.span,
+                "TYPE002",
+                format!(
+                    "call expects {} arguments, found {}",
+                    spec.parameters.len(),
+                    checked.len()
+                ),
+            );
+            return Some((None, rest));
+        }
+        for (pattern, (argument_span, actual)) in spec.parameters.iter().zip(&checked) {
+            match self.bind_compiler_method_pattern(pattern, actual, &mut substitution, false) {
+                Some(true) => {}
+                Some(false) => {
+                    self.source_error(
+                        *argument_span,
+                        "TYPE002",
+                        "argument does not match the verified compiler method parameter",
+                    );
+                    return Some((None, rest));
+                }
+                None => return Some((None, rest)),
+            }
+        }
+        if !self.validate_compiler_method_generics(
+            &spec,
+            &substitution,
+            &BTreeSet::new(),
+            first.span,
+        ) {
+            return Some((None, rest));
+        }
+        if !self.validate_compiler_method_effects(&spec, &substitution, first.span) {
+            return Some((None, rest));
+        }
+        let parameters = match spec
+            .parameters
+            .iter()
+            .map(|pattern| self.compiler_method_pattern_type(pattern, &substitution, first.span))
+            .collect::<Option<Vec<_>>>()
+        {
+            Some(parameters) => parameters,
+            None => return Some((None, rest)),
+        };
+        let result =
+            match self.compiler_method_pattern_type(&spec.result, &substitution, first.span) {
+                Some(result) => result,
+                None => return Some((None, rest)),
+            };
+        if spec.is_unsafe && self.unsafe_depth == 0 {
+            self.source_error(
+                first.span,
+                "TYPE002",
+                "unsafe compiler nominal method call requires an unsafe context",
+            );
+            return Some((None, rest));
+        }
+        if !spec.requires.is_empty() || !spec.throws.is_empty() {
+            self.pending_c4(
+                first.span,
+                compiler_method_dependency_bytes(spec.method, b"associated-effects"),
+                "compiler nominal method effect membership is finalized by C4",
+            );
+        }
+        self.check_prepared_arguments(&parameters, &checked, first.span);
+        self.calls.push(CheckedBodyCall {
+            span: first.span,
+            callee: CheckedBodyCallee::EmbeddedMethod(spec.method),
+            result: result.clone(),
+        });
+        Some((
+            Some(LoweredValue::ordinary(TypedExpressionInput::Known(result))),
+            rest,
+        ))
     }
 
     fn lower_embedded_include_call(
@@ -11290,5 +11474,88 @@ mod tests {
                 panic!("generic-owner closure values must close: {failure:#?}")
             });
         assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn unchecked_pin_construction_infers_from_its_argument() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn drive(seed: i32) -> i32 {\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let mut state = factory(seed);\n",
+            "    let pinned = unsafe { Pin::new_unchecked(&mut state) };\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("unchecked pin must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn checked_pin_keeps_the_unpin_bound_gap_and_unsafe_stays_gated() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn checked(seed: i32) -> i32 {\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let mut state = factory(seed);\n",
+            "    let pinned = Pin::new(&mut state);\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "the Unpin bound awaits its structural judgment: {:?}",
+            failure.diagnostics()
+        );
+        assert!(!failure.incompleteness().is_empty());
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn no_unsafe(seed: i32) -> i32 {\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let mut state = factory(seed);\n",
+            "    let pinned = Pin::new_unchecked(&mut state);\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(failure.diagnostics().is_some());
+        assert!(
+            diagnostics.contains("unsafe context"),
+            "diagnostics={diagnostics}"
+        );
     }
 }
