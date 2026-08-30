@@ -1259,6 +1259,157 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
         let _ = self.const_at_span(expression.span);
     }
 
+    /// Types a closure expression exactly when its shape is fully decided at
+    /// C2: a non-generic owner, no captured enclosing locals, every parameter
+    /// and the result annotated, and explicitly empty effect boundaries.
+    /// Anything else returns `None` and keeps the caller's honest gap for the
+    /// C4 capture/Fn-category authority.
+    fn lower_noncapturing_closure(
+        &mut self,
+        closure: &arche_frontend::ast::AstClosure,
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let (owner, expression_ordinal) =
+            self.closure_expression_identity(span, SemanticBodyKind::Closure)?;
+        if !self.closure_is_noncapturing(span) {
+            return None;
+        }
+        let (parameters, result) = self.annotated_closure_signature(
+            &closure.parameters,
+            &closure.effects,
+            closure.result.as_ref(),
+        )?;
+        let ty = SymbolicType::Closure {
+            owner: Box::new(owner),
+            expression_ordinal,
+            captures: Vec::new(),
+            parameters,
+            result: Box::new(result),
+            requires: SymbolicTypeEffectSet::default(),
+            throws: SymbolicTypeEffectSet::default(),
+            arguments: Vec::new(),
+        };
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(ty)))
+    }
+
+    /// Types a generator-closure expression as its anonymous factory value
+    /// under the same full-decision gates as `lower_noncapturing_closure`.
+    /// A zero-capture factory implements `Fn` exactly, with empty factory
+    /// effect sets per the generator-construction contract.
+    fn lower_noncapturing_generator_closure(
+        &mut self,
+        generator: &arche_frontend::ast::AstGeneratorClosure,
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let (owner, expression_ordinal) =
+            self.closure_expression_identity(span, SemanticBodyKind::Generator)?;
+        if !self.closure_is_noncapturing(span) {
+            return None;
+        }
+        let (parameters, result) = self.annotated_closure_signature(
+            &generator.parameters,
+            &generator.effects,
+            generator.result.as_ref(),
+        )?;
+        let resume = self.type_at_span(generator.resume.span)?;
+        let yields = self.type_at_span(generator.yields.span)?;
+        let target = arche_frontend::GeneratorTarget::Anonymous {
+            owner,
+            expression_ordinal,
+            arguments: Vec::new(),
+        };
+        let produced = SymbolicType::Generator {
+            target: Box::new(target.clone()),
+            captures: Vec::new(),
+            parameters: parameters.clone(),
+            factory_unsafe: false,
+            resume: Box::new(resume),
+            yields: Box::new(yields),
+            result: Box::new(result),
+            requires: SymbolicTypeEffectSet::default(),
+            throws: SymbolicTypeEffectSet::default(),
+        };
+        let ty = SymbolicType::GeneratorFactory {
+            target: Box::new(target),
+            captures: Vec::new(),
+            call_trait: arche_frontend::CallTrait::Fn,
+            parameters,
+            factory_unsafe: false,
+            produced_generator: Box::new(produced),
+        };
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(ty)))
+    }
+
+    /// Resolves the owner declaration path and the C1 expression ordinal of
+    /// the closure or generator body row whose span sits inside this
+    /// expression. Non-generic owners only; anything ambiguous fails closed.
+    fn closure_expression_identity(
+        &self,
+        span: Span,
+        kind: SemanticBodyKind,
+    ) -> Option<(SemanticDeclarationPath, u64)> {
+        let entry = self.catalog.definitions.get(&self.scope.item.id)?;
+        let shape = entry.declaration_shape?;
+        if !shape.generic_parameters.is_empty() {
+            return None;
+        }
+        let mut rows = self.scope.target.bodies.iter().filter(|body| {
+            body.owner == self.scope.item.id && body.kind == kind && span_contains(span, body.span)
+        });
+        let row = rows.next()?;
+        if rows.next().is_some() {
+            return None;
+        }
+        Some((entry.semantic_path(), row.ordinal))
+    }
+
+    /// True when no path inside the expression span resolves to a local
+    /// declared outside it — i.e. the closure captures nothing.
+    fn closure_is_noncapturing(&self, span: Span) -> bool {
+        !self.scope.target.path_resolutions.iter().any(|resolution| {
+            if !span_contains(span, resolution.span) {
+                return false;
+            }
+            let [Res::Local(local)] = resolution.resolutions.as_slice() else {
+                return false;
+            };
+            self.scope
+                .item
+                .locals
+                .iter()
+                .find(|binding| binding.id == *local)
+                .is_some_and(|binding| !span_contains(span, binding.span))
+        })
+    }
+
+    /// Fully annotated closure signature with explicitly empty effect
+    /// boundaries; `None` whenever inference would be required.
+    fn annotated_closure_signature(
+        &mut self,
+        parameters: &[arche_frontend::ast::AstClosureParameter],
+        effects: &arche_frontend::ast::AstEffectSets,
+        result: Option<&arche_frontend::ast::AstType>,
+    ) -> Option<(Vec<SymbolicType>, SymbolicType)> {
+        let explicitly_empty_requires = effects
+            .requires
+            .as_ref()
+            .is_some_and(|set| set.members.is_empty());
+        let explicitly_empty_throws = effects
+            .throws
+            .as_ref()
+            .is_some_and(|set| set.members.is_empty());
+        if !explicitly_empty_requires || !explicitly_empty_throws {
+            return None;
+        }
+        let mut parameter_types = Vec::new();
+        for parameter in parameters {
+            let annotation = parameter.ty.as_ref()?;
+            parameter_types.push(self.type_at_span(annotation.span)?);
+        }
+        let result = self.type_at_span(result?.span)?;
+        Some((parameter_types, result))
+    }
+
     fn check_closure_body(&mut self, closure: &arche_frontend::ast::AstClosure) {
         for parameter in &closure.parameters {
             let Some(annotation) = &parameter.ty else {
@@ -2424,21 +2575,31 @@ impl BodyChecker<'_, '_, '_> {
                 self.unsafe_depth -= 1;
                 lowered
             }
-            AstExpressionKind::Closure(_closure) => {
-                self.gap(
-                    expression.span,
-                    BodyCheckIncompletenessKind::MissingClosureType,
-                    "closure expression type requires the C4 capture/Fn-category authority",
-                );
-                None
+            AstExpressionKind::Closure(closure) => {
+                if let Some(value) = self.lower_noncapturing_closure(closure, expression.span) {
+                    Some(value)
+                } else {
+                    self.gap(
+                        expression.span,
+                        BodyCheckIncompletenessKind::MissingClosureType,
+                        "closure expression type requires the C4 capture/Fn-category authority",
+                    );
+                    None
+                }
             }
-            AstExpressionKind::GeneratorClosure(_generator) => {
-                self.gap(
-                    expression.span,
-                    BodyCheckIncompletenessKind::MissingGeneratorType,
-                    "generator-closure factory type requires the C4 capture authority",
-                );
-                None
+            AstExpressionKind::GeneratorClosure(generator) => {
+                if let Some(value) =
+                    self.lower_noncapturing_generator_closure(generator, expression.span)
+                {
+                    Some(value)
+                } else {
+                    self.gap(
+                        expression.span,
+                        BodyCheckIncompletenessKind::MissingGeneratorType,
+                        "generator-closure factory type requires the C4 capture authority",
+                    );
+                    None
+                }
             }
             AstExpressionKind::Return(value) => {
                 let expected = self.typing.return_type().cloned();
@@ -8656,6 +8817,13 @@ fn checked_expression_diverges(expression: &CheckedExpression) -> bool {
     }
 }
 
+/// True when `inner` lies entirely within `outer` in the same file.
+fn span_contains(outer: Span, inner: Span) -> bool {
+    outer.file == inner.file
+        && inner.start.byte >= outer.start.byte
+        && inner.end.byte <= outer.end.byte
+}
+
 fn peel_references(mut ty: &SymbolicType) -> &SymbolicType {
     while let SymbolicType::Reference { pointee, .. } = ty {
         ty = pointee;
@@ -9403,7 +9571,9 @@ mod tests {
         let cascaded = C2Handoff::begin(inline_frontend(concat!(
             "pub fn invalid() -> i32 {\n",
             "    let invalid: i32 = true;\n",
-            "    let closure = move |input: i32| requires {} throws {} -> i32 { input };\n",
+            "    let outer = 2i32;\n",
+            "    let closure = move |input: i32|\n",
+            "        requires {} throws {} -> i32 { input + outer };\n",
             "    1i32\n",
             "}\n",
         )))
@@ -10891,5 +11061,64 @@ mod tests {
             "diagnostics={diagnostics} incompleteness={:?}",
             failure.incompleteness()
         );
+    }
+
+    #[test]
+    fn noncapturing_annotated_closures_type_as_closure_values() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn holder(seed: i32) -> i32 {\n",
+            "    let doubler = move |value: i32|\n",
+            "        requires {} throws {} -> i32 {\n",
+            "            value + value\n",
+            "        };\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("noncapturing values must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn capturing_closures_keep_the_capture_authority_gap() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn holder(seed: i32) -> i32 {\n",
+            "    let outer = seed;\n",
+            "    let adder = move |value: i32|\n",
+            "        requires {} throws {} -> i32 {\n",
+            "            value + outer\n",
+            "        };\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "captures are C4 authority, not rejections: {:?}",
+            failure.diagnostics()
+        );
+        assert!(failure
+            .incompleteness()
+            .iter()
+            .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingClosureType));
     }
 }
