@@ -20,10 +20,14 @@ use arche_frontend::ast::{
     AstUnaryOperator, AstVariantForm,
 };
 use arche_frontend::embedded_core::{
-    CompilerMethodGenericArgumentPattern, CompilerMethodLifetimePattern,
-    CompilerMethodSelectorKind, CompilerMethodTypePattern, CompilerNominalKind,
-    CompilerNominalMethodReceiverMode, VirtualDefinitionId, VirtualEnumVariantId, VirtualMethodId,
-    VirtualNamespace, VirtualPreludeTarget, VirtualTypeFlavor,
+    CompilerMethodGenericArgumentPattern, CompilerMethodGenericParameter,
+    CompilerMethodGenericParameterAuthority, CompilerMethodGenericParameterKind,
+    CompilerMethodLifetimePattern, CompilerMethodSelectorAuthority, CompilerMethodSelectorKind,
+    CompilerMethodTypePattern, CompilerNominalKind, CompilerNominalMethodAuthority,
+    CompilerNominalMethodEffectPattern, CompilerNominalMethodReceiverMode,
+    CompilerPrimitiveTypePattern, VirtualDeclarationKind, VirtualDefinitionId,
+    VirtualEnumVariantId, VirtualMethodId, VirtualNamespace, VirtualPreludeTarget,
+    VirtualTypeFlavor,
 };
 use arche_frontend::{
     AssociatedPathCandidate, BuiltinResTarget, DeclarationKind, Diagnostic, FileId,
@@ -815,11 +819,60 @@ enum ValueCategory {
     Ordinary,
     DirectFunction(HirItemId),
     AssociatedFunction(HirItemId),
+    EmbeddedFunction {
+        method: VirtualMethodId,
+        is_unsafe: bool,
+        has_effects: bool,
+    },
     PendingDirectFunction(HirItemId),
     PendingAssociatedFunction(HirItemId),
     Constructor(ConstructorSelection),
-    Query { item: SymbolicType },
+    Query {
+        item: SymbolicType,
+    },
     Commands,
+}
+
+#[derive(Clone, Debug)]
+struct CompilerNominalMethodSpec {
+    method: VirtualMethodId,
+    generics: Vec<CompilerMethodGenericParameterAuthority>,
+    receiver: CompilerNominalMethodReceiverMode,
+    receiver_type: Option<CompilerMethodTypePattern>,
+    parameters: Vec<CompilerMethodTypePattern>,
+    selectors: Vec<CompilerMethodSelectorAuthority>,
+    result: CompilerMethodTypePattern,
+    requires: Vec<CompilerNominalMethodEffectPattern>,
+    throws: Vec<CompilerNominalMethodEffectPattern>,
+    is_unsafe: bool,
+}
+
+impl CompilerNominalMethodSpec {
+    fn from_authority(authority: &CompilerNominalMethodAuthority) -> Self {
+        Self {
+            method: authority.c1_method(),
+            generics: authority.generics().to_vec(),
+            receiver: authority.receiver(),
+            receiver_type: authority.receiver_type().cloned(),
+            parameters: authority.parameters().to_vec(),
+            selectors: authority.selectors().to_vec(),
+            result: authority.result().clone(),
+            requires: authority.requires().to_vec(),
+            throws: authority.throws().to_vec(),
+            is_unsafe: authority.is_unsafe(),
+        }
+    }
+
+    fn has_effects(&self) -> bool {
+        !self.requires.is_empty() || !self.throws.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct CompilerMethodSubstitution {
+    types: BTreeMap<CompilerMethodGenericParameter, SymbolicType>,
+    lifetimes: BTreeMap<CompilerMethodGenericParameter, SymbolicLifetime>,
+    capability_packs: BTreeMap<CompilerMethodGenericParameter, Vec<SymbolicType>>,
 }
 
 #[derive(Clone, Debug)]
@@ -864,6 +917,7 @@ struct BodyChecker<'catalog, 'hir, 'locals> {
     diagnostics: Vec<SemanticDiagnostic>,
     gaps: Vec<BodyCheckIncompleteness>,
     source_loop_depth: usize,
+    unsafe_depth: usize,
     generator_resume_type: Option<SymbolicType>,
     generator_yield_type: Option<SymbolicType>,
     or_binding_aliases: Vec<BTreeMap<String, Span>>,
@@ -878,6 +932,10 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
         cross_body_locals: &'locals mut BTreeMap<LocalId, LocalValue>,
     ) -> Self {
         let typing = typing_context(declaration_shape, owner_shape).unwrap_or_default();
+        let unsafe_depth = usize::from(matches!(
+            &declaration_shape.payload,
+            SymbolicDeclarationPayloadSkeleton::Callable(callable) if callable.unsafe_
+        ));
         Self {
             catalog,
             scope,
@@ -895,6 +953,7 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
             diagnostics: Vec::new(),
             gaps: Vec::new(),
             source_loop_depth: 0,
+            unsafe_depth,
             generator_resume_type: None,
             generator_yield_type: None,
             or_binding_aliases: Vec::new(),
@@ -1512,7 +1571,7 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
     }
 
     fn type_error(&mut self, span: Span, error: TypeCheckError) {
-        self.source_error(span, error.code().as_str(), error.to_string());
+        self.source_error(span, error.code().as_str(), error.message().to_string());
     }
 
     fn pattern_errors(&mut self, fallback_span: Span, arms: &[AstMatchArm], errors: PatternErrors) {
@@ -2307,7 +2366,12 @@ impl BodyChecker<'_, '_, '_> {
             AstExpressionKind::Catch { operand, arms } => {
                 self.lower_match(expression.span, operand, arms, expected, true)
             }
-            AstExpressionKind::Unsafe(block) => self.lower_block(block, expected),
+            AstExpressionKind::Unsafe(block) => {
+                self.unsafe_depth += 1;
+                let lowered = self.lower_block(block, expected);
+                self.unsafe_depth -= 1;
+                lowered
+            }
             AstExpressionKind::Closure(_closure) => {
                 self.gap(
                     expression.span,
@@ -2618,16 +2682,36 @@ impl BodyChecker<'_, '_, '_> {
                         };
                         self.embedded_nominal_kind(declaration)
                     });
-                    if owner == Some(CompilerNominalKind::App)
-                        && matches!(name, arche_frontend::ast::AstMethodName::Run)
-                    {
+                    let method = owner.and_then(|owner| {
+                        self.catalog
+                            .handoff
+                            .frontend()
+                            .inventory()
+                            .embedded_core
+                            .compiler_nominal_method(owner, name.as_str())
+                            .map(CompilerNominalMethodSpec::from_authority)
+                    });
+                    if let Some(method) = method {
                         let receiver = receiver?;
-                        self.lower_app_run_method(
-                            receiver.ty(),
-                            generic_arguments.as_ref(),
-                            arguments,
-                            part.span,
-                        )?
+                        if owner == Some(CompilerNominalKind::App)
+                            && matches!(name, arche_frontend::ast::AstMethodName::Run)
+                        {
+                            self.lower_app_run_method(
+                                &method,
+                                receiver.ty(),
+                                generic_arguments.as_ref(),
+                                arguments,
+                                part.span,
+                            )?
+                        } else {
+                            self.lower_verified_nominal_method(
+                                &method,
+                                receiver.ty(),
+                                generic_arguments.as_ref(),
+                                arguments,
+                                part.span,
+                            )?
+                        }
                     } else {
                         for argument in arguments {
                             self.check_expression(argument, None);
@@ -2725,6 +2809,7 @@ impl BodyChecker<'_, '_, '_> {
             ValueCategory::PendingAssociatedFunction(item) => (item, true),
             ValueCategory::DirectFunction(_)
             | ValueCategory::AssociatedFunction(_)
+            | ValueCategory::EmbeddedFunction { .. }
             | ValueCategory::Ordinary
             | ValueCategory::Constructor(_)
             | ValueCategory::Query { .. }
@@ -2758,70 +2843,290 @@ impl BodyChecker<'_, '_, '_> {
         Some(value)
     }
 
-    fn lower_app_run_method(
+    fn lower_verified_associated_method(
         &mut self,
+        method: &CompilerNominalMethodSpec,
+        path_use: &arche_frontend::HirPathUse,
+        expected: Option<&SymbolicType>,
+        span: Span,
+    ) -> Option<LoweredValue> {
+        if method.receiver != CompilerNominalMethodReceiverMode::None
+            || method.receiver_type.is_some()
+        {
+            self.source_error(
+                span,
+                "TYPE002",
+                "instance compiler nominal method requires a receiver",
+            );
+            return None;
+        }
+        if !method.selectors.is_empty() {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                "associated compiler nominal selectors are not representable as a function value",
+            );
+            return None;
+        }
+
+        let mut substitution = CompilerMethodSubstitution::default();
+        let actuals = self.path_actuals(path_use, span)?;
+        if !actuals.is_empty()
+            && !self.bind_compiler_method_actuals(method, &actuals, &mut substitution, span)
+        {
+            return None;
+        }
+        if let Some(expected) = expected {
+            match self.bind_compiler_method_pattern(
+                &method.result,
+                expected,
+                &mut substitution,
+                false,
+            ) {
+                Some(true) => {}
+                Some(false) => {
+                    self.source_error(
+                        span,
+                        "TYPE002",
+                        "expected type does not match verified associated method result",
+                    );
+                    return None;
+                }
+                None => return None,
+            }
+        }
+        if !self.validate_compiler_method_generics(method, &substitution, &BTreeSet::new(), span) {
+            return None;
+        }
+        if !self.validate_compiler_method_effects(method, &substitution, span) {
+            return None;
+        }
+        let parameters = method
+            .parameters
+            .iter()
+            .map(|pattern| self.compiler_method_pattern_type(pattern, &substitution, span))
+            .collect::<Option<Vec<_>>>()?;
+        let result = self.compiler_method_pattern_type(&method.result, &substitution, span)?;
+        let function = SymbolicType::FunctionPointer {
+            unsafe_: method.is_unsafe,
+            parameters,
+            result: Box::new(result),
+            requires: SymbolicTypeEffectSet::default(),
+            throws: SymbolicTypeEffectSet::default(),
+        };
+        Some(LoweredValue {
+            input: TypedExpressionInput::Known(function),
+            category: ValueCategory::EmbeddedFunction {
+                method: method.method,
+                is_unsafe: method.is_unsafe,
+                has_effects: method.has_effects(),
+            },
+        })
+    }
+
+    fn lower_verified_nominal_method(
+        &mut self,
+        method: &CompilerNominalMethodSpec,
         receiver_ty: &SymbolicType,
         generic_arguments: Option<&arche_frontend::ast::AstGenericArguments>,
         arguments: &[AstExpression],
         span: Span,
     ) -> Option<LoweredValue> {
-        let Some((
-            method,
-            receiver_mode,
-            receiver_pattern,
-            parameter_patterns,
-            selector_kinds,
-            result_pattern,
-            has_effects,
-        )) = (|| {
-            let core = &self.catalog.handoff.frontend().inventory().embedded_core;
-            let authority = core.compiler_nominal_method(CompilerNominalKind::App, "run")?;
-            Some((
-                authority.c1_method(),
-                authority.receiver(),
-                authority.receiver_type()?.clone(),
-                authority.parameters().to_vec(),
-                authority
-                    .selectors()
-                    .iter()
-                    .map(|selector| selector.kind())
-                    .collect::<Vec<_>>(),
-                authority.result().clone(),
-                !authority.requires().is_empty() || !authority.throws().is_empty(),
-            ))
-        })()
-        else {
+        let Some(receiver_pattern) = method.receiver_type.as_ref() else {
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
+            self.source_error(
+                span,
+                "TYPE002",
+                "associated compiler nominal method cannot be called with receiver syntax",
+            );
+            return None;
+        };
+        if !method.selectors.is_empty() {
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
             self.gap(
                 span,
                 BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                "verified App.run intrinsic method authority is absent",
+                "compiler nominal method selectors require dedicated source lowering",
+            );
+            return None;
+        }
+        if method.is_unsafe && self.unsafe_depth == 0 {
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
+            self.source_error(
+                span,
+                "TYPE002",
+                "unsafe compiler nominal method call requires an unsafe context",
+            );
+            return None;
+        }
+        if !receiver_mode_matches_pattern(method.receiver, receiver_pattern) {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                "verified compiler nominal receiver mode disagrees with its typed pattern",
+            );
+            return None;
+        }
+
+        let mut substitution = CompilerMethodSubstitution::default();
+        if let Some(generic_arguments) = generic_arguments {
+            let actuals = self.postfix_actuals(generic_arguments.span)?;
+            if !self.bind_compiler_method_actuals(method, &actuals, &mut substitution, span) {
+                return None;
+            }
+        }
+        match self.bind_compiler_method_pattern(
+            receiver_pattern,
+            receiver_ty,
+            &mut substitution,
+            true,
+        ) {
+            Some(true) => {}
+            Some(false) => {
+                for argument in arguments {
+                    self.check_expression(argument, None);
+                }
+                self.source_error(
+                    span,
+                    "TYPE002",
+                    "receiver does not match verified compiler nominal method type",
+                );
+                return None;
+            }
+            None => return None,
+        }
+        let receiver_bound = substitution
+            .types
+            .keys()
+            .chain(substitution.capability_packs.keys())
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if arguments.len() != method.parameters.len() {
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
+            self.source_error(
+                span,
+                "TYPE002",
+                format!(
+                    "compiler nominal method expects {} runtime arguments, found {}",
+                    method.parameters.len(),
+                    arguments.len()
+                ),
+            );
+            return None;
+        }
+
+        let mut complete = true;
+        for (pattern, argument) in method.parameters.iter().zip(arguments) {
+            let expected = self.compiler_method_pattern_type_if_bound(pattern, &substitution);
+            let checked = match self.check_expression(argument, expected.as_ref()) {
+                Some(checked) => checked,
+                None => {
+                    complete = false;
+                    continue;
+                }
+            };
+            match self.bind_compiler_method_pattern(pattern, checked.ty(), &mut substitution, false)
+            {
+                Some(true) => {}
+                Some(false) => {
+                    self.source_error(
+                        argument.span,
+                        "TYPE002",
+                        "argument does not match verified compiler nominal method parameter",
+                    );
+                    complete = false;
+                }
+                None => complete = false,
+            }
+        }
+        if !complete
+            || !self.validate_compiler_method_generics(method, &substitution, &receiver_bound, span)
+            || !self.validate_compiler_method_effects(method, &substitution, span)
+        {
+            return None;
+        }
+        let result = self.compiler_method_pattern_type(&method.result, &substitution, span)?;
+        if method.has_effects() {
+            self.pending_c4(
+                span,
+                compiler_method_dependency_bytes(method.method, b"method-effects"),
+                "compiler nominal method effect membership is finalized by C4",
+            );
+        }
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: CheckedBodyCallee::EmbeddedMethod(method.method),
+            result: result.clone(),
+        });
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)))
+    }
+
+    fn lower_app_run_method(
+        &mut self,
+        method: &CompilerNominalMethodSpec,
+        receiver_ty: &SymbolicType,
+        generic_arguments: Option<&arche_frontend::ast::AstGenericArguments>,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let Some(receiver_pattern) = method.receiver_type.as_ref() else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                "verified App.run authority has no receiver type",
             );
             return None;
         };
 
         let mut complete = true;
-        if receiver_mode != CompilerNominalMethodReceiverMode::Mutable
-            || !self.intrinsic_shape_matches(&receiver_pattern, receiver_ty)
-        {
-            self.source_error(span, "TYPE002", "App.run requires a mutable App receiver");
-            complete = false;
-        }
+        let mut substitution = CompilerMethodSubstitution::default();
         if let Some(generic_arguments) = generic_arguments {
-            let _ = self.postfix_actuals(generic_arguments.span);
-            self.gap(
+            let actuals = self.postfix_actuals(generic_arguments.span)?;
+            complete &= self.bind_compiler_method_actuals(
+                method,
+                &actuals,
+                &mut substitution,
                 generic_arguments.span,
-                BodyCheckIncompletenessKind::MissingGenericInference,
-                "explicit App.run intrinsic generics are not yet substituted into verified method patterns",
             );
-            complete = false;
         }
-        if arguments.len() != selector_kinds.len() + parameter_patterns.len() {
+        if method.receiver != CompilerNominalMethodReceiverMode::Mutable
+            || !receiver_mode_matches_pattern(method.receiver, receiver_pattern)
+        {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                "verified App.run receiver mode disagrees with its typed pattern",
+            );
+            return None;
+        }
+        match self.bind_compiler_method_pattern(
+            receiver_pattern,
+            receiver_ty,
+            &mut substitution,
+            true,
+        ) {
+            Some(true) => {}
+            Some(false) => {
+                self.source_error(span, "TYPE002", "App.run requires a mutable App receiver");
+                complete = false;
+            }
+            None => complete = false,
+        }
+        if arguments.len() != method.selectors.len() + method.parameters.len() {
             self.source_error(
                 span,
                 "TYPE002",
                 format!(
                     "App.run expects {} selector/runtime arguments, found {}",
-                    selector_kinds.len() + parameter_patterns.len(),
+                    method.selectors.len() + method.parameters.len(),
                     arguments.len()
                 ),
             );
@@ -2829,11 +3134,20 @@ impl BodyChecker<'_, '_, '_> {
         }
 
         let mut selected_items = Vec::new();
-        for (index, selector_kind) in selector_kinds.iter().enumerate() {
+        for (index, selector) in method.selectors.iter().enumerate() {
             let Some(argument) = arguments.get(index) else {
                 continue;
             };
-            if *selector_kind != CompilerMethodSelectorKind::DefinitionId {
+            if selector.coordinate().index() != u8::try_from(index).unwrap_or(u8::MAX) {
+                self.gap(
+                    argument.span,
+                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                    "verified App.run selector coordinates are not dense and ordered",
+                );
+                complete = false;
+                continue;
+            }
+            if selector.kind() != CompilerMethodSelectorKind::DefinitionId {
                 self.gap(
                     argument.span,
                     BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
@@ -2873,44 +3187,44 @@ impl BodyChecker<'_, '_, '_> {
             selected_items.push(item);
         }
 
-        for (index, pattern) in parameter_patterns.iter().enumerate() {
-            let Some(argument) = arguments.get(selector_kinds.len() + index) else {
+        for (index, pattern) in method.parameters.iter().enumerate() {
+            let Some(argument) = arguments.get(method.selectors.len() + index) else {
                 continue;
             };
             let Some(checked) = self.check_expression(argument, None) else {
                 complete = false;
                 continue;
             };
-            if !self.intrinsic_shape_matches(pattern, checked.ty()) {
-                self.source_error(
-                    argument.span,
-                    "TYPE002",
-                    format!(
-                        "App.run runtime argument {:?} does not match verified intrinsic pattern {pattern:?}",
-                        checked.ty()
-                    ),
-                );
-                complete = false;
+            match self.bind_compiler_method_pattern(pattern, checked.ty(), &mut substitution, true)
+            {
+                Some(true) => {}
+                Some(false) => {
+                    self.source_error(
+                        argument.span,
+                        "TYPE002",
+                        "App.run runtime argument does not match its verified intrinsic type pattern",
+                    );
+                    complete = false;
+                }
+                None => complete = false,
             }
         }
 
-        let result = match &result_pattern {
-            CompilerMethodTypePattern::Tuple(fields) if fields.is_empty() => SymbolicType::Unit,
-            _ => {
-                self.gap(
-                    span,
-                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                    "App.run verified result is outside the currently lowered intrinsic result algebra",
-                );
-                return None;
-            }
-        };
-        if !complete {
+        if !complete
+            || !self.validate_compiler_method_generics(
+                method,
+                &substitution,
+                &BTreeSet::new(),
+                span,
+            )
+            || !self.validate_compiler_method_effects(method, &substitution, span)
+        {
             return None;
         }
-        if has_effects {
+        let result = self.compiler_method_pattern_type(&method.result, &substitution, span)?;
+        if method.has_effects() {
             let mut bytes = b"ARCHE-C2-APP-RUN-EFFECTS\0".to_vec();
-            bytes.extend_from_slice(&method.ordinal().to_le_bytes());
+            bytes.extend_from_slice(&method.method.ordinal().to_le_bytes());
             for item in selected_items {
                 bytes.extend_from_slice(&item.0.to_le_bytes());
             }
@@ -2922,7 +3236,7 @@ impl BodyChecker<'_, '_, '_> {
         }
         self.calls.push(CheckedBodyCall {
             span,
-            callee: CheckedBodyCallee::EmbeddedMethod(method),
+            callee: CheckedBodyCallee::EmbeddedMethod(method.method),
             result: result.clone(),
         });
         Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)))
@@ -2950,47 +3264,124 @@ impl BodyChecker<'_, '_, '_> {
         Some(*item)
     }
 
-    fn intrinsic_shape_matches(
-        &self,
+    fn bind_compiler_method_actuals(
+        &mut self,
+        method: &CompilerNominalMethodSpec,
+        actuals: &[GenericArgumentShape],
+        substitution: &mut CompilerMethodSubstitution,
+        span: Span,
+    ) -> bool {
+        if actuals.len() != method.generics.len() {
+            self.source_error(
+                span,
+                "TYPE001",
+                format!(
+                    "compiler nominal method expects {} generic arguments, found {}",
+                    method.generics.len(),
+                    actuals.len()
+                ),
+            );
+            return false;
+        }
+        let mut complete = true;
+        for (formal, actual) in method.generics.iter().zip(actuals) {
+            let matches = match (formal.kind(), actual) {
+                (CompilerMethodGenericParameterKind::Type, GenericArgumentShape::Type(ty)) => {
+                    bind_compiler_type_generic(substitution, formal.coordinate(), ty)
+                }
+                (
+                    CompilerMethodGenericParameterKind::Lifetime,
+                    GenericArgumentShape::Lifetime(lifetime),
+                ) => bind_compiler_lifetime_generic(substitution, formal.coordinate(), lifetime),
+                _ => false,
+            };
+            if !matches {
+                self.source_error(
+                    span,
+                    "TYPE001",
+                    "compiler nominal generic argument kind or repeated value does not match verified authority",
+                );
+                complete = false;
+            }
+        }
+        complete
+    }
+
+    fn bind_compiler_method_pattern(
+        &mut self,
         pattern: &CompilerMethodTypePattern,
         actual: &SymbolicType,
-    ) -> bool {
-        match pattern {
-            CompilerMethodTypePattern::Generic(_) => true,
+        substitution: &mut CompilerMethodSubstitution,
+        allow_implicit_borrow: bool,
+    ) -> Option<bool> {
+        let matches = match pattern {
+            CompilerMethodTypePattern::Generic(generic) => {
+                bind_compiler_type_generic(substitution, *generic, actual)
+            }
             CompilerMethodTypePattern::Definition {
                 definition,
                 arguments,
             } => {
-                let SymbolicType::NominalPath {
-                    declaration,
-                    arguments: actual_arguments,
-                } = actual
-                else {
-                    return false;
-                };
-                if self.embedded_core_definition_for_path(declaration) != Some(*definition) {
-                    return false;
+                if let Some(primitive) = self.compiler_primitive_type(*definition) {
+                    arguments.is_empty() && primitive == *actual
+                } else {
+                    let SymbolicType::NominalPath {
+                        declaration,
+                        arguments: actual_arguments,
+                    } = actual
+                    else {
+                        return Some(false);
+                    };
+                    if self.embedded_core_definition_for_path(declaration) != Some(*definition) {
+                        return Some(false);
+                    }
+                    if self.is_exact_caps_pack_pattern(*definition, arguments, actual_arguments) {
+                        let [CompilerMethodGenericArgumentPattern::Type(
+                            CompilerMethodTypePattern::Generic(generic),
+                        )] = arguments.as_ref()
+                        else {
+                            unreachable!("exact Caps pack shape was checked")
+                        };
+                        let pack = actual_arguments
+                            .iter()
+                            .filter_map(|argument| match argument {
+                                GenericArgumentShape::Type(ty) => Some(ty.clone()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>();
+                        match substitution.capability_packs.get(generic) {
+                            Some(existing) => existing == &pack,
+                            None => {
+                                substitution.capability_packs.insert(*generic, pack);
+                                true
+                            }
+                        }
+                    } else if arguments.len() != actual_arguments.len() {
+                        false
+                    } else {
+                        let mut complete = true;
+                        for (pattern, actual) in arguments.iter().zip(actual_arguments) {
+                            let matched = match (pattern, actual) {
+                                (
+                                    CompilerMethodGenericArgumentPattern::Type(pattern),
+                                    GenericArgumentShape::Type(actual),
+                                ) => self.bind_compiler_method_pattern(
+                                    pattern,
+                                    actual,
+                                    substitution,
+                                    false,
+                                )?,
+                                (
+                                    CompilerMethodGenericArgumentPattern::Lifetime(generic),
+                                    GenericArgumentShape::Lifetime(actual),
+                                ) => bind_compiler_lifetime_generic(substitution, *generic, actual),
+                                _ => false,
+                            };
+                            complete &= matched;
+                        }
+                        complete
+                    }
                 }
-                if self.is_exact_caps_pack_pattern(*definition, arguments, actual_arguments) {
-                    return true;
-                }
-                if arguments.len() != actual_arguments.len() {
-                    return false;
-                }
-                arguments
-                    .iter()
-                    .zip(actual_arguments)
-                    .all(|(pattern, actual)| match (pattern, actual) {
-                        (
-                            CompilerMethodGenericArgumentPattern::Type(pattern),
-                            GenericArgumentShape::Type(actual),
-                        ) => self.intrinsic_shape_matches(pattern, actual),
-                        (
-                            CompilerMethodGenericArgumentPattern::Lifetime(_),
-                            GenericArgumentShape::Lifetime(_),
-                        ) => true,
-                        _ => false,
-                    })
             }
             CompilerMethodTypePattern::SharedReference { lifetime, referent } => match actual {
                 SymbolicType::Reference {
@@ -2999,10 +3390,18 @@ impl BodyChecker<'_, '_, '_> {
                     pointee,
                 } => {
                     (*mutability == Mutability::Shared || *mutability == Mutability::Mutable)
-                        && self.intrinsic_lifetime_matches(lifetime, actual_lifetime)
-                        && self.intrinsic_shape_matches(referent, pointee)
+                        && bind_compiler_method_lifetime(substitution, lifetime, actual_lifetime)
+                        && self.bind_compiler_method_pattern(
+                            referent,
+                            pointee,
+                            substitution,
+                            false,
+                        )?
                 }
-                _ => self.intrinsic_shape_matches(referent, actual),
+                _ if allow_implicit_borrow => {
+                    self.bind_compiler_method_pattern(referent, actual, substitution, false)?
+                }
+                _ => false,
             },
             CompilerMethodTypePattern::MutableReference { lifetime, referent } => match actual {
                 SymbolicType::Reference {
@@ -3010,37 +3409,256 @@ impl BodyChecker<'_, '_, '_> {
                     lifetime: actual_lifetime,
                     pointee,
                 } => {
-                    self.intrinsic_lifetime_matches(lifetime, actual_lifetime)
-                        && self.intrinsic_shape_matches(referent, pointee)
+                    bind_compiler_method_lifetime(substitution, lifetime, actual_lifetime)
+                        && self.bind_compiler_method_pattern(
+                            referent,
+                            pointee,
+                            substitution,
+                            false,
+                        )?
                 }
-                _ => self.intrinsic_shape_matches(referent, actual),
+                _ if allow_implicit_borrow => {
+                    self.bind_compiler_method_pattern(referent, actual, substitution, false)?
+                }
+                _ => false,
             },
-            CompilerMethodTypePattern::Slice(element) => matches!(
-                actual,
-                SymbolicType::Slice(actual)
-                    if self.intrinsic_shape_matches(element, actual)
-            ),
-            CompilerMethodTypePattern::Tuple(fields) => matches!(
-                actual,
-                SymbolicType::Tuple(actual)
-                    if fields.len() == actual.len()
-                        && fields
-                            .iter()
-                            .zip(actual)
-                            .all(|(pattern, actual)| self.intrinsic_shape_matches(pattern, actual))
-            ),
+            CompilerMethodTypePattern::Slice(element) => match actual {
+                SymbolicType::Slice(actual) => {
+                    self.bind_compiler_method_pattern(element, actual, substitution, false)?
+                }
+                _ => false,
+            },
+            CompilerMethodTypePattern::Tuple(fields) => match actual {
+                SymbolicType::Tuple(actual) if fields.len() == actual.len() => {
+                    let mut complete = true;
+                    for (pattern, actual) in fields.iter().zip(actual) {
+                        complete &= self.bind_compiler_method_pattern(
+                            pattern,
+                            actual,
+                            substitution,
+                            false,
+                        )?;
+                    }
+                    complete
+                }
+                _ => false,
+            },
+        };
+        Some(matches)
+    }
+
+    fn compiler_method_pattern_type_if_bound(
+        &self,
+        pattern: &CompilerMethodTypePattern,
+        substitution: &CompilerMethodSubstitution,
+    ) -> Option<SymbolicType> {
+        match pattern {
+            CompilerMethodTypePattern::Generic(generic) => substitution.types.get(generic).cloned(),
+            CompilerMethodTypePattern::Definition {
+                definition,
+                arguments,
+            } => {
+                if let Some(primitive) = self.compiler_primitive_type(*definition) {
+                    return arguments.is_empty().then_some(primitive);
+                }
+                let declaration = self.embedded_declaration_path(*definition)?;
+                let mut lowered = Vec::with_capacity(arguments.len());
+                for argument in arguments.iter() {
+                    lowered.push(match argument {
+                        CompilerMethodGenericArgumentPattern::Type(pattern) => {
+                            GenericArgumentShape::Type(
+                                self.compiler_method_pattern_type_if_bound(pattern, substitution)?,
+                            )
+                        }
+                        CompilerMethodGenericArgumentPattern::Lifetime(generic) => {
+                            GenericArgumentShape::Lifetime(
+                                substitution.lifetimes.get(generic)?.clone(),
+                            )
+                        }
+                    });
+                }
+                Some(SymbolicType::NominalPath {
+                    declaration,
+                    arguments: lowered,
+                })
+            }
+            CompilerMethodTypePattern::SharedReference { lifetime, referent } => {
+                Some(SymbolicType::Reference {
+                    mutability: Mutability::Shared,
+                    lifetime: compiler_method_lifetime_type(substitution, lifetime)?,
+                    pointee: Box::new(
+                        self.compiler_method_pattern_type_if_bound(referent, substitution)?,
+                    ),
+                })
+            }
+            CompilerMethodTypePattern::MutableReference { lifetime, referent } => {
+                Some(SymbolicType::Reference {
+                    mutability: Mutability::Mutable,
+                    lifetime: compiler_method_lifetime_type(substitution, lifetime)?,
+                    pointee: Box::new(
+                        self.compiler_method_pattern_type_if_bound(referent, substitution)?,
+                    ),
+                })
+            }
+            CompilerMethodTypePattern::Slice(element) => Some(SymbolicType::Slice(Box::new(
+                self.compiler_method_pattern_type_if_bound(element, substitution)?,
+            ))),
+            CompilerMethodTypePattern::Tuple(fields) => Some(SymbolicType::Tuple(
+                fields
+                    .iter()
+                    .map(|field| self.compiler_method_pattern_type_if_bound(field, substitution))
+                    .collect::<Option<Vec<_>>>()?,
+            )),
         }
     }
 
-    fn intrinsic_lifetime_matches(
-        &self,
-        pattern: &CompilerMethodLifetimePattern,
-        _actual: &SymbolicLifetime,
+    fn compiler_method_pattern_type(
+        &mut self,
+        pattern: &CompilerMethodTypePattern,
+        substitution: &CompilerMethodSubstitution,
+        span: Span,
+    ) -> Option<SymbolicType> {
+        match self.compiler_method_pattern_type_if_bound(pattern, substitution) {
+            Some(ty) => Some(ty),
+            None => {
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingGenericInference,
+                    "verified compiler nominal method pattern retains an uninferred generic coordinate",
+                );
+                None
+            }
+        }
+    }
+
+    fn validate_compiler_method_generics(
+        &mut self,
+        method: &CompilerNominalMethodSpec,
+        substitution: &CompilerMethodSubstitution,
+        receiver_bound: &BTreeSet<CompilerMethodGenericParameter>,
+        span: Span,
     ) -> bool {
-        matches!(
-            pattern,
-            CompilerMethodLifetimePattern::Elided | CompilerMethodLifetimePattern::Generic(_)
-        )
+        for generic in &method.generics {
+            let bound = match generic.kind() {
+                CompilerMethodGenericParameterKind::Type => {
+                    substitution.types.contains_key(&generic.coordinate())
+                        || substitution
+                            .capability_packs
+                            .contains_key(&generic.coordinate())
+                }
+                CompilerMethodGenericParameterKind::Lifetime => {
+                    substitution.lifetimes.contains_key(&generic.coordinate())
+                }
+            };
+            if !bound {
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingGenericInference,
+                    format!(
+                        "verified compiler nominal generic `{}` was not inferred",
+                        generic.source_name()
+                    ),
+                );
+                return false;
+            }
+            if !generic.bounds().is_empty()
+                && !receiver_bound.contains(&generic.coordinate())
+                && !substitution
+                    .capability_packs
+                    .contains_key(&generic.coordinate())
+            {
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingEmbeddedTraitIdentity,
+                    format!(
+                        "compiler nominal generic `{}` requires {:?}, whose stable compiler trait identities are absent",
+                        generic.source_name(),
+                        generic.bounds()
+                    ),
+                );
+                return false;
+            }
+        }
+        true
+    }
+
+    fn validate_compiler_method_effects(
+        &mut self,
+        method: &CompilerNominalMethodSpec,
+        substitution: &CompilerMethodSubstitution,
+        span: Span,
+    ) -> bool {
+        for effect in method.requires.iter().chain(&method.throws) {
+            match effect {
+                CompilerNominalMethodEffectPattern::Drop(pattern) => {
+                    if self
+                        .compiler_method_pattern_type_if_bound(pattern, substitution)
+                        .is_none()
+                    {
+                        self.gap(
+                            span,
+                            BodyCheckIncompletenessKind::MissingGenericInference,
+                            "compiler nominal Drop effect references an uninferred type pattern",
+                        );
+                        return false;
+                    }
+                }
+                CompilerNominalMethodEffectPattern::Selector(coordinate) => {
+                    let Some(selector) = method.selectors.get(usize::from(coordinate.index()))
+                    else {
+                        self.gap(
+                            span,
+                            BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                            "compiler nominal effect references an absent selector coordinate",
+                        );
+                        return false;
+                    };
+                    if selector.coordinate() != *coordinate {
+                        self.gap(
+                            span,
+                            BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                            "compiler nominal selector effect disagrees with typed selector authority",
+                        );
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    fn compiler_primitive_type(&self, definition: VirtualDefinitionId) -> Option<SymbolicType> {
+        self.catalog
+            .handoff
+            .frontend()
+            .inventory()
+            .embedded_core
+            .compiler_primitive_for_c1_definition(definition)
+            .map(compiler_primitive_symbolic_type)
+    }
+
+    fn embedded_declaration_path(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<SemanticDeclarationPath> {
+        let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+        let row = core.definition(definition)?;
+        let kind = match row.declaration_kind() {
+            VirtualDeclarationKind::Struct => DeclarationKind::Struct,
+            VirtualDeclarationKind::Enum => DeclarationKind::Enum,
+            VirtualDeclarationKind::Trait => DeclarationKind::Trait,
+            VirtualDeclarationKind::Function => DeclarationKind::Function,
+            VirtualDeclarationKind::Primitive => return None,
+        };
+        let projection = core.projection();
+        Some(SemanticDeclarationPath {
+            registry_origin: projection.registry_origin().to_owned(),
+            package_name: projection.scoped_name().to_owned(),
+            target: TargetRoot::Library,
+            modules: Vec::new(),
+            kind,
+            name: row.name().to_owned(),
+        })
     }
 
     fn embedded_core_definition_for_path(
@@ -3138,6 +3756,31 @@ impl BodyChecker<'_, '_, '_> {
         let callee = match value.category {
             ValueCategory::DirectFunction(item) => CheckedBodyCallee::DirectItem(item),
             ValueCategory::AssociatedFunction(item) => CheckedBodyCallee::AssociatedItem(item),
+            ValueCategory::EmbeddedFunction {
+                method,
+                is_unsafe,
+                has_effects,
+            } => {
+                if is_unsafe && self.unsafe_depth == 0 {
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
+                    self.source_error(
+                        span,
+                        "TYPE002",
+                        "unsafe compiler nominal method call requires an unsafe context",
+                    );
+                    return None;
+                }
+                if has_effects {
+                    self.pending_c4(
+                        span,
+                        compiler_method_dependency_bytes(method, b"associated-effects"),
+                        "compiler nominal method effect membership is finalized by C4",
+                    );
+                }
+                CheckedBodyCallee::EmbeddedMethod(method)
+            }
             ValueCategory::PendingDirectFunction(item)
             | ValueCategory::PendingAssociatedFunction(item) => {
                 for argument in arguments {
@@ -3781,21 +4424,22 @@ impl BodyChecker<'_, '_, '_> {
     fn lower_builtin_resolution(
         &mut self,
         target: BuiltinResTarget,
-        _path_use: &arche_frontend::HirPathUse,
+        path_use: &arche_frontend::HirPathUse,
         span: Span,
         expected: Option<&SymbolicType>,
     ) -> Option<LoweredValue> {
         match target {
             BuiltinResTarget::Method(method) => {
-                let typed = self
-                    .catalog
-                    .handoff
-                    .frontend()
-                    .inventory()
-                    .embedded_core
+                let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+                if let Some(authority) = core.compiler_nominal_method_for_c1_method(method) {
+                    let spec = CompilerNominalMethodSpec::from_authority(authority);
+                    return self.lower_verified_associated_method(&spec, path_use, expected, span);
+                }
+                if core
                     .typed_c2()
-                    .compiler_trait_method_for_c1_method(method);
-                if typed.is_some() {
+                    .compiler_trait_method_for_c1_method(method)
+                    .is_some()
+                {
                     self.gap(
                         span,
                         BodyCheckIncompletenessKind::MissingEmbeddedTraitIdentity,
@@ -3803,15 +4447,15 @@ impl BodyChecker<'_, '_, '_> {
                             "compiler-trait method {method:?} cannot be selected before its stable embedded trait DefinitionId exists"
                         ),
                     );
-                } else {
-                    self.gap(
-                        span,
-                        BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                        format!(
-                            "embedded method {method:?} has only a string C1 signature, not a typed C2 callable"
-                        ),
-                    );
+                    return None;
                 }
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                    format!(
+                        "embedded method {method:?} has only a string C1 signature, not a typed C2 callable"
+                    ),
+                );
                 None
             }
             BuiltinResTarget::EnumVariant(variant) => {
@@ -4251,7 +4895,7 @@ impl BodyChecker<'_, '_, '_> {
                         complete = false;
                     }
                     if let (Some(place_type), Some(value)) = (place_type, value) {
-                        statements.push(match operator {
+                        let assignment = match operator {
                             AstAssignmentOperator::Assign => TypedExpressionInput::Assignment {
                                 place_type,
                                 value: Box::new(value.input),
@@ -4262,7 +4906,16 @@ impl BodyChecker<'_, '_, '_> {
                                     value: Box::new(value.input),
                                 }
                             }
-                        });
+                        };
+                        let lowered = LoweredValue::ordinary(assignment);
+                        if self.materialize(&lowered, None, statement.span).is_some() {
+                            statements.push(lowered.input);
+                        } else {
+                            // Validate compound operators at their retained statement span.
+                            // Otherwise a recursive block check would attach the operator
+                            // failure to the entire enclosing block and obscure its source.
+                            complete = false;
+                        }
                     }
                 }
                 AstStatementKind::Expression { expression, .. } => {
@@ -4390,22 +5043,27 @@ impl BodyChecker<'_, '_, '_> {
             }
             return None;
         };
-        if catch {
+        let patterns_valid = if catch {
             self.gap(
                 span,
                 BodyCheckIncompletenessKind::MissingEffectAuthority,
                 "catch pattern scrutinee requires the C4 canonical throws-set authority",
             );
+            false
         } else {
-            self.check_match_patterns(operand_checked.ty(), arms, operand.span);
-        }
+            self.check_match_patterns(operand_checked.ty(), arms, operand.span)
+        };
 
         let mut joined = expected.cloned();
-        let mut complete = !catch;
+        let mut complete = patterns_valid;
         for arm in arms {
-            if !catch {
-                self.bind_refutable_arm(&arm.pattern, operand_checked.ty());
+            if !patterns_valid {
+                // A definitive pattern diagnostic already rejects this body.
+                // Do not manufacture missing-local gaps from an arm whose
+                // bindings cannot have a successful typed-pattern analysis.
+                continue;
             }
+            self.bind_refutable_arm(&arm.pattern, operand_checked.ty());
             if let Some(guard) = &arm.guard {
                 let bool_type = SymbolicType::Bool;
                 if self.check_expression(guard, Some(&bool_type)).is_none() {
@@ -4856,10 +5514,15 @@ impl BodyChecker<'_, '_, '_> {
         }
     }
 
-    fn check_match_patterns(&mut self, ty: &SymbolicType, arms: &[AstMatchArm], span: Span) {
+    fn check_match_patterns(
+        &mut self,
+        ty: &SymbolicType,
+        arms: &[AstMatchArm],
+        span: Span,
+    ) -> bool {
         self.reset_pattern_symbolic();
         let Some(pattern_ty) = self.pattern_type(ty, span) else {
-            return;
+            return false;
         };
         let mut lowered = Vec::new();
         for arm in arms {
@@ -4869,7 +5532,7 @@ impl BodyChecker<'_, '_, '_> {
             lowered.push(PatternArm::new(pattern, arm.guard.is_some()));
         }
         if lowered.len() != arms.len() {
-            return;
+            return false;
         }
         let scrutinee = PatternScrutinee::new(pattern_ty, PlaceMutability::Mutable);
         match analyze_pattern_match(&scrutinee, &lowered) {
@@ -4879,8 +5542,12 @@ impl BodyChecker<'_, '_, '_> {
                     span,
                     analysis: CheckedBodyPatternAnalysis::Refutable(analysis),
                 });
+                true
             }
-            Err(errors) => self.pattern_errors(span, arms, errors),
+            Err(errors) => {
+                self.pattern_errors(span, arms, errors);
+                false
+            }
         }
     }
 
@@ -5832,6 +6499,117 @@ fn types_match_with_erased_body_lifetime(left: &SymbolicType, right: &SymbolicTy
     }
 }
 
+fn bind_compiler_type_generic(
+    substitution: &mut CompilerMethodSubstitution,
+    generic: CompilerMethodGenericParameter,
+    ty: &SymbolicType,
+) -> bool {
+    match substitution.types.get(&generic) {
+        Some(existing) => types_match_with_erased_body_lifetime(existing, ty),
+        None => {
+            substitution.types.insert(generic, ty.clone());
+            true
+        }
+    }
+}
+
+fn bind_compiler_lifetime_generic(
+    substitution: &mut CompilerMethodSubstitution,
+    generic: CompilerMethodGenericParameter,
+    lifetime: &SymbolicLifetime,
+) -> bool {
+    match substitution.lifetimes.get(&generic) {
+        Some(existing) => {
+            existing == lifetime
+                || matches!(existing, SymbolicLifetime::ErasedLocal)
+                || matches!(lifetime, SymbolicLifetime::ErasedLocal)
+        }
+        None => {
+            substitution.lifetimes.insert(generic, lifetime.clone());
+            true
+        }
+    }
+}
+
+fn bind_compiler_method_lifetime(
+    substitution: &mut CompilerMethodSubstitution,
+    pattern: &CompilerMethodLifetimePattern,
+    lifetime: &SymbolicLifetime,
+) -> bool {
+    match pattern {
+        CompilerMethodLifetimePattern::Elided => true,
+        CompilerMethodLifetimePattern::Generic(generic) => {
+            bind_compiler_lifetime_generic(substitution, *generic, lifetime)
+        }
+    }
+}
+
+fn compiler_method_lifetime_type(
+    substitution: &CompilerMethodSubstitution,
+    pattern: &CompilerMethodLifetimePattern,
+) -> Option<SymbolicLifetime> {
+    match pattern {
+        CompilerMethodLifetimePattern::Elided => Some(SymbolicLifetime::ErasedLocal),
+        CompilerMethodLifetimePattern::Generic(generic) => {
+            substitution.lifetimes.get(generic).cloned()
+        }
+    }
+}
+
+fn receiver_mode_matches_pattern(
+    mode: CompilerNominalMethodReceiverMode,
+    pattern: &CompilerMethodTypePattern,
+) -> bool {
+    matches!(
+        (mode, pattern),
+        (
+            CompilerNominalMethodReceiverMode::Value,
+            CompilerMethodTypePattern::Definition { .. }
+        ) | (
+            CompilerNominalMethodReceiverMode::Shared,
+            CompilerMethodTypePattern::SharedReference { .. }
+        ) | (
+            CompilerNominalMethodReceiverMode::Mutable,
+            CompilerMethodTypePattern::MutableReference { .. }
+        )
+    )
+}
+
+fn compiler_primitive_symbolic_type(primitive: CompilerPrimitiveTypePattern) -> SymbolicType {
+    match primitive {
+        CompilerPrimitiveTypePattern::Never => SymbolicType::Never,
+        CompilerPrimitiveTypePattern::Unit => SymbolicType::Unit,
+        CompilerPrimitiveTypePattern::Bool => SymbolicType::Bool,
+        CompilerPrimitiveTypePattern::Char => SymbolicType::Char,
+        CompilerPrimitiveTypePattern::Entity => SymbolicType::Entity,
+        CompilerPrimitiveTypePattern::F32 => SymbolicType::F32,
+        CompilerPrimitiveTypePattern::F64 => SymbolicType::F64,
+        CompilerPrimitiveTypePattern::I8 => SymbolicType::I8,
+        CompilerPrimitiveTypePattern::I16 => SymbolicType::I16,
+        CompilerPrimitiveTypePattern::I32 => SymbolicType::I32,
+        CompilerPrimitiveTypePattern::I64 => SymbolicType::I64,
+        CompilerPrimitiveTypePattern::Isize => SymbolicType::Isize,
+        CompilerPrimitiveTypePattern::Str => SymbolicType::Str,
+        CompilerPrimitiveTypePattern::U8 => SymbolicType::U8,
+        CompilerPrimitiveTypePattern::U16 => SymbolicType::U16,
+        CompilerPrimitiveTypePattern::U32 => SymbolicType::U32,
+        CompilerPrimitiveTypePattern::U64 => SymbolicType::U64,
+        CompilerPrimitiveTypePattern::Usize => SymbolicType::Usize,
+    }
+}
+
+fn compiler_method_dependency_bytes(method: VirtualMethodId, domain: &[u8]) -> Vec<u8> {
+    let mut bytes = b"ARCHE-C2-COMPILER-NOMINAL-METHOD\0".to_vec();
+    bytes.extend_from_slice(&method.ordinal().to_le_bytes());
+    bytes.extend_from_slice(
+        &u64::try_from(domain.len())
+            .expect("compiler method dependency domain fits u64")
+            .to_le_bytes(),
+    );
+    bytes.extend_from_slice(domain);
+    bytes
+}
+
 fn is_scalar_primitive(ty: &SymbolicType) -> bool {
     matches!(
         ty,
@@ -6181,6 +6959,142 @@ mod tests {
             assert!(complete < failure.partial().len(), "corpus={corpus}");
             assert!(!failure.partial().all_authority_complete());
         }
+    }
+
+    #[test]
+    fn verified_nominal_methods_record_exact_vec_map_and_app_calls() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn empty() -> Vec<i32> { Vec::new() }\n",
+            "pub fn mutate(\n",
+            "    values: &mut Vec<i32>,\n",
+            "    entries: &mut Map<i32, i32>,\n",
+            ") -> Option<i32> {\n",
+            "    values.push(1i32);\n",
+            "    entries.insert(1i32, 2i32);\n",
+            "    entries.remove(&1i32)\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("verified Vec/Map calls must close: {failure:#?}"));
+        let core = &handoff.frontend().inventory().embedded_core;
+        let expected = [
+            (
+                core.compiler_nominal_method(CompilerNominalKind::Vec, "new")
+                    .unwrap()
+                    .c1_method(),
+                "Vec",
+            ),
+            (
+                core.compiler_nominal_method(CompilerNominalKind::Vec, "push")
+                    .unwrap()
+                    .c1_method(),
+                "()",
+            ),
+            (
+                core.compiler_nominal_method(CompilerNominalKind::Map, "insert")
+                    .unwrap()
+                    .c1_method(),
+                "Option",
+            ),
+            (
+                core.compiler_nominal_method(CompilerNominalKind::Map, "remove")
+                    .unwrap()
+                    .c1_method(),
+                "Option",
+            ),
+        ];
+        let calls = bodies
+            .bodies()
+            .flat_map(C2BodyView::calls)
+            .collect::<Vec<_>>();
+        for (method, result_name) in expected {
+            let matching = calls
+                .iter()
+                .filter(|call| call.callee() == &CheckedBodyCallee::EmbeddedMethod(method))
+                .collect::<Vec<_>>();
+            assert_eq!(matching.len(), 1, "method={method:?}, calls={calls:#?}");
+            match (result_name, matching[0].result()) {
+                ("()", SymbolicType::Unit) => {}
+                (
+                    expected,
+                    SymbolicType::NominalPath {
+                        declaration,
+                        arguments,
+                    },
+                ) => {
+                    assert_eq!(declaration.name, expected);
+                    assert_eq!(arguments, &[GenericArgumentShape::Type(SymbolicType::I32)]);
+                }
+                (_, result) => panic!("method={method:?} has unexpected result {result:?}"),
+            }
+        }
+        assert!(
+            bodies
+                .bodies()
+                .map(|body| body.pending_c4().len())
+                .sum::<usize>()
+                >= 2
+        );
+
+        let game_handoff = C2Handoff::begin(corpus_frontend("language-game")).unwrap();
+        let app_run_method = game_handoff
+            .frontend()
+            .inventory()
+            .embedded_core
+            .compiler_nominal_method(CompilerNominalKind::App, "run")
+            .unwrap()
+            .c1_method();
+        let game_declarations = DeclarationTable::build(&game_handoff).unwrap();
+        let game_checked_result = check_declarations_c2(&game_handoff, &game_declarations);
+        let game_checked = match &game_checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let game_result =
+            check_workspace_bodies_c2(&game_handoff, &game_declarations, game_checked);
+        let game_bodies = match &game_result {
+            Ok(bodies) => bodies,
+            Err(failure) => failure.partial(),
+        };
+        let app_run = game_bodies
+            .bodies()
+            .flat_map(C2BodyView::calls)
+            .find(|call| call.callee() == &CheckedBodyCallee::EmbeddedMethod(app_run_method))
+            .expect("the verified App.run call must remain consumable in the v1 corpus");
+        assert_eq!(app_run.result(), &SymbolicType::Unit);
+    }
+
+    #[test]
+    fn verified_nominal_method_parameter_near_miss_is_a_source_error_not_a_gap() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn invalid(values: &mut Vec<i32>) -> () {\n",
+            "    values.push(true);\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked = check_declarations_c2(&handoff, &declarations).unwrap();
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, &checked).unwrap_err();
+        assert!(failure.incompleteness().is_empty());
+        let diagnostics = failure.diagnostics().unwrap().as_slice();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        let diagnostic = diagnostics[0].diagnostic();
+        assert_eq!(diagnostic.code, "TYPE002");
+        assert_eq!(diagnostic.message, "expected I32, found Bool");
+        assert_eq!(
+            diagnostic
+                .primary
+                .span
+                .map(|span| (span.start.line, span.start.column)),
+            Some((2, 17))
+        );
     }
 
     #[test]

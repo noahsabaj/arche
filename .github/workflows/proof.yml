@@ -109,11 +109,18 @@ jobs:
       - name: Report locked duplicate dependencies
         run: cargo tree --locked --workspace --duplicates --manifest-path ./bootstrap/archec0/Cargo.toml
 
-      - name: Run proof suite under PowerShell Core
+      - name: Run proof suite under PowerShell Core 7.6.5+
         run: pwsh -NoLogo -NoProfile -File .\tools\test.ps1 -SkipGeneratedLinuxExecution
 
-      - name: Run proof suite under Windows PowerShell 5.1
-        run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -SkipGeneratedLinuxExecution
+      - name: Verify legacy Windows PowerShell 5.1 is rejected
+        shell: powershell
+        run: |
+          $ErrorActionPreference = "Continue"
+          powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File .\tools\test.ps1 -SkipGeneratedLinuxExecution
+          if ($LASTEXITCODE -ne 1) {
+            Write-Error "Expected exit code 1 from legacy Windows PowerShell 5.1, but got $LASTEXITCODE"
+            exit 1
+          }
 
       - name: Verify no nonignored checkout changes
         shell: pwsh

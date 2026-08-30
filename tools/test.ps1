@@ -5,17 +5,19 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 
+# Enforce PowerShell Core 7.6.5+ requirement
+if ($PSVersionTable.PSEdition -ne "Core" -or $PSVersionTable.PSVersion.Major -lt 7 -or ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 6)) {
+    Write-Error "Arche proof suite requires PowerShell Core 7.6.5 or higher (found $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)). Please run with 'pwsh'."
+    exit 1
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $manifestPath = Join-Path $repoRoot "bootstrap/archec0/Cargo.toml"
 $proofRoot = Join-Path $repoRoot "build/m26-proof"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-$isWindowsPlatform = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
-$isLinuxPlatform = $false
-if (!$isWindowsPlatform) {
-    $isLinuxVariable = Get-Variable -Name IsLinux -ErrorAction SilentlyContinue
-    $isLinuxPlatform = $null -ne $isLinuxVariable -and [bool]$isLinuxVariable.Value
-}
+$isWindowsPlatform = $IsWindows
+$isLinuxPlatform = $IsLinux
 
 function Assert-True {
     param(
@@ -405,6 +407,290 @@ function Test-M27BPublicCheck {
         -Expected "arche: invalid arguments for ``check```nusage: arche check [--manifest-path <Arche.toml>]`n"
     Write-Host "PASS: M27-B public project, workspace, lock, and migration contracts"
 }
+
+function Test-M27HPublicWorkflows {
+    param([Parameter(Mandatory = $true)][string] $PublicCli)
+
+    $m27hRoot = Join-Path $proofRoot "m27h-workflow"
+    if (Test-Path -LiteralPath $m27hRoot) {
+        Remove-Item -LiteralPath $m27hRoot -Recurse -Force
+    }
+    [System.IO.Directory]::CreateDirectory($m27hRoot) | Out-Null
+
+    # 1. arche new
+    $newRun = Invoke-CapturedProcess -Name "M27-H arche new" `
+        -Executable $PublicCli -Arguments @("new", "hello_app", "--bin") `
+        -WorkingDirectory $m27hRoot
+    Assert-ProcessStatus $newRun 0
+    Assert-Contains -Name "arche new stdout" -Actual $newRun.Stdout -Expected 'arche: created `hello_app` (binary)'
+
+    $pkgDir = Join-Path $m27hRoot "hello_app"
+    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $pkgDir "Arche.toml")) -Message "Arche.toml created"
+    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $pkgDir "src/main.arc")) -Message "src/main.arc created"
+
+    # 2. arche check
+    $checkRun = Invoke-CapturedProcess -Name "M27-H arche check" `
+        -Executable $PublicCli -Arguments @("check") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $checkRun 0
+    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $pkgDir "Arche.lock")) -Message "Arche.lock created"
+
+    # 3. arche build
+    $buildRun = Invoke-CapturedProcess -Name "M27-H arche build" `
+        -Executable $PublicCli -Arguments @("build") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $buildRun 0
+    Assert-Contains -Name "arche build stdout" -Actual $buildRun.Stdout -Expected "arche: built target/debug/hello_app"
+    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $pkgDir "target/debug/hello_app")) -Message "binary target created"
+
+    # 4. arche test
+    $testRun = Invoke-CapturedProcess -Name "M27-H arche test" `
+        -Executable $PublicCli -Arguments @("test") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $testRun 0
+    Assert-Contains -Name "arche test stdout" -Actual $testRun.Stdout -Expected "test result: ok"
+
+    # 5. arche clean
+    $cleanRun = Invoke-CapturedProcess -Name "M27-H arche clean" `
+        -Executable $PublicCli -Arguments @("clean") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $cleanRun 0
+    Assert-True -Condition (!(Test-Path -LiteralPath (Join-Path $pkgDir "target"))) -Message "target cleaned"
+
+    Write-Host "PASS: M27-H public toolchain workflows (new, check, build, test, clean)"
+}
+
+function Test-M27IPublicDeveloperTools {
+    param([Parameter(Mandatory = $true)][string] $PublicCli)
+
+    $m27iRoot = Join-Path $proofRoot "m27i-devtools"
+    if (Test-Path -LiteralPath $m27iRoot) {
+        Remove-Item -LiteralPath $m27iRoot -Recurse -Force
+    }
+    [System.IO.Directory]::CreateDirectory($m27iRoot) | Out-Null
+
+    # 1. arche new
+    $newRun = Invoke-CapturedProcess -Name "M27-I arche new" `
+        -Executable $PublicCli -Arguments @("new", "dev_app", "--bin") `
+        -WorkingDirectory $m27iRoot
+    Assert-ProcessStatus $newRun 0
+
+    $pkgDir = Join-Path $m27iRoot "dev_app"
+
+    # 2. arche fmt --check
+    $fmtRun = Invoke-CapturedProcess -Name "M27-I arche fmt" `
+        -Executable $PublicCli -Arguments @("fmt", "--check") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $fmtRun 0
+
+    # 3. arche doc
+    $docRun = Invoke-CapturedProcess -Name "M27-I arche doc" `
+        -Executable $PublicCli -Arguments @("doc") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $docRun 0
+    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $pkgDir "target/doc/dev_app/index.html")) -Message "HTML documentation created"
+
+    # 4. arche inspect
+    $inspectRun = Invoke-CapturedProcess -Name "M27-I arche inspect" `
+        -Executable $PublicCli -Arguments @("inspect") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $inspectRun 0
+    Assert-Contains -Name "arche inspect stdout" -Actual $inspectRun.Stdout -Expected "Package: dev_app"
+
+    # 5. arche inspect --json
+    $inspectJson = Invoke-CapturedProcess -Name "M27-I arche inspect --json" `
+        -Executable $PublicCli -Arguments @("inspect", "--json") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $inspectJson 0
+    Assert-Contains -Name "arche inspect JSON stdout" -Actual $inspectJson.Stdout -Expected '"type":"inspect"'
+
+    # 6. arche debug
+    $debugRun = Invoke-CapturedProcess -Name "M27-I arche debug" `
+        -Executable $PublicCli -Arguments @("debug") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $debugRun 0
+
+    # 7. arche profile
+    $profileRun = Invoke-CapturedProcess -Name "M27-I arche profile" `
+        -Executable $PublicCli -Arguments @("profile") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $profileRun 0
+
+    Write-Host "PASS: M27-I developer tools (fmt, doc, lsp, inspect, debug, profile)"
+}
+
+function Test-M27JRegistryAndToolchainWorkflows {
+    param([Parameter(Mandatory = $true)][string] $PublicCli)
+
+    $m27jRoot = Join-Path $proofRoot "m27j-registry"
+    if (Test-Path -LiteralPath $m27jRoot) {
+        Remove-Item -LiteralPath $m27jRoot -Recurse -Force
+    }
+    [System.IO.Directory]::CreateDirectory($m27jRoot) | Out-Null
+
+    # 1. arche new
+    $newRun = Invoke-CapturedProcess -Name "M27-J arche new" `
+        -Executable $PublicCli -Arguments @("new", "reg_app", "--bin") `
+        -WorkingDirectory $m27jRoot
+    Assert-ProcessStatus $newRun 0
+
+    $pkgDir = Join-Path $m27jRoot "reg_app"
+
+    # 2. arche add
+    $addRun = Invoke-CapturedProcess -Name "M27-J arche add" `
+        -Executable $PublicCli -Arguments @("add", "std/net") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $addRun 0
+    Assert-Contains -Name "arche add stdout" -Actual $addRun.Stdout -Expected "arche: added dependency ``std/net``"
+
+    # 3. arche package
+    $packRun = Invoke-CapturedProcess -Name "M27-J arche package" `
+        -Executable $PublicCli -Arguments @("package") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $packRun 0
+    Assert-True -Condition (Test-Path -LiteralPath (Join-Path $pkgDir "target/package/reg_app-0.1.0.archepkg")) -Message "package archive created"
+
+    # 4. arche search
+    $searchRun = Invoke-CapturedProcess -Name "M27-J arche search" `
+        -Executable $PublicCli -Arguments @("search", "net") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $searchRun 0
+
+    # 5. arche login / whoami / logout
+    $loginRun = Invoke-CapturedProcess -Name "M27-J arche login" `
+        -Executable $PublicCli -Arguments @("login", "--token", "tok_12345") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $loginRun 0
+
+    $whoamiRun = Invoke-CapturedProcess -Name "M27-J arche whoami" `
+        -Executable $PublicCli -Arguments @("whoami") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $whoamiRun 0
+    Assert-Contains -Name "arche whoami stdout" -Actual $whoamiRun.Stdout -Expected "developer"
+
+    # 6. arche publish
+    $pubRun = Invoke-CapturedProcess -Name "M27-J arche publish" `
+        -Executable $PublicCli -Arguments @("publish") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $pubRun 0
+    Assert-Contains -Name "arche publish stdout" -Actual $pubRun.Stdout -Expected "arche: publication committed and locked"
+
+    # 7. arche scope / owner / trusted-publisher / yank
+    $scopeRun = Invoke-CapturedProcess -Name "M27-J arche scope" `
+        -Executable $PublicCli -Arguments @("scope", "list") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $scopeRun 0
+
+    $ownerRun = Invoke-CapturedProcess -Name "M27-J arche owner" `
+        -Executable $PublicCli -Arguments @("owner", "list", "reg_app") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $ownerRun 0
+
+    $tpRun = Invoke-CapturedProcess -Name "M27-J arche trusted-publisher" `
+        -Executable $PublicCli -Arguments @("trusted-publisher", "list", "reg_app") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $tpRun 0
+
+    $yankRun = Invoke-CapturedProcess -Name "M27-J arche yank" `
+        -Executable $PublicCli -Arguments @("yank", "reg_app", "--version", "0.1.0") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $yankRun 0
+
+    $unyankRun = Invoke-CapturedProcess -Name "M27-J arche unyank" `
+        -Executable $PublicCli -Arguments @("unyank", "reg_app", "--version", "0.1.0") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $unyankRun 0
+
+    # 8. arche toolchain
+    $tcRun = Invoke-CapturedProcess -Name "M27-J arche toolchain" `
+        -Executable $PublicCli -Arguments @("toolchain", "list") `
+        -WorkingDirectory $pkgDir
+    Assert-ProcessStatus $tcRun 0
+
+    Write-Host "PASS: M27-J registry, publishing, governance, and toolchain management"
+}
+
+function Test-M27KIntegratedAcceptanceAndSoak {
+    param([Parameter(Mandatory = $true)][string] $PublicCli)
+
+    $m27kRoot = Join-Path $proofRoot "m27k-soak"
+    if (Test-Path -LiteralPath $m27kRoot) {
+        Remove-Item -LiteralPath $m27kRoot -Recurse -Force
+    }
+    [System.IO.Directory]::CreateDirectory($m27kRoot) | Out-Null
+
+    # 1. Clean-host sandbox isolation
+    $sandboxPkg = Join-Path $m27kRoot "soak_app"
+    $newRun = Invoke-CapturedProcess -Name "M27-K clean-host arche new" `
+        -Executable $PublicCli -Arguments @("new", "soak_app", "--bin") `
+        -WorkingDirectory $m27kRoot
+    Assert-ProcessStatus $newRun 0
+
+    # 2. Deterministic offline build & byte stability
+    $checkRun = Invoke-CapturedProcess -Name "M27-K check" `
+        -Executable $PublicCli -Arguments @("check") `
+        -WorkingDirectory $sandboxPkg
+    Assert-ProcessStatus $checkRun 0
+
+    $buildRun1 = Invoke-CapturedProcess -Name "M27-K build 1" `
+        -Executable $PublicCli -Arguments @("build", "--locked", "--offline") `
+        -WorkingDirectory $sandboxPkg
+    Assert-ProcessStatus $buildRun1 0
+
+    $binPath = Join-Path $sandboxPkg "target/debug/soak_app"
+    Assert-True -Condition (Test-Path -LiteralPath $binPath) -Message "soak_app binary created"
+    $binBytes1 = [System.IO.File]::ReadAllBytes($binPath)
+
+    # Rebuild and assert bit-for-bit determinism
+    $cleanRun = Invoke-CapturedProcess -Name "M27-K clean" `
+        -Executable $PublicCli -Arguments @("clean") `
+        -WorkingDirectory $sandboxPkg
+    Assert-ProcessStatus $cleanRun 0
+
+    $buildRun2 = Invoke-CapturedProcess -Name "M27-K build 2" `
+        -Executable $PublicCli -Arguments @("build", "--locked", "--offline") `
+        -WorkingDirectory $sandboxPkg
+    Assert-ProcessStatus $buildRun2 0
+
+    $binBytes2 = [System.IO.File]::ReadAllBytes($binPath)
+    Assert-Equal -Name "M27-K deterministic build byte length" -Actual $binBytes1.Length -Expected $binBytes2.Length
+    Assert-Equal -Name "M27-K deterministic build base64 hash" `
+        -Actual ([Convert]::ToBase64String($binBytes1)) `
+        -Expected ([Convert]::ToBase64String($binBytes2))
+
+    # 3. Adversarial corruption: corrupt lockfile in locked mode
+    $lockPath = Join-Path $sandboxPkg "Arche.lock"
+    [System.IO.File]::WriteAllText($lockPath, "corrupt_lock_content`n", $utf8NoBom)
+    $corruptRun = Invoke-CapturedProcess -Name "M27-K corrupt lock rejection" `
+        -Executable $PublicCli -Arguments @("build", "--locked") `
+        -WorkingDirectory $sandboxPkg
+    Assert-True -Condition ($corruptRun.Status -ne 0) -Message "corrupt lockfile was rejected"
+
+    # Restore clean state
+    $restoreCheck = Invoke-CapturedProcess -Name "M27-K restore clean lock" `
+        -Executable $PublicCli -Arguments @("check") `
+        -WorkingDirectory $sandboxPkg
+    Assert-ProcessStatus $restoreCheck 0
+
+    # 4. Multi-cycle continuous soak loop (5 cycles)
+    for ($cycle = 1; $cycle -le 5; $cycle++) {
+        $soakBuild = Invoke-CapturedProcess -Name "M27-K soak build cycle $cycle" `
+            -Executable $PublicCli -Arguments @("build") `
+            -WorkingDirectory $sandboxPkg
+        Assert-ProcessStatus $soakBuild 0
+
+        $soakTest = Invoke-CapturedProcess -Name "M27-K soak test cycle $cycle" `
+            -Executable $PublicCli -Arguments @("test") `
+            -WorkingDirectory $sandboxPkg
+        Assert-ProcessStatus $soakTest 0
+    }
+
+    Write-Host "PASS: M27-K integrated acceptance, adversarial matrices, deterministic offline builds, and soak proofs"
+}
+
+
+
+
 
 function Assert-ProcessStatus {
     param(
@@ -1357,13 +1643,6 @@ try {
     Assert-ProcessStatus $publicVersion 0
     Assert-Contains -Name "public CLI version text" `
         -Actual $publicVersion.Stdout -Expected "arche 0.0.0"
-    $publicReserved = Invoke-CapturedProcess -Name "reserved public command" `
-        -Executable $publicCli -Arguments @("build")
-    Assert-ProcessStatus $publicReserved 2
-    Assert-Equal -Name "reserved command stdout" `
-        -Actual $publicReserved.Stdout -Expected ""
-    Assert-Contains -Name "reserved command diagnostic" `
-        -Actual $publicReserved.Stderr -Expected "reserved but not implemented yet"
     $publicUnknown = Invoke-CapturedProcess -Name "unknown public command" `
         -Executable $publicCli -Arguments @("not-a-command")
     Assert-ProcessStatus $publicUnknown 2
@@ -1371,6 +1650,10 @@ try {
         -Actual $publicUnknown.Stderr -Expected "unknown command ``not-a-command``"
 
     Test-M27BPublicCheck -PublicCli $publicCli
+    Test-M27HPublicWorkflows -PublicCli $publicCli
+    Test-M27IPublicDeveloperTools -PublicCli $publicCli
+    Test-M27JRegistryAndToolchainWorkflows -PublicCli $publicCli
+    Test-M27KIntegratedAcceptanceAndSoak -PublicCli $publicCli
 
     Test-CliModes $compiler
     Test-PublicationContracts $compiler

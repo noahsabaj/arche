@@ -6,7 +6,7 @@ mod core_format;
 mod core_lower;
 mod core_verify;
 mod diagnostics;
-mod elf64;
+use arche_foundation::elf64;
 pub mod execution_package_build;
 mod identifier;
 mod layout;

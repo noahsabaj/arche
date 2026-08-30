@@ -7,7 +7,7 @@ Arche is for the full range of work that benefits from ECS: games, simulations, 
 ## Road to 0.1
 
 - **M26 — closed:** established the generic verified-Core, metadata-authoritative reference/native execution substrate; ARCHEECS v2 and ARCHEOBS2; static x86-64 Linux PIE output; strict cross-platform CI; and the required greater-than-4-GiB source and artifact proofs.
-- **M27 — platform foundation:** builds the general language, ownership and effect systems, reentrant ECS runtime, package/object formats, public `arche` toolchain, standard library, and source-package registry. M27 is one umbrella milestone executed through mandatory gates M27-A through M27-L. M27-A and M27-B are closed; within active M27-C, C0 and C1 are Done and C2 is the current implementation slice consuming C1's retained syntax, symbolic HIR, and type-shape authority.
+- **M27 — closed:** established the general language, ownership and effect systems, verified generic Core, reentrant ECS runtime, structural commands, generic SysV x86-64 native AOT compilation, 3-tier standard library (`core`/`alloc`/`std`), package caching, 27 public `arche` CLI commands, production registry engine, and integrated soak test suite across gates M27-A through M27-L.
 - **M28 — Arche 0.1 release:** proves the completed platform with two materially different applications: an authoritative multiplayer arena server and a deterministic 1,024-world Grid Pursuit environment with a language-neutral trainer protocol.
 
 After 0.1, game-platform and native-ML capabilities advance as equal application tracks over the same compiler and runtime. Reproducible self-hosting is a later objective before 1.0; the Rust `archec0` seed remains authoritative through 0.1.
@@ -92,7 +92,7 @@ Generated files live under `build/`; Rust build output lives under `bootstrap/ar
 Requirements:
 
 - Rust 1.95.0 and Cargo; `rust-toolchain.toml` selects the exact toolchain.
-- PowerShell Core 7.6.4 (`pwsh`) as the preferred proof shell. Windows PowerShell 5.1 remains supported.
+- PowerShell Core 7.6.5+ (`pwsh`) as the mandatory proof shell.
 - WSL or native Linux to execute generated Linux ELF64 artifacts from a Windows compiler host.
 
 Run the local proof inventory from the repository root:

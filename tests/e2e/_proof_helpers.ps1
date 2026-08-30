@@ -1,13 +1,14 @@
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 
-$script:E2eRepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$script:E2eIsWindows = [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
-$script:E2eIsLinux = $false
-if (!$script:E2eIsWindows) {
-    $linuxVariable = Get-Variable -Name IsLinux -ErrorAction SilentlyContinue
-    $script:E2eIsLinux = $null -ne $linuxVariable -and [bool]$linuxVariable.Value
+if ($PSVersionTable.PSEdition -ne "Core" -or $PSVersionTable.PSVersion.Major -lt 7 -or ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 6)) {
+    Write-Error "Arche e2e proof helpers require PowerShell Core 7.6.5 or higher (found $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)). Please run with 'pwsh'."
+    exit 1
 }
+
+$script:E2eRepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$script:E2eIsWindows = $IsWindows
+$script:E2eIsLinux = $IsLinux
 
 function Assert-E2e {
     param([bool] $Condition, [string] $Message)

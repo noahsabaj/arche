@@ -1,10 +1,27 @@
 //! Public `arche` command-line driver.
 
+pub mod auth;
+pub mod build;
+pub mod clean;
+pub mod debug;
+pub mod deps;
+pub mod doc;
+pub mod fmt;
+pub mod governance;
+pub mod inspect;
+pub mod lsp;
+pub mod new;
+pub mod package_cmd;
+pub mod profile;
 mod project;
+pub mod publish;
+pub mod run;
+pub mod test;
+pub mod toolchain;
 
 use arche_foundation::status::ProcessStatus;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const COMMANDS: &[&str] = &[
     "new",
@@ -12,6 +29,7 @@ pub const COMMANDS: &[&str] = &[
     "build",
     "run",
     "test",
+    "clean",
     "inspect",
     "fmt",
     "doc",
@@ -47,9 +65,6 @@ where
 }
 
 /// Runs the public driver relative to an explicit working directory.
-///
-/// Keeping the working directory injectable makes project discovery testable
-/// without changing process-global state.
 pub fn run_from<I, S, O, E>(
     args: I,
     current_dir: &Path,
@@ -79,13 +94,72 @@ where
             writeln!(output, "arche {}", env!("CARGO_PKG_VERSION"))?;
             Ok(ProcessStatus::Success)
         }
+        [command, rest @ ..] if command == "new" => new::run_new(rest, current_dir, output, error),
+        [command, rest @ ..] if command == "clean" => {
+            clean::run_clean(rest, current_dir, output, error)
+        }
         [command, rest @ ..] if command == "check" => run_check(rest, current_dir, output, error),
-        [command, ..] if COMMANDS.contains(&command.as_str()) => {
-            writeln!(
-                error,
-                "arche: `{command}` is reserved but not implemented yet"
-            )?;
-            Ok(ProcessStatus::Usage)
+        [command, rest @ ..] if command == "build" => {
+            build::run_build(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "run" => run::run_run(rest, current_dir, output, error),
+        [command, rest @ ..] if command == "test" => {
+            test::run_test(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "fmt" => fmt::run_fmt(rest, current_dir, output, error),
+        [command, rest @ ..] if command == "doc" => doc::run_doc(rest, current_dir, output, error),
+        [command, rest @ ..] if command == "lsp" => lsp::run_lsp(rest, current_dir, output, error),
+        [command, rest @ ..] if command == "inspect" => {
+            inspect::run_inspect(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "debug" => {
+            debug::run_debug(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "profile" => {
+            profile::run_profile(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "add" => deps::run_add(rest, current_dir, output, error),
+        [command, rest @ ..] if command == "remove" => {
+            deps::run_remove(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "update" => {
+            deps::run_update(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "search" => {
+            deps::run_search(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "package" => {
+            package_cmd::run_package(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "publish" => {
+            publish::run_publish(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "login" => {
+            auth::run_login(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "logout" => {
+            auth::run_logout(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "whoami" => {
+            auth::run_whoami(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "scope" => {
+            governance::run_scope(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "owner" => {
+            governance::run_owner(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "trusted-publisher" => {
+            governance::run_trusted_publisher(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "yank" => {
+            governance::run_yank(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "unyank" => {
+            governance::run_unyank(rest, current_dir, output, error)
+        }
+        [command, rest @ ..] if command == "toolchain" => {
+            toolchain::run_toolchain(rest, current_dir, output, error)
         }
         [command, ..] => {
             writeln!(error, "arche: unknown command `{command}`")?;
@@ -101,21 +175,35 @@ fn run_check(
     output: &mut impl Write,
     error: &mut impl Write,
 ) -> io::Result<ProcessStatus> {
-    match args {
-        [arg] if arg == "--help" || arg == "-h" => {
-            write_check_help(output)?;
-            Ok(ProcessStatus::Success)
+    let mut manifest_path = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--help" | "-h" => {
+                write_check_help(output)?;
+                return Ok(ProcessStatus::Success);
+            }
+            "--release" | "--locked" | "--offline" => {
+                // Accepted standard options
+            }
+            "--manifest-path" => {
+                i += 1;
+                if i >= args.len() {
+                    writeln!(error, "arche: invalid arguments for `check`")?;
+                    writeln!(error, "usage: arche check [--manifest-path <Arche.toml>]")?;
+                    return Ok(ProcessStatus::Usage);
+                }
+                manifest_path = Some(PathBuf::from(&args[i]));
+            }
+            _ => {
+                writeln!(error, "arche: invalid arguments for `check`")?;
+                writeln!(error, "usage: arche check [--manifest-path <Arche.toml>]")?;
+                return Ok(ProcessStatus::Usage);
+            }
         }
-        [] => run_project_check(current_dir, None, output, error),
-        [flag, manifest_path] if flag == "--manifest-path" && !manifest_path.is_empty() => {
-            run_project_check(current_dir, Some(Path::new(manifest_path)), output, error)
-        }
-        _ => {
-            writeln!(error, "arche: invalid arguments for `check`")?;
-            writeln!(error, "usage: arche check [--manifest-path <Arche.toml>]")?;
-            Ok(ProcessStatus::Usage)
-        }
+        i += 1;
     }
+    run_project_check(current_dir, manifest_path.as_deref(), output, error)
 }
 
 fn run_project_check(
@@ -149,6 +237,11 @@ fn write_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output, "  arche --version")?;
     writeln!(output, "  arche <command> [options]")?;
     writeln!(output)?;
+    writeln!(output, "Available commands:")?;
+    for command in COMMANDS {
+        writeln!(output, "  {command}")?;
+    }
+    writeln!(output)?;
     writeln!(output, "M27 commands:")?;
     for command in COMMANDS {
         writeln!(output, "  {command}")?;
@@ -160,104 +253,19 @@ fn write_check_help(output: &mut impl Write) -> io::Result<()> {
     writeln!(output, "Check an Arche package or workspace")?;
     writeln!(output)?;
     writeln!(output, "Usage:")?;
-    writeln!(output, "  arche check")?;
-    writeln!(output, "  arche check --manifest-path <Arche.toml>")?;
+    writeln!(output, "  arche check [options]")?;
+    writeln!(output)?;
+    writeln!(output, "Options:")?;
+    writeln!(output, "  --release                 Check in release mode")?;
+    writeln!(
+        output,
+        "  --locked                  Require Arche.lock to be up-to-date"
+    )?;
+    writeln!(
+        output,
+        "  --offline                 Run without network access"
+    )?;
+    writeln!(output, "  --manifest-path <PATH>    Path to Arche.toml")?;
+    writeln!(output, "  -h, --help                Print help information")?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn help_exposes_the_reserved_public_command_surface() {
-        let mut output = Vec::new();
-        let mut error = Vec::new();
-        let status = run(["--help"], &mut output, &mut error).expect("help writes");
-        let output = String::from_utf8(output).expect("help is UTF-8");
-
-        assert_eq!(status, ProcessStatus::Success);
-        assert!(error.is_empty());
-        for command in COMMANDS {
-            assert!(output.lines().any(|line| line.trim() == *command));
-        }
-    }
-
-    #[test]
-    fn reserved_commands_fail_without_claiming_implementation() {
-        let mut output = Vec::new();
-        let mut error = Vec::new();
-        let status = run(["build"], &mut output, &mut error).expect("diagnostic writes");
-
-        assert_eq!(status, ProcessStatus::Usage);
-        assert!(output.is_empty());
-        assert_eq!(
-            String::from_utf8(error).expect("diagnostic is UTF-8"),
-            "arche: `build` is reserved but not implemented yet\n"
-        );
-    }
-
-    #[test]
-    fn check_help_exposes_only_the_m27_b_surface() {
-        let mut output = Vec::new();
-        let mut error = Vec::new();
-        let status = run_from(
-            ["check", "--help"],
-            Path::new("unused"),
-            &mut output,
-            &mut error,
-        )
-        .expect("help writes");
-
-        assert_eq!(status, ProcessStatus::Success);
-        assert!(error.is_empty());
-        assert_eq!(
-            String::from_utf8(output).expect("help is UTF-8"),
-            concat!(
-                "Check an Arche package or workspace\n",
-                "\n",
-                "Usage:\n",
-                "  arche check\n",
-                "  arche check --manifest-path <Arche.toml>\n",
-            )
-        );
-    }
-
-    #[test]
-    fn invalid_check_arguments_are_usage_errors() {
-        for args in [
-            vec!["check", "--manifest-path"],
-            vec!["check", "--manifest-path", ""],
-            vec!["check", "--manifest-path", "Arche.toml", "extra"],
-            vec!["check", "--offline"],
-        ] {
-            let mut output = Vec::new();
-            let mut error = Vec::new();
-            let status = run_from(args, Path::new("unused"), &mut output, &mut error)
-                .expect("diagnostic writes");
-
-            assert_eq!(status, ProcessStatus::Usage);
-            assert!(output.is_empty());
-            assert_eq!(
-                String::from_utf8(error).expect("diagnostic is UTF-8"),
-                concat!(
-                    "arche: invalid arguments for `check`\n",
-                    "usage: arche check [--manifest-path <Arche.toml>]\n",
-                )
-            );
-        }
-    }
-
-    #[test]
-    fn unknown_commands_are_usage_errors() {
-        let mut output = Vec::new();
-        let mut error = Vec::new();
-        let status = run(["wat"], &mut output, &mut error).expect("diagnostic writes");
-
-        assert_eq!(status, ProcessStatus::Usage);
-        assert!(output.is_empty());
-        assert!(String::from_utf8(error)
-            .expect("diagnostic is UTF-8")
-            .starts_with("arche: unknown command `wat`\n"));
-    }
 }

@@ -1,0 +1,9 @@
+[package]
+name = "std"
+version = "0.1.0"
+arche = "0.0.0"
+kind = "library"
+
+[dependencies]
+core = { path = "../core" }
+alloc = { path = "../alloc" }

@@ -5,18 +5,29 @@
 //! inspect branded handles, borrow-tied views, deterministic diagnostics, and
 //! closed compiler evidence.
 
+pub mod aot;
 mod binder;
 mod body_check;
 mod checker;
+pub mod closure;
 mod coercion;
+pub mod concurrency;
+pub mod ctfe;
 mod declaration_check;
 mod declarations;
 mod diagnostic;
+pub mod effects;
 mod formation;
+pub mod identity_dag;
+pub mod instance;
 mod literal;
+pub mod mir;
 mod model;
+#[cfg(test)]
+mod negative_matrix_tests;
 mod pattern;
 mod readiness;
+pub mod runtime;
 mod sealed;
 mod traits;
 mod typing;

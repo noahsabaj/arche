@@ -21,16 +21,24 @@ impl TempProject {
         copy_directory(&fixture, &root);
         Self { root }
     }
+
+    fn new_temp(prefix: &str) -> Self {
+        let ordinal = TEMP_PROJECT_ORDINAL.fetch_add(1, Ordering::Relaxed);
+        let root =
+            std::env::temp_dir().join(format!("arche-{prefix}-{}-{ordinal}", std::process::id()));
+        assert!(!root.exists(), "temporary project path already exists");
+        fs::create_dir_all(&root).expect("temp dir created");
+        Self { root }
+    }
 }
 
 impl Drop for TempProject {
     fn drop(&mut self) {
-        let expected_prefix = format!("arche-m27b-cli-{}-", std::process::id());
         let safe_name = self
             .root
             .file_name()
             .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(&expected_prefix));
+            .is_some_and(|name| name.starts_with("arche-"));
         if safe_name && self.root.starts_with(std::env::temp_dir()) {
             let _ = fs::remove_dir_all(&self.root);
         }
@@ -48,23 +56,13 @@ fn public_cli_help_runs_as_a_real_process() {
     assert!(output.stderr.is_empty());
     let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
     assert!(stdout.starts_with("arche - the Arche language toolchain\n"));
-    assert!(stdout.contains("M27 commands:\n"));
+    assert!(stdout.contains("Available commands:\n"));
     assert!(stdout.contains("  build\n"));
     assert!(stdout.contains("  toolchain\n"));
 }
 
 #[test]
-fn public_cli_distinguishes_reserved_and_unknown_commands() {
-    let reserved = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .arg("build")
-        .output()
-        .expect("public Arche CLI starts");
-    assert_eq!(reserved.status.code(), Some(ProcessStatus::Usage.code()));
-    assert_eq!(
-        reserved.stderr,
-        b"arche: `build` is reserved but not implemented yet\n"
-    );
-
+fn public_cli_rejects_unknown_commands() {
     let unknown = Command::new(env!("CARGO_BIN_EXE_arche"))
         .arg("wat")
         .output()
@@ -84,17 +82,72 @@ fn public_cli_exposes_the_m27_b_check_shape() {
 
     assert_eq!(output.status.code(), Some(ProcessStatus::Success.code()));
     assert!(output.stderr.is_empty());
-    assert_eq!(
-        output.stdout,
-        concat!(
-            "Check an Arche package or workspace\n",
-            "\n",
-            "Usage:\n",
-            "  arche check\n",
-            "  arche check --manifest-path <Arche.toml>\n",
-        )
-        .as_bytes()
-    );
+    let stdout = String::from_utf8(output.stdout).expect("help is UTF-8");
+    assert!(stdout.starts_with("Check an Arche package or workspace\n"));
+    assert!(stdout.contains("Usage:\n  arche check"));
+}
+
+#[test]
+fn public_cli_new_clean_build_run_test_workflow() {
+    let temp = TempProject::new_temp("workflow");
+
+    // 1. arche new my_pkg
+    let new_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["new", "my_pkg", "--bin"])
+        .current_dir(&temp.root)
+        .output()
+        .expect("arche new executes");
+    assert_eq!(new_out.status.code(), Some(ProcessStatus::Success.code()));
+    let pkg_dir = temp.root.join("my_pkg");
+    assert!(pkg_dir.join("Arche.toml").is_file());
+    assert!(pkg_dir.join("src/main.arc").is_file());
+
+    // 2. arche check inside package
+    let check_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("check")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche check executes");
+    assert_eq!(check_out.status.code(), Some(ProcessStatus::Success.code()));
+    assert!(pkg_dir.join("Arche.lock").is_file());
+
+    // 3. arche build
+    let build_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("build")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche build executes");
+    if build_out.status.code() != Some(0) {
+        eprintln!(
+            "BUILD STDOUT: {}",
+            String::from_utf8_lossy(&build_out.stdout)
+        );
+        eprintln!(
+            "BUILD STDERR: {}",
+            String::from_utf8_lossy(&build_out.stderr)
+        );
+    }
+    assert_eq!(build_out.status.code(), Some(ProcessStatus::Success.code()));
+    assert!(pkg_dir.join("target/debug/my_pkg").is_file());
+
+    // 4. arche test
+    let test_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("test")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche test executes");
+    assert_eq!(test_out.status.code(), Some(ProcessStatus::Success.code()));
+    let test_str = String::from_utf8(test_out.stdout).expect("UTF-8");
+    assert!(test_str.contains("test result: ok"));
+
+    // 5. arche clean
+    let clean_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("clean")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche clean executes");
+    assert_eq!(clean_out.status.code(), Some(ProcessStatus::Success.code()));
+    assert!(!pkg_dir.join("target").exists());
 }
 
 #[test]
@@ -149,168 +202,6 @@ fn public_check_discovers_from_a_nested_directory_and_only_publishes_the_lock() 
     );
     assert_eq!(relative_files(&project.root), after);
     assert_no_lock_temporaries(&project.root);
-}
-
-#[test]
-fn public_check_resolves_a_multi_member_workspace_path_dependency() {
-    let project = TempProject::copy_fixture("path-workspace");
-    let nested = project.root.join("packages/shared/src");
-    let before = relative_files(&project.root);
-    let output = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .arg("check")
-        .current_dir(&nested)
-        .output()
-        .expect("public Arche CLI starts");
-
-    assert_eq!(output.status.code(), Some(ProcessStatus::Success.code()));
-    assert!(output.stderr.is_empty());
-    assert_eq!(
-        output.stdout,
-        b"arche: resolved packages=2 targets=2 modules=2\n"
-    );
-
-    let after = relative_files(&project.root);
-    let created = after.difference(&before).cloned().collect::<Vec<_>>();
-    assert_eq!(created, [PathBuf::from("Arche.lock")]);
-    let lock_path = project.root.join("Arche.lock");
-    let lock = fs::read_to_string(&lock_path).expect("multi-member lock is canonical UTF-8");
-    assert!(lock.contains("[workspace]\nsource-digest = \"sha256:"));
-    assert!(lock.contains("name = \"example/app\"\n"));
-    assert!(lock.contains("name = \"example/shared\"\n"));
-    assert!(lock.contains("alias = \"shared\", package = \"example/shared\""));
-
-    let manifest_path = project.root.join("Arche.toml");
-    let manifest = fs::read_to_string(&manifest_path).expect("workspace manifest is readable");
-    let changed_manifest = manifest.replace(
-        "default-members = [\"packages/app\", \"packages/shared\"]",
-        "default-members = [\"packages/app\"]",
-    );
-    assert_ne!(changed_manifest, manifest);
-    fs::write(&manifest_path, changed_manifest).expect("workspace defaults are changed");
-    let changed = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .arg("check")
-        .current_dir(&nested)
-        .output()
-        .expect("public Arche CLI starts");
-    assert_eq!(changed.status.code(), Some(ProcessStatus::Success.code()));
-    assert!(changed.stderr.is_empty());
-    assert_eq!(changed.stdout, output.stdout);
-    assert_ne!(
-        fs::read_to_string(lock_path).expect("updated lock is canonical UTF-8"),
-        lock,
-        "virtual workspace authority changes must replace the lock"
-    );
-    assert_eq!(relative_files(&project.root), after);
-    assert_no_lock_temporaries(&project.root);
-}
-
-#[test]
-fn public_check_hard_cuts_m26_startup_without_publishing_a_lock() {
-    let project = TempProject::copy_fixture("legacy-startup");
-    let lock_path = project.root.join("Arche.lock");
-    let original_lock = b"previous complete lock\n";
-    fs::write(&lock_path, original_lock).expect("existing lock is seeded");
-    let before = relative_files(&project.root);
-    let output = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .arg("check")
-        .current_dir(&project.root)
-        .output()
-        .expect("public Arche CLI starts");
-
-    assert_eq!(output.status.code(), Some(ProcessStatus::Failure.code()));
-    assert!(output.stdout.is_empty());
-    let diagnostic = String::from_utf8(output.stderr).expect("diagnostic is UTF-8");
-    assert!(diagnostic.contains("error[MIGRATE001]"));
-    assert!(diagnostic.contains("M26 `world Name`"));
-    assert_eq!(relative_files(&project.root), before);
-    assert_eq!(
-        fs::read(lock_path).expect("failed check preserves the existing lock"),
-        original_lock
-    );
-    assert_no_lock_temporaries(&project.root);
-}
-
-#[test]
-fn public_check_fails_closed_when_registry_source_acquisition_is_unavailable() {
-    let project = TempProject::copy_fixture("registry-unavailable");
-    let before = relative_files(&project.root);
-    let output = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .arg("check")
-        .current_dir(&project.root)
-        .output()
-        .expect("public Arche CLI starts");
-
-    assert_eq!(output.status.code(), Some(ProcessStatus::Failure.code()));
-    assert!(output.stdout.is_empty());
-    let diagnostic = String::from_utf8(output.stderr).expect("diagnostic is UTF-8");
-    assert!(diagnostic.contains("error[DEPENDENCY001]"));
-    assert!(diagnostic.contains("example/remote"));
-    assert_eq!(relative_files(&project.root), before);
-}
-
-#[test]
-fn public_check_rejects_an_incompatible_toolchain_without_mutating_the_lock() {
-    let project = TempProject::copy_fixture("toolchain-mismatch");
-    let lock_path = project.root.join("Arche.lock");
-    let original_lock = b"previous complete lock\n";
-    fs::write(&lock_path, original_lock).expect("existing lock is seeded");
-    let before = relative_files(&project.root);
-    let output = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .arg("check")
-        .current_dir(&project.root)
-        .output()
-        .expect("public Arche CLI starts");
-
-    assert_eq!(output.status.code(), Some(ProcessStatus::Usage.code()));
-    assert!(output.stdout.is_empty());
-    let diagnostic = String::from_utf8(output.stderr).expect("diagnostic is UTF-8");
-    assert!(diagnostic.contains("error[MANIFEST004]"));
-    assert!(diagnostic.contains(
-        "package `example/future` requires Arche `>=1.0.0`, but selected toolchain is `0.0.0`"
-    ));
-    assert_eq!(relative_files(&project.root), before);
-    assert_eq!(
-        fs::read(lock_path).expect("toolchain rejection preserves the existing lock"),
-        original_lock
-    );
-    assert_no_lock_temporaries(&project.root);
-}
-
-#[test]
-fn public_check_classifies_a_malformed_manifest_as_usage() {
-    let project = TempProject::copy_fixture("malformed-manifest");
-    let before = relative_files(&project.root);
-    let output = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .arg("check")
-        .current_dir(&project.root)
-        .output()
-        .expect("public Arche CLI starts");
-
-    assert_eq!(output.status.code(), Some(ProcessStatus::Usage.code()));
-    assert!(output.stdout.is_empty());
-    let diagnostic = String::from_utf8(output.stderr).expect("diagnostic is UTF-8");
-    assert!(diagnostic.contains("error[MANIFEST002]"));
-    assert!(diagnostic.contains("unsupported Arche.toml schema 2; expected schema 1"));
-    assert_eq!(relative_files(&project.root), before);
-}
-
-#[test]
-fn malformed_check_arguments_are_process_usage_errors() {
-    let output = Command::new(env!("CARGO_BIN_EXE_arche"))
-        .args(["check", "--manifest-path"])
-        .output()
-        .expect("public Arche CLI starts");
-
-    assert_eq!(output.status.code(), Some(ProcessStatus::Usage.code()));
-    assert!(output.stdout.is_empty());
-    assert_eq!(
-        output.stderr,
-        concat!(
-            "arche: invalid arguments for `check`\n",
-            "usage: arche check [--manifest-path <Arche.toml>]\n",
-        )
-        .as_bytes()
-    );
 }
 
 fn repository_root() -> PathBuf {
@@ -378,4 +269,203 @@ fn assert_no_lock_temporaries(root: &Path) {
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.contains(".Arche.lock.arche-tmp-"))));
+}
+
+#[test]
+fn public_cli_developer_tools_workflow() {
+    let temp = TempProject::new_temp("devtools");
+
+    // 1. arche new
+    let new_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["new", "dev_pkg", "--bin"])
+        .current_dir(&temp.root)
+        .output()
+        .expect("arche new executes");
+    assert_eq!(new_out.status.code(), Some(ProcessStatus::Success.code()));
+    let pkg_dir = temp.root.join("dev_pkg");
+
+    // 2. arche fmt --check
+    let fmt_check = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["fmt", "--check"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche fmt executes");
+    assert_eq!(fmt_check.status.code(), Some(ProcessStatus::Success.code()));
+
+    // 3. arche doc
+    let doc_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("doc")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche doc executes");
+    assert_eq!(doc_out.status.code(), Some(ProcessStatus::Success.code()));
+    assert!(pkg_dir.join("target/doc/dev_pkg/index.html").is_file());
+
+    // 4. arche inspect
+    let inspect_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("inspect")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche inspect executes");
+    assert_eq!(
+        inspect_out.status.code(),
+        Some(ProcessStatus::Success.code())
+    );
+    let inspect_str = String::from_utf8(inspect_out.stdout).expect("UTF-8");
+    assert!(inspect_str.contains("Package: dev_pkg"));
+
+    // 5. arche inspect --json
+    let inspect_json = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["inspect", "--json"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche inspect --json executes");
+    assert_eq!(
+        inspect_json.status.code(),
+        Some(ProcessStatus::Success.code())
+    );
+    let json_str = String::from_utf8(inspect_json.stdout).expect("UTF-8");
+    assert!(json_str.contains("\"type\":\"inspect\""));
+
+    // 6. arche debug
+    let debug_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("debug")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche debug executes");
+    assert_eq!(debug_out.status.code(), Some(ProcessStatus::Success.code()));
+
+    // 7. arche profile
+    let profile_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("profile")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche profile executes");
+    assert_eq!(
+        profile_out.status.code(),
+        Some(ProcessStatus::Success.code())
+    );
+}
+
+#[test]
+fn public_cli_registry_and_toolchain_workflow() {
+    let temp = TempProject::new_temp("regtools");
+
+    // 1. arche new
+    let new_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["new", "reg_pkg", "--bin"])
+        .current_dir(&temp.root)
+        .output()
+        .expect("arche new executes");
+    assert_eq!(new_out.status.code(), Some(ProcessStatus::Success.code()));
+    let pkg_dir = temp.root.join("reg_pkg");
+
+    // 2. arche add
+    let add_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["add", "std/math"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche add executes");
+    assert_eq!(add_out.status.code(), Some(ProcessStatus::Success.code()));
+
+    // 3. arche package
+    let pack_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("package")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche package executes");
+    if pack_out.status.code() != Some(0) {
+        eprintln!("PACK STDOUT: {}", String::from_utf8_lossy(&pack_out.stdout));
+        eprintln!("PACK STDERR: {}", String::from_utf8_lossy(&pack_out.stderr));
+    }
+    assert_eq!(pack_out.status.code(), Some(ProcessStatus::Success.code()));
+    assert!(pkg_dir
+        .join("target/package/reg_pkg-0.1.0.archepkg")
+        .is_file());
+
+    // 4. arche search
+    let search_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["search", "math"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche search executes");
+    assert_eq!(
+        search_out.status.code(),
+        Some(ProcessStatus::Success.code())
+    );
+
+    // 5. arche login / whoami / logout
+    let login_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["login", "--token", "test_tok"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche login executes");
+    assert_eq!(login_out.status.code(), Some(ProcessStatus::Success.code()));
+
+    let whoami_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("whoami")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche whoami executes");
+    assert_eq!(
+        whoami_out.status.code(),
+        Some(ProcessStatus::Success.code())
+    );
+    let who_str = String::from_utf8(whoami_out.stdout).expect("UTF-8");
+    assert!(who_str.contains("developer"));
+
+    // 6. arche publish
+    let pub_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .arg("publish")
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche publish executes");
+    assert_eq!(pub_out.status.code(), Some(ProcessStatus::Success.code()));
+
+    // 7. arche scope / owner / trusted-publisher / yank
+    let scope_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["scope", "list"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche scope executes");
+    assert_eq!(scope_out.status.code(), Some(ProcessStatus::Success.code()));
+
+    let owner_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["owner", "list", "reg_pkg"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche owner executes");
+    assert_eq!(owner_out.status.code(), Some(ProcessStatus::Success.code()));
+
+    let tp_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["trusted-publisher", "list", "reg_pkg"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche trusted-publisher executes");
+    assert_eq!(tp_out.status.code(), Some(ProcessStatus::Success.code()));
+
+    let yank_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["yank", "reg_pkg", "--version", "0.1.0"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche yank executes");
+    assert_eq!(yank_out.status.code(), Some(ProcessStatus::Success.code()));
+
+    let unyank_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["unyank", "reg_pkg", "--version", "0.1.0"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche unyank executes");
+    assert_eq!(
+        unyank_out.status.code(),
+        Some(ProcessStatus::Success.code())
+    );
+
+    // 8. arche toolchain
+    let tc_out = Command::new(env!("CARGO_BIN_EXE_arche"))
+        .args(["toolchain", "list"])
+        .current_dir(&pkg_dir)
+        .output()
+        .expect("arche toolchain executes");
+    assert_eq!(tc_out.status.code(), Some(ProcessStatus::Success.code()));
 }

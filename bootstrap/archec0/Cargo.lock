@@ -9,6 +9,7 @@ dependencies = [
  "arche-foundation",
  "arche-frontend",
  "arche-package",
+ "arche-semantics",
 ]
 
 [[package]]
@@ -52,6 +53,7 @@ dependencies = [
  "arche-foundation",
  "arche-frontend",
  "arche-package",
+ "blake3",
  "num-bigint",
  "num-traits",
 ]

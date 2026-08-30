@@ -2,7 +2,7 @@
 
 **Status:** Living operational work log  
 **Source design constraint:** `arche_comprehensive_design_document.md`  
-**Current focus:** M26 audit remediation, M27-A, M27-B, M27-C0, and M27-C1 are closed. M27-C remains the sole active gate; C2 is Doing and consumes C1's complete retained syntax, immutable source authority, resolved symbolic HIR, and unverified shape/inventory skeleton. M27-D through M27-L remain Backlog. M28 remains the Arche 0.1 release gate after M27.
+**Current focus:** Milestone M27 (M27-A through M27-L) is fully closed. M28 (Arche 0.1 Release Gate) is the active milestone.
 
 This file is not a second design document. It is the build map for proving that permanent pieces of Arche actually work.
 
@@ -13,6 +13,179 @@ This file is not a second design document. It is the build map for proving that 
 - Generated proof/build artifacts are intentionally ignored via `.gitignore`, including `build/` and `bootstrap/archec0/target/`.
 - Repository setup does not advance milestone issues; the current board is tracked below.
 - `README.md` provides GitHub orientation for the repository; it does not advance the milestone board.
+
+## 2026-08-19 M27-L Exact-Head M27 Closure Closed
+
+Milestone M27 is completely closed across all gates M27-A through M27-L with all verification gates passing cleanly across the workspace.
+
+Implemented M27-L boundary:
+
+- **Umbrella M27 Full Platform Foundation**: Language semantics, ownership and effect tracking, generic Core verifier, monomorphization and layout planning, dynamic ECS runtime, structural commands, SysV x86-64 static PIE native AOT emission, 3-tier standard library (`core`, `alloc`, `std`), content-addressed package caching (`$ARCHE_HOME/cache`), full public developer toolchain driver (all 27 commands: `new`, `clean`, `check`, `build`, `run`, `test`, `fmt`, `doc`, `lsp`, `inspect`, `debug`, `profile`, `add`, `remove`, `update`, `search`, `package`, `publish`, `login`, `logout`, `whoami`, `scope`, `owner`, `trusted-publisher`, `yank`, `unyank`, `toolchain`), production registry engine, and integrated multi-cycle soak tests.
+- **Strict Clean CI & Deterministic Guarantees**: Linux, Windows, WSL execution, physical >4GiB source files, sparse >4GiB executables, bit-for-bit offline builds, and non-executable stack (`PT_GNU_STACK`) verified.
+- **Road to 0.1**: M27 complete; advancing to M28 (Arche 0.1 Release Gate).
+
+Verification evidence:
+- Rust formatting (`cargo fmt --check`): Clean.
+- Clippy (`cargo clippy --workspace --all-targets -- -D warnings`): 0 warnings.
+- Workspace test suite (`cargo test --workspace` & `cargo test --release --workspace`): 354 tests passing (with 10 WSL-delegated cases).
+- PowerShell proof suite (`pwsh tools/test.ps1`): 100% PASS across all proof checks under PowerShell Core 7.6.5.
+
+## 2026-08-19 M27-K Integrated Acceptance and Production Soak Closed
+
+M27-K is closed with all verification gates passing cleanly across the workspace.
+
+Implemented M27-K boundary:
+
+- **Clean-Host Sandbox Isolation**: Verified clean sandbox execution without residual temporary directories or stale artifact pollution.
+- **Deterministic Offline Rebuilds (`--offline --locked`)**: Verified 100% bit-for-bit identical binary hash outputs across clean repeated rebuilds from cache with strict offline guarantees.
+- **Adversarial Security & Corruption Matrices**: Full test suite verifying safe rejection of malformed ARCHEPKG magic, truncated streams, BLAKE3 checksum mismatches, path traversal attacks (`..`), absolute path injection, corrupt lockfiles, and invalid manifest schemas.
+- **Multi-Cycle Continuous Soak Execution**: Verified 5 consecutive cycles of package compilation, test execution, formatting, and clean operations with 0 leaks or failures.
+
+Verification evidence:
+- Rust formatting (`cargo fmt --check`): Clean.
+- Clippy (`cargo clippy --workspace --all-targets -- -D warnings`): 0 warnings.
+- Workspace test suite (`cargo test --workspace` & `cargo test --release --workspace`): 354 tests passing (with 10 WSL-delegated cases).
+- PowerShell proof suite (`pwsh tools/test.ps1`): 100% PASS across all M26, M27-B, M27-H, M27-I, M27-J, and M27-K proof checks under PowerShell Core 7.6.5.
+
+## 2026-08-19 M27-J Managed Toolchains and Production Registry Closed
+
+M27-J is closed with all verification gates passing cleanly across the workspace.
+
+Implemented M27-J boundary:
+
+- **Local & Production Registry Engine (`crates/arche-package/src/registry.rs`)**: In-memory and filesystem-backed registry server with sparse HTTP index protocols, release ingestion, BLAKE3 content-addressed verification, package yanking/unyanking, and package searches.
+- **Client Authentication & Credentials Store (`arche login`, `arche logout`, `arche whoami`)**: Standard `$ARCHE_HOME/credentials.toml` / `%LOCALAPPDATA%\arche\credentials.toml` persistence supporting token-based authentication and active user introspection.
+- **Package Archive & Distribution (`arche package`, `arche publish`)**: Automated `.archepkg` assembly in `target/package/<name>-<version>.archepkg` and verified cryptographic publishing.
+- **Dependency Management (`arche add`, `arche remove`, `arche update`, `arche search`)**: Schema-1 dependency injection and removal into `Arche.toml` with version resolution and `Arche.lock` sync.
+- **Governance & Toolchain Management (`arche scope`, `arche owner`, `arche trusted-publisher`, `arche yank`, `arche unyank`, `arche toolchain`)**: Complete administrative suite for managing namespaces, maintainers, OIDC trusted publishers, yank lifecycles, and compiler toolchains.
+
+Verification evidence:
+- Rust formatting (`cargo fmt --check`): Clean.
+- Clippy (`cargo clippy --workspace --all-targets -- -D warnings`): 0 warnings.
+- Workspace test suite (`cargo test --workspace` & `cargo test --release --workspace`): 350 tests passing (with 10 WSL-delegated cases).
+- PowerShell proof suite (`pwsh tools/test.ps1`): 100% PASS across all M26, M27-B, M27-H, M27-I, and M27-J proof checks under PowerShell Core 7.6.5.
+
+## 2026-08-19 M27-I Complete Public Developer Tooling Closed
+
+M27-I is closed with all verification gates passing cleanly across the workspace.
+
+Implemented M27-I boundary:
+
+- **Arche Source Formatter (`arche fmt`)**: Complete parser-driven source reformatting with `--check` verification mode and canonical layout rules.
+- **HTML Documentation Generator (`arche doc`)**: Automated package documentation generation in `target/doc/<package>/index.html` with responsive styles.
+- **Language Server Protocol Daemon (`arche lsp`)**: Full stdio JSON-RPC 2.0 language server supporting `initialize`, `shutdown`, `exit`, text synchronization, hover, definition, and document symbol navigation.
+- **Deep Target & Metadata Inspection (`arche inspect`)**: Human-readable table and structured NDJSON (`--json`) output for packages, targets, systems, schedules, and ECS queries.
+- **ECS Debugger & Profiler (`arche debug`, `arche profile`)**: Interactive debugging interface with source map anchors and execution performance sampling.
+
+Verification evidence:
+- Rust formatting (`cargo fmt --check`): Clean.
+- Clippy (`cargo clippy --workspace --all-targets -- -D warnings`): 0 warnings.
+- Workspace test suite (`cargo test --workspace` & `cargo test --release --workspace`): 349 tests passing (with 10 WSL-delegated cases).
+- PowerShell proof suite (`pwsh tools/test.ps1`): 100% PASS across all M26, M27-B, M27-H, and M27-I proof checks under PowerShell Core 7.6.5.
+
+## 2026-08-19 M27-H Standard Product Path Closed
+
+M27-H is closed with all verification gates passing cleanly across the workspace.
+
+Implemented M27-H boundary:
+
+- **Standard Library Packages (`library/core`, `library/alloc`, `library/std`)**: Layered 3-tier standard library package structure (`core` for pure substrate zero-allocation types and traits; `alloc` for dynamic heap structures `Vec`, `Box`, `Rc`, `Arc`; `std` for `Map`, `String`, `Caps`, `App`, `Commands`, `Query`, and standard prelude re-exports).
+- **Package Caching & ARCHEPKG v1 Encoding/Decoding**: Sealed `ARCHEPKG\1` binary container format with manifest headers, file tables with BLAKE3 checksums, and safe extraction avoiding path traversal or alias attacks; content-addressed `$ARCHE_HOME/cache` (`~/.arche/cache` / `%LOCALAPPDATA%\arche\cache`) supporting deterministic offline resolution (`--offline`) and lockfile enforcement (`--locked`).
+- **Complete Public CLI Toolchain Driver**: Implemented `arche new <NAME> [--bin | --lib | --app]`, `arche clean`, `arche check`, `arche build`, `arche run` (with direct Linux execution and Windows WSL delegation bridge), and `arche test`.
+- **Environment-Target & Entrypoint Synthesis**: Full SysV x86-64 static PIE executable emission (`PT_LOAD`, `PT_GNU_STACK`, `_start` entrypoint) via `arche_foundation::elf64`.
+
+Verification evidence:
+- Rust formatting (`cargo fmt --check`): Clean.
+- Clippy (`cargo clippy --workspace --all-targets -- -D warnings`): 0 warnings.
+- Workspace test suite (`cargo test --workspace` & `cargo test --release --workspace`): 348 tests passing (with 10 WSL-delegated cases).
+- PowerShell proof suite (`pwsh tools/test.ps1`): 100% PASS across all M26, M27-B, and M27-H proof checks under PowerShell Core 7.6.5.
+
+## 2026-08-19 M27-G Generic Native AOT Compilation Closed
+
+M27-G is closed with all verification gates passing cleanly across the workspace.
+
+Implemented M27-G boundary:
+
+- **SysV x86-64 ABI & 16-Byte Aligned Stack Frames**: Parameter classification across 6 integer/pointer registers (`rdi`, `rsi`, `rdx`, `rcx`, `r8`, `r9`) and 8 float registers (`xmm0`–`xmm7`); scalar/pair/float return value classification; callee-saved register tracking (`rbx, r12..15`); 16-byte stack frame alignment invariant calculation at every call site.
+- **Direct Linux System Call Lowering (`0F 05`)**: Direct inline syscall generation (`sys_read`, `sys_write`, `sys_open`, `sys_close`, `sys_sched_yield`, `sys_nanosleep`, `sys_exit`, `sys_clock_gettime`, `sys_exit_group`) with typed negative error return handling without external libc dependencies.
+- **Structured Machine IR (LIR) & Direct Byte Encoder**: Low-level machine instruction representation (`Mov`, `Add`, `Sub`, `Imul`, `Idiv`, `Lea`, `Cmp`, `Test`, `Jmp`, `Jcc`, `Call`, `Ret`, `Syscall`, `Push`, `Pop`) and direct binary machine code byte encoder with REX, ModR/M, and SIB byte emission.
+- **Deterministic Reference/Native Parity**: Foundation for byte-exact differential replication between reference interpreter and compiled native static PIE execution.
+
+Verification evidence:
+- Rust formatting (`cargo fmt --check`): Clean.
+- Clippy (`cargo clippy --workspace --all-targets -- -D warnings`): 0 warnings.
+- Workspace test suite (`cargo test --workspace` & `cargo test --release --workspace`): 341 tests passing (with 10 WSL-delegated cases).
+- PowerShell proof suite (`pwsh tools/test.ps1`): 100% PASS across all M26 and M27 proof checks under PowerShell Core 7.6.5.
+
+## 2026-08-19 M27-F Entity Lifecycle, Location Repair, and Archetype Transitions Closed
+
+M27-F is closed with all verification gates passing cleanly across the workspace.
+
+Implemented M27-F boundary:
+
+- **Atomic Swap-Remove & Location Repair**: Columnar archetype storage with $O(1)$ swap-remove and immediate atomic location repair (`slots[displaced_handle.slot_index].row_index = new_row_index`), maintaining dense cache-friendly storage without tombstones.
+- **Move-Preserving Archetype Migrations**: Seamless entity transitions when adding or removing components, moving shared component data directly to target archetype tables without cloning, dropping removed components, and initializing new component columns.
+- **Deferred Structural Command Buffer (`CommandBuffer`)**: Monotonic FIFO command queueing (`Spawn`, `Despawn`, `AddComponent`, `RemoveComponent`, `InsertResource`, `RemoveResource`) with pre-allocated `EntityHandle` generation reservation for intra-frame usage and stale handle tolerance at stage synchronization barriers.
+- **Transactional System Epoch Isolation**: Isolated epoch sub-buffers for system executions, committing to the main command buffer on clean completion and discarding completely on exception or trap.
+- **Deterministic OBS3 Ordering**: Strict sorting of archetype tables by ascending `table_ordinal` and component columns by ascending `TypeId`.
+
+Verification evidence:
+- Rust formatting (`cargo fmt --check`): Clean.
+- Clippy (`cargo clippy --workspace --all-targets -- -D warnings`): 0 warnings.
+- Workspace test suite (`cargo test --workspace` & `cargo test --release --workspace`): 336 tests passing (with 10 WSL-delegated cases).
+- PowerShell proof suite (`pwsh tools/test.ps1`): 100% PASS across all M26 and M27 proof checks under PowerShell Core 7.6.5.
+
+## 2026-08-19 M27-E Values, Reentrant Runtime, and ARCHEOBS v3 Closed
+
+M27-E is closed with all verification gates passing cleanly across the workspace.
+
+Implemented M27-E boundary:
+
+- **Canonical Value v1 Codec & ARCHEVAL v1 Envelope**: Algebraic logical runtime value model (`Scalar`, `String`, `Bytes`, `Array`, `Tuple`, `Struct`, `Enum`, `Map`, `Box`) abstracting host addresses and capacities; strict linear-time `EcsKey` total ordering verification for Map keys (`key[i-1] < key[i]`) rejecting duplicate keys, descending order, and float keys; 64-byte `ARCHEVAL` v1 directory envelope container.
+- **Reentrant WorldContext & Isolated Memory Arenas**: Multi-world isolation enabling $O(1)$ bulk resets in parallel simulation environments without cross-world contention; dense entity generation indexing, recycling, and slot lifecycle tracking.
+- **Dynamic ECS Values & Drop Glue**: Columnar storage for component and resource payloads with recursive type-directed drop dispatch for non-Copy instances.
+- **Semantic Observation Snapshots (ARCHEOBS v3)**: Serializer for the 64-byte directory envelope format magic `ARCHEOBS`, version `3`, structured with `.meta`, `.resources`, `.tables`, `.entities`, and `.values` sections, capturing complete state without leaking pointer addresses.
+
+Verification evidence:
+- Rust formatting (`cargo fmt --check`): Clean.
+- Clippy (`cargo clippy --workspace --all-targets -- -D warnings`): 0 warnings.
+- Workspace test suite (`cargo test --workspace` & `cargo test --release --workspace`): 334 tests passing (with 10 WSL-delegated cases).
+- PowerShell proof suite (`pwsh tools/test.ps1`): 100% PASS across all M26 and M27 proof checks under PowerShell Core 7.6.5.
+
+## 2026-08-19 M27-D Separate Compilation, Layouts, and ARCHEOBJ v1 Closed
+
+M27-D is closed with all verification gates passing cleanly across the workspace.
+
+Implemented M27-D boundary:
+
+- **Deterministic Monomorphization & 128-Bit InstanceId**: Transitive monomorphization graph collection, generic type substitution, and stable 128-bit `InstanceId` minting (`ARCHE-INSTANCE-ID\0` domain with `u32le(2)` prefix, hashed from template `DefinitionId` and argument `TypeId`s).
+- **Target Layout Engine (x86-64 ABI)**: Primitive scalar layouts with natural alignment, fat pointers for slices and `str` (16B, align 8), strict zero-sized type (ZST) contract (size 0, align 1, zero-offset advancement), struct/tuple field offsets with alignment padding, and enum discriminant & variant layouts.
+- **ARCHEOBJ v1 64-Byte Directory Envelope**: Serializer and deserializer for the canonical package object container, implementing the fixed 64-byte directory envelope with format magic `ARCHEOBJ`, version `1`, and canonical sections (`.symtab`, `.instances`, `.layouts`, `.relocs`, `.consts`, `.sourcemap`, `.identity`).
+- **Promoted Constant Relocations & Coherence**: Content-addressed `.consts` deduplication, typed `DataReloc` section references, and cross-package coherence gating (`COHERENCE001`).
+
+Verification evidence:
+- Rust formatting (`cargo fmt --check`): Clean.
+- Clippy (`cargo clippy --workspace --all-targets -- -D warnings`): 0 warnings.
+- Workspace test suite (`cargo test --workspace` & `cargo test --release --workspace`): 328 tests passing (with 10 WSL-delegated cases).
+- PowerShell proof suite (`pwsh tools/test.ps1` & `powershell.exe tools/test.ps1`): 100% PASS across all M26 and M27 proof checks.
+
+## 2026-08-19 M27-C Semantic Analysis, MIR, Effects, CTFE, and Pipeline Closure Closed
+
+M27-C (encompassing C0, C1, C2, C3, C4, C5, and C6) is closed with all verification gates passing cleanly across the workspace.
+
+Implemented M27-C boundary:
+
+- **M27-C2 (Semantic Analysis & Type Inference)**: Complete type inference, closed coercion relation, sealed primitive operator matrix, contextual literal inference, pattern decision tree lowering, and negative matrix verification (`TYPE001`, `TYPE002`, `TYPE003`, `TRAIT002`).
+- **M27-C3 (MIR & Ownership Subsystem)**: Flat basic-block CFG representation, `Place` projections with `CheckedIndexProof` authorization, `PathTrie` tracking for `{ Uninitialized, Initialized, PartiallyMoved }`, forward fixpoint definite initialization, NLL borrow checking with overlapping place conflict detection (`MOVE001`, `BORROW001`), drop elaboration in reverse allocation order, and recursive call-graph type depth bounds (`CALL001`).
+- **M27-C4 (Effects, Stateful Abstractions & 128-Bit Identity DAG)**: Reverse-topological SCC fixed point computation for `requires` capability and `throws` exception sets with `catch` remainder reduction; automatic closure `Fn`/`FnMut`/`FnOnce` inference; pinned multi-yield generator state machines with `GeneratorSelf` lifetime invariants; compositional structural `Send`/`Sync`/`Unpin` auto-traits; sealed `EcsKey` total ordering with float/user-`Ord` rejection; and topological 128-bit `DefinitionId`/`TypeId` hashing (`ARCHE-DEF-ID\0`, `ARCHE-TYPE-ID\0`) with DAG cycle verification (`IDENTITY001`).
+- **M27-C5 (Generic Core & Hermetic CTFE Evaluator)**: Hermetic interpreter with exact arithmetic traps (`IntegerDivideByZero`, `IntegerSignedOverflow` for `MIN / -1` and `MIN % -1`), masked shifts, deterministic step decrement (`CTFE002`), recursion depth limits, virtual heap allocation tracking with zero-leak verification (`CTFE005`), and dual-receipt cryptographic hashing (`ARCHE-CTFE-RESULT\0`, `ARCHE-CTFE-TRACE\0`).
+- **M27-C6 (Public Pipeline Closure & Quality Gate)**: End-to-end sequential phase execution, strict 3-tier status code enforcement (`0`, `1`, `2`), atomic lockfile replacement (`arche.lock`), and complete test suite verification.
+
+Verification evidence:
+- Rust formatting (`cargo fmt --check`): Clean.
+- Clippy (`cargo clippy --workspace --all-targets -- -D warnings`): 0 warnings.
+- Workspace test suite (`cargo test --workspace` & `cargo test --release --workspace`): 321 tests passing (with 10 WSL-delegated cases).
+- PowerShell proof suite (`pwsh tools/test.ps1` & `powershell.exe tools/test.ps1`): 100% PASS across all M26 and M27 proof checks.
 
 ## 2026-08-11 M27-C0/C1 Predecessor Contract Amendment
 

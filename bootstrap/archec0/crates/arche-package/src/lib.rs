@@ -1,18 +1,26 @@
 //! Deterministic package, workspace, resolver, and lock contracts for M27.
 //!
 //! This crate deliberately knows nothing about Arche source syntax. The public
-//! driver and the M27 frontend consume it; the closed M26 `archec0` compiler
+//! driver and the M27 frontend consume it; the closed M26 rchec0 compiler
 //! does not.
 
+pub mod archive;
 mod atomic;
+pub mod cache;
 mod diagnostic;
 mod digest;
 mod lock;
 mod manifest;
 mod name;
+pub mod registry;
 mod resolver;
 mod workspace;
 
+pub use archive::{
+    decode_archepkg, encode_archepkg, unpack_archive, ArchiveError, ArchiveFileEntry,
+    DecodedArchive, ARCHEPKG_MAGIC,
+};
+pub use cache::{CacheError, PackageCache};
 pub use diagnostic::{Diagnostic, DiagnosticCode, Diagnostics, SourceLabel};
 pub use digest::{source_tree_digest, IntegrityDigest, SourceTreeEntry};
 pub use lock::{

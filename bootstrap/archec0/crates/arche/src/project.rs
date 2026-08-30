@@ -18,7 +18,7 @@ pub(crate) struct CheckSummary {
 }
 
 #[derive(Debug)]
-pub(crate) enum ProjectError {
+pub enum ProjectError {
     Package(Diagnostics),
     Frontend(FrontendError),
 }
