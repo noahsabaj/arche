@@ -31,11 +31,12 @@ use arche_frontend::embedded_core::{
 };
 use arche_frontend::{
     AssociatedPathCandidate, BuiltinResTarget, DeclarationKind, Diagnostic, FileId,
-    GenericArgumentShape, HirBodyId, HirBodySource, HirItemId, HirItemRes, HirItemSource, LocalId,
-    Mutability, PathResolution, Res, ResolvedGenericArgument, ResolvedSymbolicBody,
-    ResolvedSymbolicItem, ResolvedSymbolicTargetHir, ResolvedSymbolicType, SemanticBodyKind,
-    SemanticDeclarationPath, SemanticDefinitionInventorySkeleton, Span, SymbolicConstExpression,
-    SymbolicConstNode, SymbolicDeclarationPayloadSkeleton, SymbolicDeclarationShapeSkeleton,
+    GenericArgumentShape, GenericParameterKind, HirBodyId, HirBodySource, HirItemId, HirItemRes,
+    HirItemSource, LocalId, Mutability, PathResolution, Res, ResolvedGenericArgument,
+    ResolvedSymbolicBody, ResolvedSymbolicItem, ResolvedSymbolicTargetHir, ResolvedSymbolicType,
+    SemanticBodyKind, SemanticDeclarationPath, SemanticDefinitionInventorySkeleton, Span,
+    SymbolicCallableParameterMode, SymbolicConstExpression, SymbolicConstNode,
+    SymbolicDeclarationPayloadSkeleton, SymbolicDeclarationShapeSkeleton,
     SymbolicDefinitionOwnerSkeleton, SymbolicFieldShapeSkeleton, SymbolicLifetime,
     SymbolicPredicate, SymbolicPredicateShapeSkeleton, SymbolicRecordForm, SymbolicType,
     SymbolicTypeEffectSet, SymbolicTypeShapeSkeleton, TargetId, TargetRoot, UnresolvedPathKind,
@@ -62,7 +63,7 @@ use crate::typing::{
     check_typed_expression, BinaryTypeOperator, CheckedExpression, TypeCheckError,
     TypeCheckErrorKind, TypedExpressionInput, TypingContext, UnaryTypeOperator,
 };
-use crate::{BinderFrame, BinderStack, LifetimeOutlives};
+use crate::{BinderFrame, BinderStack, LifetimeOutlives, TraitFrameSubstitution};
 
 /// Opaque owner-branded handle for one checked C2 body.
 #[derive(Clone, Debug)]
@@ -314,6 +315,10 @@ pub enum CheckedBodyCallee {
     FunctionPointer,
     EmbeddedMethod(VirtualMethodId),
     EmbeddedDefinition(VirtualDefinitionId),
+    TraitMethod {
+        trait_path: Box<SemanticDeclarationPath>,
+        method: Box<str>,
+    },
     QueryIteration,
     CommandSpawn,
 }
@@ -2728,6 +2733,16 @@ impl BodyChecker<'_, '_, '_> {
                                 part.span,
                             )?
                         }
+                    } else if let Some(handled) = receiver.as_ref().and_then(|receiver| {
+                        self.lower_bound_trait_method(
+                            receiver,
+                            name.as_str(),
+                            generic_arguments.as_ref(),
+                            arguments,
+                            part.span,
+                        )
+                    }) {
+                        handled?
                     } else {
                         for argument in arguments {
                             self.check_expression(argument, None);
@@ -3912,6 +3927,293 @@ impl BodyChecker<'_, '_, '_> {
             VirtualFunctionLowering::Intrinsic { .. } => return None,
         };
         Some((value, &parts[1..]))
+    }
+
+    /// Attempts bound-witness trait-method selection for a receiver whose
+    /// peeled type is a bound generic parameter.
+    ///
+    /// Returns `None` when this path is not applicable (non-bound receiver or
+    /// no resolvable environment authority), letting the caller fall through
+    /// to its honest gap. Returns `Some(result)` when the environment decides:
+    /// a unique viable predicate types the call, ambiguity or a violated
+    /// receiver mode is a source error, and a potentially relevant pending
+    /// predicate keeps the gap fail-closed.
+    fn lower_bound_trait_method(
+        &mut self,
+        receiver: &CheckedExpression,
+        name: &str,
+        generic_arguments: Option<&arche_frontend::ast::AstGenericArguments>,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<Option<LoweredValue>> {
+        let subject = peel_references(receiver.ty());
+        if !matches!(subject, SymbolicType::BoundType { .. }) {
+            return None;
+        }
+        if generic_arguments.is_some() {
+            // Explicit method generics on a bound-witness call are not yet
+            // represented; keep the existing gap.
+            return None;
+        }
+        let mut pending_predicates = false;
+        let mut matches: Vec<(
+            SymbolicPredicate,
+            SymbolicDeclarationShapeSkeleton,
+            Vec<GenericParameterKind>,
+            SemanticDeclarationPath,
+        )> = Vec::new();
+        // Owner-frame predicates are spelled at the owner's depth 0; seen from
+        // inside an owned method body they sit one binder frame out.
+        let mut predicate_sets: Vec<(&[arche_frontend::SymbolicPredicateShapeSkeleton], u64)> =
+            vec![(&self.declaration_shape.predicates, 0)];
+        match self.owner_shape {
+            SymbolicDefinitionOwnerSkeleton::Trait { shape, .. }
+            | SymbolicDefinitionOwnerSkeleton::SystemQuery { shape, .. } => {
+                predicate_sets.push((&shape.predicates, 1));
+            }
+            SymbolicDefinitionOwnerSkeleton::InherentImpl { predicates, .. }
+            | SymbolicDefinitionOwnerSkeleton::TraitImpl { predicates, .. } => {
+                predicate_sets.push((predicates, 1));
+            }
+            SymbolicDefinitionOwnerSkeleton::TopLevel => {}
+        }
+        for (predicates, shift) in predicate_sets {
+            for predicate in predicates {
+                let value = match predicate {
+                    arche_frontend::SymbolicPredicateShapeSkeleton::Resolved { value, .. } => value,
+                    arche_frontend::SymbolicPredicateShapeSkeleton::Pending(_) => {
+                        pending_predicates = true;
+                        continue;
+                    }
+                };
+                let value = if shift == 0 {
+                    (**value).clone()
+                } else {
+                    shift_predicate_binders(value, shift)
+                };
+                let SymbolicPredicate::Trait {
+                    trait_path,
+                    self_type,
+                    arguments: trait_arguments,
+                } = &value
+                else {
+                    continue;
+                };
+                if self_type != subject {
+                    continue;
+                }
+                let Some((method_shape, trait_formals)) = self.trait_method_shape(trait_path, name)
+                else {
+                    continue;
+                };
+                matches.push((
+                    value.clone(),
+                    method_shape,
+                    trait_formals,
+                    trait_path.clone(),
+                ));
+                let _ = trait_arguments;
+            }
+        }
+        match matches.len() {
+            0 => {
+                if pending_predicates {
+                    // A pending predicate could still supply this method;
+                    // stay with the caller's fail-closed gap.
+                    return None;
+                }
+                None
+            }
+            1 => {
+                let (predicate, method_shape, trait_formals, trait_path) =
+                    matches.pop().expect("one selection row");
+                Some(self.type_bound_trait_method_call(
+                    receiver,
+                    predicate,
+                    method_shape,
+                    trait_formals,
+                    trait_path,
+                    name,
+                    arguments,
+                    span,
+                ))
+            }
+            _ => {
+                for argument in arguments {
+                    self.check_expression(argument, None);
+                }
+                self.source_error(
+                    span,
+                    "TRAIT002",
+                    format!("method `{name}` is supplied by multiple environment predicates"),
+                );
+                Some(None)
+            }
+        }
+    }
+
+    /// Returns the named required-method shape and the trait's generic formal
+    /// kinds for an ordinary or compiler-known trait path.
+    fn trait_method_shape(
+        &self,
+        trait_path: &SemanticDeclarationPath,
+        name: &str,
+    ) -> Option<(SymbolicDeclarationShapeSkeleton, Vec<GenericParameterKind>)> {
+        if let Some(item) = self.catalog.paths.get(trait_path) {
+            let entry = self.catalog.definitions.get(item)?;
+            let shape = entry.declaration_shape?;
+            let SymbolicDeclarationPayloadSkeleton::Trait { methods } = &shape.payload else {
+                return None;
+            };
+            let method = methods.iter().find(|method| method.name == name)?;
+            return Some(((*method.shape).clone(), shape.generic_parameters.clone()));
+        }
+        let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+        let definition = self.embedded_core_definition_for_path(trait_path)?;
+        let row = core
+            .typed_c2()
+            .compiler_trait_for_c1_definition(definition)?;
+        if row.method().map(|method| method.source_name()) != Some(name) {
+            return None;
+        }
+        let SymbolicDeclarationPayloadSkeleton::Trait { methods } =
+            &row.declaration_shape().payload
+        else {
+            return None;
+        };
+        let method = methods.iter().find(|method| method.name == name)?;
+        Some((
+            (*method.shape).clone(),
+            row.declaration_shape().generic_parameters.clone(),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn type_bound_trait_method_call(
+        &mut self,
+        receiver: &CheckedExpression,
+        predicate: SymbolicPredicate,
+        method_shape: SymbolicDeclarationShapeSkeleton,
+        trait_formals: Vec<GenericParameterKind>,
+        trait_path: SemanticDeclarationPath,
+        name: &str,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let SymbolicPredicate::Trait {
+            self_type,
+            arguments: trait_arguments,
+            ..
+        } = predicate
+        else {
+            return None;
+        };
+        let substitution =
+            match TraitFrameSubstitution::new(trait_formals, trait_arguments, self_type) {
+                Ok(substitution) => substitution,
+                Err(error) => {
+                    self.gap(
+                        span,
+                        BodyCheckIncompletenessKind::MissingMethodSelection,
+                        format!("environment predicate is not a usable trait frame: {error:?}"),
+                    );
+                    return None;
+                }
+            };
+        let SymbolicDeclarationPayloadSkeleton::Callable(callable) = &method_shape.payload else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingMethodSelection,
+                "trait method entry is not a callable shape",
+            );
+            return None;
+        };
+        let resolve = |shape: &SymbolicTypeShapeSkeleton| -> Option<SymbolicType> {
+            let ty = match shape {
+                SymbolicTypeShapeSkeleton::Resolved { value, .. } => value.clone(),
+                SymbolicTypeShapeSkeleton::Pending(_) => return None,
+            };
+            let ty = substitution.substitute_type(&ty, 1).ok()?;
+            Some(erase_method_frame_lifetimes(ty))
+        };
+        let Some((receiver_parameter, value_parameters)) = callable.parameters.split_first() else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingMethodSelection,
+                "receiverless trait method reached postfix selection",
+            );
+            return None;
+        };
+        let Some(expected_receiver) = resolve(&receiver_parameter.ty) else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingMethodSelection,
+                "trait method receiver type is pending",
+            );
+            return None;
+        };
+        let receiver_ok = match receiver_parameter.mode {
+            SymbolicCallableParameterMode::ReceiverShared => {
+                let SymbolicType::Reference { pointee, .. } = &expected_receiver else {
+                    return None;
+                };
+                let actual = receiver.ty();
+                actual == &**pointee
+                    || matches!(
+                        actual,
+                        SymbolicType::Reference { pointee: actual_pointee, .. }
+                            if actual_pointee == pointee
+                    )
+            }
+            SymbolicCallableParameterMode::ReceiverValue => receiver.ty() == &expected_receiver,
+            SymbolicCallableParameterMode::ReceiverMutable
+            | SymbolicCallableParameterMode::Value => {
+                // Mutable-receiver bound methods need place-mutability
+                // authority; keep the caller's gap.
+                return None;
+            }
+        };
+        if !receiver_ok {
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
+            self.source_error(
+                span,
+                "TYPE002",
+                format!("method `{name}` receiver mode does not accept this receiver type"),
+            );
+            return None;
+        }
+        let mut parameter_types = Vec::new();
+        for parameter in value_parameters {
+            let Some(ty) = resolve(&parameter.ty) else {
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingMethodSelection,
+                    "trait method parameter type is pending",
+                );
+                return None;
+            };
+            parameter_types.push(ty);
+        }
+        self.check_call_arguments(&parameter_types, arguments, span);
+        let Some(result) = resolve(&callable.result) else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingMethodSelection,
+                "trait method result type is pending",
+            );
+            return None;
+        };
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: CheckedBodyCallee::TraitMethod {
+                trait_path: Box::new(trait_path),
+                method: name.into(),
+            },
+            result: result.clone(),
+        });
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)))
     }
 
     fn lower_embedded_include_call(
@@ -6771,6 +7073,167 @@ fn pattern_type_to_symbolic(ty: &PatternType) -> Option<SymbolicType> {
         | PatternType::Record(_)
         | PatternType::Enum(_)
         | PatternType::Unsupported(_) => None,
+    }
+}
+
+/// Shifts every bound binder coordinate in a predicate outward by `by`
+/// frames, re-expressing an owner-frame predicate in an owned method body's
+/// coordinates.
+fn shift_predicate_binders(predicate: &SymbolicPredicate, by: u64) -> SymbolicPredicate {
+    match predicate {
+        SymbolicPredicate::Trait {
+            trait_path,
+            self_type,
+            arguments,
+        } => SymbolicPredicate::Trait {
+            trait_path: trait_path.clone(),
+            self_type: shift_type_binders(self_type, by),
+            arguments: arguments
+                .iter()
+                .map(|argument| shift_argument_binders(argument, by))
+                .collect(),
+        },
+        SymbolicPredicate::LifetimeOutlives { longer, shorter } => {
+            SymbolicPredicate::LifetimeOutlives {
+                longer: shift_lifetime_binders(longer, by),
+                shorter: shift_lifetime_binders(shorter, by),
+            }
+        }
+        SymbolicPredicate::TypeOutlives { ty, lifetime } => SymbolicPredicate::TypeOutlives {
+            ty: shift_type_binders(ty, by),
+            lifetime: shift_lifetime_binders(lifetime, by),
+        },
+    }
+}
+
+fn shift_lifetime_binders(lifetime: &SymbolicLifetime, by: u64) -> SymbolicLifetime {
+    match lifetime {
+        SymbolicLifetime::Bound { depth, index } => SymbolicLifetime::Bound {
+            depth: depth.saturating_add(by),
+            index: *index,
+        },
+        other => other.clone(),
+    }
+}
+
+fn shift_argument_binders(argument: &GenericArgumentShape, by: u64) -> GenericArgumentShape {
+    match argument {
+        GenericArgumentShape::Type(ty) => GenericArgumentShape::Type(shift_type_binders(ty, by)),
+        GenericArgumentShape::Lifetime(lifetime) => {
+            GenericArgumentShape::Lifetime(shift_lifetime_binders(lifetime, by))
+        }
+        other => other.clone(),
+    }
+}
+
+fn shift_type_binders(ty: &SymbolicType, by: u64) -> SymbolicType {
+    match ty {
+        SymbolicType::BoundType { depth, index } => SymbolicType::BoundType {
+            depth: depth.saturating_add(by),
+            index: *index,
+        },
+        SymbolicType::Reference {
+            mutability,
+            lifetime,
+            pointee,
+        } => SymbolicType::Reference {
+            mutability: *mutability,
+            lifetime: shift_lifetime_binders(lifetime, by),
+            pointee: Box::new(shift_type_binders(pointee, by)),
+        },
+        SymbolicType::RawPointer {
+            mutability,
+            pointee,
+        } => SymbolicType::RawPointer {
+            mutability: *mutability,
+            pointee: Box::new(shift_type_binders(pointee, by)),
+        },
+        SymbolicType::Slice(element) => {
+            SymbolicType::Slice(Box::new(shift_type_binders(element, by)))
+        }
+        SymbolicType::Array { element, length } => SymbolicType::Array {
+            element: Box::new(shift_type_binders(element, by)),
+            length: length.clone(),
+        },
+        SymbolicType::Tuple(elements) => SymbolicType::Tuple(
+            elements
+                .iter()
+                .map(|element| shift_type_binders(element, by))
+                .collect(),
+        ),
+        SymbolicType::NominalPath {
+            declaration,
+            arguments,
+        } => SymbolicType::NominalPath {
+            declaration: declaration.clone(),
+            arguments: arguments
+                .iter()
+                .map(|argument| shift_argument_binders(argument, by))
+                .collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// Replaces method-frame bound lifetimes (depth 0 inside the method shape)
+/// with the body-local erased marker: an inferred call-site region never
+/// enters a checked C2 type.
+fn erase_method_frame_lifetimes(ty: SymbolicType) -> SymbolicType {
+    fn erase_lifetime(lifetime: SymbolicLifetime) -> SymbolicLifetime {
+        match lifetime {
+            SymbolicLifetime::Bound { depth: 0, .. } => SymbolicLifetime::ErasedLocal,
+            other => other,
+        }
+    }
+    match ty {
+        SymbolicType::Reference {
+            mutability,
+            lifetime,
+            pointee,
+        } => SymbolicType::Reference {
+            mutability,
+            lifetime: erase_lifetime(lifetime),
+            pointee: Box::new(erase_method_frame_lifetimes(*pointee)),
+        },
+        SymbolicType::Slice(element) => {
+            SymbolicType::Slice(Box::new(erase_method_frame_lifetimes(*element)))
+        }
+        SymbolicType::Array { element, length } => SymbolicType::Array {
+            element: Box::new(erase_method_frame_lifetimes(*element)),
+            length,
+        },
+        SymbolicType::Tuple(elements) => SymbolicType::Tuple(
+            elements
+                .into_iter()
+                .map(erase_method_frame_lifetimes)
+                .collect(),
+        ),
+        SymbolicType::RawPointer {
+            mutability,
+            pointee,
+        } => SymbolicType::RawPointer {
+            mutability,
+            pointee: Box::new(erase_method_frame_lifetimes(*pointee)),
+        },
+        SymbolicType::NominalPath {
+            declaration,
+            arguments,
+        } => SymbolicType::NominalPath {
+            declaration,
+            arguments: arguments
+                .into_iter()
+                .map(|argument| match argument {
+                    GenericArgumentShape::Type(ty) => {
+                        GenericArgumentShape::Type(erase_method_frame_lifetimes(ty))
+                    }
+                    GenericArgumentShape::Lifetime(lifetime) => {
+                        GenericArgumentShape::Lifetime(erase_lifetime(lifetime))
+                    }
+                    other => other,
+                })
+                .collect(),
+        },
+        other => other,
     }
 }
 
