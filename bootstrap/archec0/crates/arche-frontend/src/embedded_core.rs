@@ -3865,7 +3865,26 @@ fn parse_nominal_variant(
 ) -> Result<SymbolicVariantShapeSkeleton, EmbeddedCoreVerificationError> {
     const ERR: EmbeddedCoreVerificationError =
         EmbeddedCoreVerificationError::InvalidTypedNominalAuthority;
-    if let Some(open) = text.find('(') {
+    let paren = text.find('(');
+    let brace = text.find('{');
+    if let (Some(paren_at), Some(brace_at)) = (paren, brace) {
+        // A record-form variant may hold a parenthesised field type; the
+        // earlier delimiter decides the form.
+        if brace_at < paren_at {
+            let name = text[..brace_at].trim();
+            let inner = text[brace_at..]
+                .strip_prefix('{')
+                .and_then(|inner| inner.strip_suffix('}'))
+                .ok_or(ERR)?
+                .trim();
+            return Ok(SymbolicVariantShapeSkeleton {
+                name: name.to_owned(),
+                form: SymbolicRecordForm::Record,
+                fields: parse_nominal_named_fields(projection, generics, inner)?,
+            });
+        }
+    }
+    if let Some(open) = paren {
         let name = text[..open].trim();
         let inner = text[open..]
             .strip_prefix('(')
@@ -8160,5 +8179,32 @@ mod tests {
             verify_panic_body(&panic_corrupt),
             Err(EmbeddedCoreVerificationError::InvalidPanicBody)
         );
+    }
+
+    #[test]
+    fn record_form_variants_tolerate_parenthesised_field_types() {
+        let (projection, _) = release_with_typed_projection();
+        let record = parse_nominal_variant(&projection, &[], "Custom { value: () }").unwrap();
+        assert_eq!(record.name, "Custom");
+        assert_eq!(record.form, SymbolicRecordForm::Record);
+        assert_eq!(record.fields.len(), 1);
+        assert_eq!(record.fields[0].name.as_deref(), Some("value"));
+        assert!(matches!(
+            &record.fields[0].ty,
+            SymbolicTypeShapeSkeleton::Resolved {
+                value: SymbolicType::Unit,
+                ..
+            }
+        ));
+
+        let tuple = parse_nominal_variant(&projection, &[], "Wrapped(())").unwrap();
+        assert_eq!(tuple.name, "Wrapped");
+        assert_eq!(tuple.form, SymbolicRecordForm::Tuple);
+        assert_eq!(tuple.fields.len(), 1);
+
+        let unit = parse_nominal_variant(&projection, &[], "Plain").unwrap();
+        assert_eq!(unit.name, "Plain");
+        assert_eq!(unit.form, SymbolicRecordForm::Unit);
+        assert!(unit.fields.is_empty());
     }
 }
