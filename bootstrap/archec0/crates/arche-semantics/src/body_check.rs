@@ -1273,12 +1273,12 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
         closure: &arche_frontend::ast::AstClosure,
         span: Span,
     ) -> Option<LoweredValue> {
-        let (owner, expression_ordinal) =
+        let (owner, expression_ordinal, arguments) =
             self.closure_expression_identity(span, SemanticBodyKind::Closure)?;
         if !self.closure_is_noncapturing(span) {
             return None;
         }
-        let (parameters, result) = self.annotated_closure_signature(
+        let (parameters, result, throws) = self.annotated_closure_signature(
             &closure.parameters,
             &closure.effects,
             closure.result.as_ref(),
@@ -1290,8 +1290,8 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
             parameters,
             result: Box::new(result),
             requires: SymbolicTypeEffectSet::default(),
-            throws: SymbolicTypeEffectSet::default(),
-            arguments: Vec::new(),
+            throws,
+            arguments,
         };
         Some(LoweredValue::ordinary(TypedExpressionInput::Known(ty)))
     }
@@ -1305,12 +1305,12 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
         generator: &arche_frontend::ast::AstGeneratorClosure,
         span: Span,
     ) -> Option<LoweredValue> {
-        let (owner, expression_ordinal) =
+        let (owner, expression_ordinal, arguments) =
             self.closure_expression_identity(span, SemanticBodyKind::Generator)?;
         if !self.closure_is_noncapturing(span) {
             return None;
         }
-        let (parameters, result) = self.annotated_closure_signature(
+        let (parameters, result, throws) = self.annotated_closure_signature(
             &generator.parameters,
             &generator.effects,
             generator.result.as_ref(),
@@ -1320,7 +1320,7 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
         let target = arche_frontend::GeneratorTarget::Anonymous {
             owner,
             expression_ordinal,
-            arguments: Vec::new(),
+            arguments,
         };
         let produced = SymbolicType::Generator {
             target: Box::new(target.clone()),
@@ -1331,7 +1331,7 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
             yields: Box::new(yields),
             result: Box::new(result),
             requires: SymbolicTypeEffectSet::default(),
-            throws: SymbolicTypeEffectSet::default(),
+            throws,
         };
         let ty = SymbolicType::GeneratorFactory {
             target: Box::new(target),
@@ -1351,12 +1351,33 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
         &self,
         span: Span,
         kind: SemanticBodyKind,
-    ) -> Option<(SemanticDeclarationPath, u64)> {
+    ) -> Option<(SemanticDeclarationPath, u64, Vec<GenericArgumentShape>)> {
         let entry = self.catalog.definitions.get(&self.scope.item.id)?;
         let shape = entry.declaration_shape?;
-        if !shape.generic_parameters.is_empty() {
-            return None;
-        }
+        // Inside its own owner, a closure's owner instantiation is exactly
+        // the identity arguments of the owner's generic parameters.
+        let arguments = shape
+            .generic_parameters
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                let index = u64::try_from(index).ok()?;
+                Some(match kind {
+                    GenericParameterKind::Type => {
+                        GenericArgumentShape::Type(SymbolicType::BoundType { depth: 0, index })
+                    }
+                    GenericParameterKind::Lifetime => {
+                        GenericArgumentShape::Lifetime(SymbolicLifetime::Bound { depth: 0, index })
+                    }
+                    GenericParameterKind::IntegerConst(integer_type) => {
+                        GenericArgumentShape::IntegerConst(SymbolicConstExpression {
+                            integer_type: *integer_type,
+                            node: SymbolicConstNode::Bound { depth: 0, index },
+                        })
+                    }
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
         let mut rows = self.scope.target.bodies.iter().filter(|body| {
             body.owner == self.scope.item.id && body.kind == kind && span_contains(span, body.span)
         });
@@ -1364,7 +1385,7 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
         if rows.next().is_some() {
             return None;
         }
-        Some((entry.semantic_path(), row.ordinal))
+        Some((entry.semantic_path(), row.ordinal, arguments))
     }
 
     /// True when no path inside the expression span resolves to a local
@@ -1393,25 +1414,32 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
         parameters: &[arche_frontend::ast::AstClosureParameter],
         effects: &arche_frontend::ast::AstEffectSets,
         result: Option<&arche_frontend::ast::AstType>,
-    ) -> Option<(Vec<SymbolicType>, SymbolicType)> {
+    ) -> Option<(Vec<SymbolicType>, SymbolicType, SymbolicTypeEffectSet)> {
         let explicitly_empty_requires = effects
             .requires
             .as_ref()
             .is_some_and(|set| set.members.is_empty());
-        let explicitly_empty_throws = effects
-            .throws
-            .as_ref()
-            .is_some_and(|set| set.members.is_empty());
-        if !explicitly_empty_requires || !explicitly_empty_throws {
+        if !explicitly_empty_requires {
             return None;
         }
+        // Spelled throws members lower by annotation; C1's convention wraps a
+        // nonempty source list as PendingC4 until canonicalization, and an
+        // explicitly empty set is already canonical.
+        let throws_members = effects
+            .throws
+            .as_ref()?
+            .members
+            .iter()
+            .map(|member| self.type_at_span(member.span))
+            .collect::<Option<Vec<_>>>()?;
+        let throws = SymbolicTypeEffectSet::pending_c4(throws_members);
         let mut parameter_types = Vec::new();
         for parameter in parameters {
             let annotation = parameter.ty.as_ref()?;
             parameter_types.push(self.type_at_span(annotation.span)?);
         }
         let result = self.type_at_span(result?.span)?;
-        Some((parameter_types, result))
+        Some((parameter_types, result, throws))
     }
 
     fn check_closure_body(&mut self, closure: &arche_frontend::ast::AstClosure) {
@@ -11228,5 +11256,39 @@ mod tests {
         let diagnostics = format!("{:?}", failure.diagnostics());
         assert!(failure.diagnostics().is_some());
         assert!(diagnostics.contains("TYPE002"), "diagnostics={diagnostics}");
+    }
+
+    #[test]
+    fn generic_owners_carry_identity_arguments_on_closure_values() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault2 {\n",
+            "    Soft,\n",
+            "}\n",
+            "pub fn owner<'a, T: Clone + 'a, const N: usize>(seed: i32) -> i32 {\n",
+            "    let doubler = move |value: i32|\n",
+            "        requires {} throws {} -> i32 {\n",
+            "            value + value\n",
+            "        };\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws { Fault2 } -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let state = factory(seed);\n",
+            "    doubler(seed)\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies =
+            check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_or_else(|failure| {
+                panic!("generic-owner closure values must close: {failure:#?}")
+            });
+        assert!(bodies.all_authority_complete());
     }
 }
