@@ -101,22 +101,18 @@ impl SemanticTraitKey {
         })
     }
 
-    /// Attempts to construct a compiler-known key from branded Embedded Core.
+    /// Constructs the compiler-known key from branded Embedded Core.
     ///
-    /// The current typed projection proves trait kind/shape but does not yet
-    /// expose the trait row's raw stable `DefinitionId`. Failing closed here is
-    /// intentional: neither `CompilerTraitKind` nor `VirtualDefinitionId` is a
-    /// legal semantic-identity substitute.
+    /// The typed projection mints every compiler trait row's raw stable
+    /// `DefinitionId` at authority construction, so key formation is total.
+    /// Neither `CompilerTraitKind` nor `VirtualDefinitionId` substitutes for
+    /// that identity, and no caller can supply the bytes directly.
     pub fn from_verified_embedded_core(
         authority: &VerifiedEmbeddedCoreAuthority,
         kind: CompilerTraitKind,
-    ) -> Result<Self, TraitModelError> {
-        let Some(definition) = verified_embedded_trait_definition(authority, kind) else {
-            return Err(TraitModelError::MissingFinalEmbeddedTraitIdentity(kind));
-        };
-        Ok(Self::from_verified_compiler_parts(
-            authority, kind, definition,
-        ))
+    ) -> Self {
+        let definition = authority.compiler_trait(kind).definition_id();
+        Self::from_verified_compiler_parts(authority, kind, definition)
     }
 
     /// Returns the exact tagged pre-identity bytes.
@@ -184,26 +180,6 @@ impl SemanticTraitKey {
             canonical: canonical.into_boxed_slice(),
         }
     }
-
-    #[cfg(test)]
-    fn compiler_for_test(
-        authority: &VerifiedEmbeddedCoreAuthority,
-        kind: CompilerTraitKind,
-        definition: DefinitionId,
-    ) -> Self {
-        Self::from_verified_compiler_parts(authority, kind, definition)
-    }
-}
-
-/// The typed C2 projection currently has no stable trait-definition accessor.
-/// This single fail-closed bridge is replaced when Embedded Core supplies it;
-/// callers cannot provide or guess the bytes themselves.
-fn verified_embedded_trait_definition(
-    authority: &VerifiedEmbeddedCoreAuthority,
-    kind: CompilerTraitKind,
-) -> Option<DefinitionId> {
-    let _ = authority.compiler_trait(kind);
-    None
 }
 
 /// One typed trait predicate independent of any body environment.
@@ -919,7 +895,6 @@ enum CandidateEvaluation {
 pub enum TraitModelError {
     ExpectedTraitDeclaration,
     EmptySemanticDefinitionKey,
-    MissingFinalEmbeddedTraitIdentity(CompilerTraitKind),
     WrongCompilerTraitArity {
         trait_kind: CompilerTraitKind,
         expected: u8,
@@ -2236,14 +2211,7 @@ mod tests {
         core: &VerifiedEmbeddedCoreAuthority,
         kind: CompilerTraitKind,
     ) -> SemanticTraitKey {
-        let discriminator = core
-            .typed_c2()
-            .compiler_traits()
-            .iter()
-            .position(|row| row.kind() == kind)
-            .unwrap();
-        let byte = u8::try_from(discriminator + 1).unwrap();
-        SemanticTraitKey::compiler_for_test(core, kind, DefinitionId::from_bytes([byte; 16]))
+        SemanticTraitKey::from_verified_embedded_core(core, kind)
     }
 
     fn type_arguments(types: &[SymbolicType]) -> Vec<GenericArgumentShape> {
@@ -2295,21 +2263,17 @@ mod tests {
         assert_eq!(ordinary.canonical_bytes(), expected);
 
         let core = core();
-        let definition = DefinitionId::from_bytes([0xa5; 16]);
-        let compiler =
-            SemanticTraitKey::compiler_for_test(&core, CompilerTraitKind::Add, definition);
+        let definition = core
+            .typed_c2()
+            .compiler_trait(CompilerTraitKind::Add)
+            .definition_id();
+        let compiler = SemanticTraitKey::from_verified_embedded_core(&core, CompilerTraitKind::Add);
         let mut expected = vec![2];
         expected.extend_from_slice(&core.interface_version().to_le_bytes());
         expected.extend_from_slice(core.interface_digest());
         expected.extend_from_slice(definition.as_bytes());
         assert_eq!(compiler.canonical_bytes(), expected);
         assert_eq!(compiler.canonical_bytes().len(), 53);
-        assert_eq!(
-            SemanticTraitKey::from_verified_embedded_core(&core, CompilerTraitKind::Add),
-            Err(TraitModelError::MissingFinalEmbeddedTraitIdentity(
-                CompilerTraitKind::Add
-            ))
-        );
     }
 
     #[test]

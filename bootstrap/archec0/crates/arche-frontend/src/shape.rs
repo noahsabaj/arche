@@ -8,6 +8,8 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use arche_foundation::identity::DefinitionId;
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum TargetRoot {
     Library,
@@ -1613,6 +1615,55 @@ pub fn encode_final_definition_owner_identity(
         return Err(ShapeEncodingError::FinalIdentityNeedsCtfe);
     }
     encode_definition_owner_entry(owner)
+}
+
+/// Encodes the complete final `DefinitionId` preimage of one declaration.
+///
+/// `DefinitionId::from_canonical_preimage` prepends the identity domain prefix
+/// (`ARCHE-DEF-ID\0 || u32le(2)`). After it, the preimage is exactly the
+/// registry-origin string, the package-name string, the target-root encoding,
+/// the module-segment list, the owner chain, the declaration tag, the
+/// declaration-name string, and then `u64le(shape_length)` followed by the
+/// final declaration-shape encoding. The owner chain is `u64le(count)` followed
+/// by each length-prefixed final owner entry; a top-level declaration encodes a
+/// zero count. Every owner entry and the shape must be final-identity ready, so
+/// a pending const dependency fails closed instead of hashing a placeholder.
+pub fn encode_definition_identity_preimage(
+    path: &SemanticDeclarationPath,
+    owners: &[CanonicalDefinitionOwner],
+    shape: &CanonicalDeclarationShape,
+) -> Result<Vec<u8>, ShapeEncodingError> {
+    let mut output = Vec::new();
+    string(&mut output, &path.registry_origin, "registry origin")?;
+    string(&mut output, &path.package_name, "package name")?;
+    encode_target_root(&path.target, &mut output)?;
+    strings(&mut output, &path.modules, "module path")?;
+    count(&mut output, owners.len(), "definition owner chain")?;
+    for owner in owners {
+        bytes(
+            &mut output,
+            &encode_final_definition_owner_identity(owner)?,
+            "definition owner entry",
+        )?;
+    }
+    output.push(path.kind.tag());
+    string(&mut output, &path.name, "declaration name")?;
+    bytes(
+        &mut output,
+        &encode_final_declaration_shape_identity(shape)?,
+        "declaration shape",
+    )?;
+    Ok(output)
+}
+
+/// Mints the stable 128-bit `DefinitionId` from the final preimage above.
+pub fn mint_definition_id(
+    path: &SemanticDeclarationPath,
+    owners: &[CanonicalDefinitionOwner],
+    shape: &CanonicalDeclarationShape,
+) -> Result<DefinitionId, ShapeEncodingError> {
+    let preimage = encode_definition_identity_preimage(path, owners, shape)?;
+    Ok(DefinitionId::from_canonical_preimage(&preimage))
 }
 
 fn encode_alpha_generic_kinds(

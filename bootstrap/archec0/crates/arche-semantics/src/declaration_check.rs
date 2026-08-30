@@ -15,8 +15,8 @@ use std::sync::Arc;
 use arche_foundation::identity::PackageId;
 use arche_frontend::embedded_core::{
     CompilerPrimitiveTypePattern, CompilerTraitAuthority, CompilerTraitCallablePattern,
-    CompilerTraitKind, CompilerTraitReceiverMode, CompilerTraitSelfRelation,
-    CompilerTraitTypePattern, UserImplPolicy, VerifiedEmbeddedCoreAuthority, VirtualNamespace,
+    CompilerTraitReceiverMode, CompilerTraitSelfRelation, CompilerTraitTypePattern, UserImplPolicy,
+    VerifiedEmbeddedCoreAuthority, VirtualNamespace,
 };
 use arche_frontend::{
     encode_symbolic_const, encode_symbolic_predicate, encode_symbolic_type, C2TypeTemplateBlocker,
@@ -49,7 +49,7 @@ use crate::readiness::{
 };
 use crate::traits::{
     OrdinaryImplCandidateSpec, SemanticPredicate, SemanticTraitKey, TraitEnvironment,
-    TraitModelError, TraitPredicate,
+    TraitPredicate,
 };
 
 /// Opaque checked-declaration handle branded by one successful checking run.
@@ -212,10 +212,7 @@ pub enum DeclarationCheckBlockerReason {
         domain: PendingAuthorityDomain,
         failure: ContextualSelfTemplateFailure,
     },
-    /// The typed Embedded Core projection identifies the trait and its shape,
-    /// but does not yet furnish the exact raw stable trait `DefinitionId`
-    /// required by the compiler-known `SemanticTraitKey` encoding.
-    MissingFinalEmbeddedTraitIdentity(CompilerTraitKind),
+
     /// The named declaration-level judgment is not implemented yet. The
     /// candidate declaration fails closed instead of letting its target mint a
     /// successful `Complete` resolution by omission. Unlike authority
@@ -556,7 +553,6 @@ pub fn check_declarations_c2(
                 &provisional,
                 &catalog,
                 &mut diagnostics,
-                &mut blockers,
             );
         }
         provisional[index] = Some(row);
@@ -1934,7 +1930,6 @@ fn describe_impl(
     rows: &[Option<CheckedDeclarationRow>],
     catalog: &DeclarationCatalog<'_>,
     diagnostics: &mut Vec<SemanticDiagnostic>,
-    blockers: &mut Vec<DeclarationCheckBlocker>,
 ) -> Option<OrdinaryImplCandidateSpec> {
     let input = &inputs[index];
     let SymbolicDeclarationPayloadSkeleton::Impl {
@@ -2042,23 +2037,7 @@ fn describe_impl(
         if !validate_compiler_trait_impl(&validation, diagnostics) {
             return None;
         }
-        match SemanticTraitKey::from_verified_embedded_core(catalog.embedded, compiler.kind()) {
-            Ok(key) => key,
-            Err(TraitModelError::MissingFinalEmbeddedTraitIdentity(kind)) => {
-                blockers.push(compiler_identity_blocker(input, kind));
-                return None;
-            }
-            Err(error) => {
-                push_diagnostic(
-                    input,
-                    "IDENTITY001",
-                    format!("invalid compiler semantic trait key: {error:?}"),
-                    input.definition.key.span,
-                    diagnostics,
-                );
-                return None;
-            }
-        }
+        SemanticTraitKey::from_verified_embedded_core(catalog.embedded, compiler.kind())
     } else {
         push_diagnostic(
             input,
@@ -2088,7 +2067,6 @@ fn describe_impl(
         &row.declaration_shape.predicates,
         catalog,
         diagnostics,
-        blockers,
     )?;
     Some(OrdinaryImplCandidateSpec::new(
         *is_default,
@@ -2123,20 +2101,13 @@ fn semantic_environment(
     predicates: &[SymbolicPredicateShapeSkeleton],
     catalog: &DeclarationCatalog<'_>,
     diagnostics: &mut Vec<SemanticDiagnostic>,
-    blockers: &mut Vec<DeclarationCheckBlocker>,
 ) -> Option<TraitEnvironment> {
     let mut semantic = Vec::with_capacity(predicates.len());
     for predicate in predicates {
         let SymbolicPredicateShapeSkeleton::Resolved { value, .. } = predicate else {
             return None;
         };
-        semantic.push(semantic_predicate(
-            input,
-            value,
-            catalog,
-            diagnostics,
-            blockers,
-        )?);
+        semantic.push(semantic_predicate(input, value, catalog, diagnostics)?);
     }
     match TraitEnvironment::new(semantic) {
         Ok(environment) => Some(environment),
@@ -2158,7 +2129,6 @@ fn semantic_predicate(
     predicate: &SymbolicPredicate,
     catalog: &DeclarationCatalog<'_>,
     diagnostics: &mut Vec<SemanticDiagnostic>,
-    blockers: &mut Vec<DeclarationCheckBlocker>,
 ) -> Option<SemanticPredicate> {
     match predicate {
         SymbolicPredicate::Trait {
@@ -2181,26 +2151,7 @@ fn semantic_predicate(
                     }
                 }
             } else if let Some(compiler) = compiler_trait_for_path(catalog.embedded, trait_path) {
-                match SemanticTraitKey::from_verified_embedded_core(
-                    catalog.embedded,
-                    compiler.kind(),
-                ) {
-                    Ok(key) => key,
-                    Err(TraitModelError::MissingFinalEmbeddedTraitIdentity(kind)) => {
-                        blockers.push(compiler_identity_blocker(input, kind));
-                        return None;
-                    }
-                    Err(error) => {
-                        push_diagnostic(
-                            input,
-                            "IDENTITY001",
-                            format!("invalid compiler trait predicate key: {error:?}"),
-                            input.definition.key.span,
-                            diagnostics,
-                        );
-                        return None;
-                    }
-                }
+                SemanticTraitKey::from_verified_embedded_core(catalog.embedded, compiler.kind())
             } else {
                 push_diagnostic(
                     input,
@@ -2487,21 +2438,6 @@ fn type_mentions_embedded_map(ty: &SymbolicType, embedded: &VerifiedEmbeddedCore
                 || map(produced_generator)
         }
         _ => false,
-    }
-}
-
-fn compiler_identity_blocker(
-    input: &InputRow<'_>,
-    kind: CompilerTraitKind,
-) -> DeclarationCheckBlocker {
-    DeclarationCheckBlocker {
-        package: package_scope(input),
-        target: input.target,
-        path: input.path.clone(),
-        span: input.definition.key.span,
-        item: input.definition.hir_item,
-        debug_spelling: format!("{kind:?}"),
-        reason: DeclarationCheckBlockerReason::MissingFinalEmbeddedTraitIdentity(kind),
     }
 }
 
@@ -3768,7 +3704,6 @@ mod tests {
                 failure.blockers().iter().all(|blocker| matches!(
                     blocker.reason(),
                     DeclarationCheckBlockerReason::MissingDeclarationJudgment(_)
-                        | DeclarationCheckBlockerReason::MissingFinalEmbeddedTraitIdentity(_)
                 )),
                 "{corpus}: {:#?}",
                 failure.blockers()
