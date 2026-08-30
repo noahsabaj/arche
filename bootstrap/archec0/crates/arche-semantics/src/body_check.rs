@@ -4714,6 +4714,185 @@ impl BodyChecker<'_, '_, '_> {
         }
     }
 
+    /// Selects the exact ordinary `IntoIterator<Source,Iter>` and
+    /// `Iterator<Iter,Item>` impls for an ordinary `for` source, per the
+    /// contract's lang-item desugar. Outer `None` means no authoritative
+    /// selection (the caller records its gap); `Some(None)` means a source
+    /// diagnostic was minted; `Some(Some((iter, item)))` records both
+    /// selected trait calls and returns the loop element type.
+    fn lower_ordinary_for_items(
+        &mut self,
+        source: &SymbolicType,
+        span: Span,
+    ) -> Option<Option<(SymbolicType, SymbolicType)>> {
+        use arche_frontend::embedded_core::CompilerTraitKind;
+        let (into_definition, iterator_definition) = {
+            let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+            let typed = core.typed_c2();
+            (
+                typed
+                    .compiler_trait(CompilerTraitKind::IntoIterator)
+                    .c1_definition(),
+                typed
+                    .compiler_trait(CompilerTraitKind::Iterator)
+                    .c1_definition(),
+            )
+        };
+        let into_path = self.embedded_declaration_path(into_definition)?;
+        let iterator_path = self.embedded_declaration_path(iterator_definition)?;
+        let into_arguments = match self.ordinary_for_trait_selection(&into_path, source, span)? {
+            Some(arguments) => arguments,
+            None => return Some(None),
+        };
+        let [_, GenericArgumentShape::Type(iter)] = into_arguments.as_slice() else {
+            return None;
+        };
+        let iter = iter.clone();
+        let iterator_arguments =
+            match self.ordinary_for_trait_selection(&iterator_path, &iter, span)? {
+                Some(arguments) => arguments,
+                None => return Some(None),
+            };
+        let [_, GenericArgumentShape::Type(item)] = iterator_arguments.as_slice() else {
+            return None;
+        };
+        let item = item.clone();
+        let into_result = self.selected_trait_call_result(
+            &into_path,
+            "into_iter",
+            into_arguments.clone(),
+            source.clone(),
+        )?;
+        let next_result = self.selected_trait_call_result(
+            &iterator_path,
+            "next",
+            iterator_arguments.clone(),
+            iter.clone(),
+        )?;
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: CheckedBodyCallee::TraitMethod {
+                trait_path: Box::new(into_path),
+                method: "into_iter".into(),
+            },
+            result: into_result,
+        });
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: CheckedBodyCallee::TraitMethod {
+                trait_path: Box::new(iterator_path),
+                method: "next".into(),
+            },
+            result: next_result,
+        });
+        Some(Some((iter, item)))
+    }
+
+    /// Substitutes a selected trait method's declared result type through the
+    /// trait frame `(explicit arguments, Self)`.
+    fn selected_trait_call_result(
+        &mut self,
+        trait_path: &SemanticDeclarationPath,
+        name: &str,
+        arguments: Vec<GenericArgumentShape>,
+        self_type: SymbolicType,
+    ) -> Option<SymbolicType> {
+        let (method_shape, trait_formals) = self.trait_method_shape(trait_path, name)?;
+        let substitution = TraitFrameSubstitution::new(trait_formals, arguments, self_type).ok()?;
+        let SymbolicDeclarationPayloadSkeleton::Callable(callable) = &method_shape.payload else {
+            return None;
+        };
+        let ty = match &callable.result {
+            SymbolicTypeShapeSkeleton::Resolved { value, .. } => value.clone(),
+            SymbolicTypeShapeSkeleton::Pending(_) => return None,
+        };
+        let ty = substitution.substitute_type(&ty, 1).ok()?;
+        Some(erase_method_frame_lifetimes(ty))
+    }
+
+    /// Scans the target's ordinary impls for `trait_path` with `Self` exactly
+    /// `self_ty`. Outer `None`: no authoritative candidate (pending shapes,
+    /// generic or predicate-bearing impls, and relation-violating heads all
+    /// stay fail-closed). `Some(None)`: multiple coherent candidates, minted
+    /// as TRAIT002. `Some(Some(arguments))`: the unique impl head's trait
+    /// arguments.
+    fn ordinary_for_trait_selection(
+        &mut self,
+        trait_path: &SemanticDeclarationPath,
+        self_ty: &SymbolicType,
+        span: Span,
+    ) -> Option<Option<Vec<GenericArgumentShape>>> {
+        let mut selected: Vec<Vec<GenericArgumentShape>> = Vec::new();
+        for item in &self.scope.target.items {
+            if item.kind != DeclarationKind::Impl {
+                continue;
+            }
+            let Some(entry) = self.catalog.definitions.get(&item.id) else {
+                continue;
+            };
+            let Some(shape) = entry.declaration_shape else {
+                continue;
+            };
+            let SymbolicDeclarationPayloadSkeleton::Impl {
+                trait_ref: Some(trait_ref),
+                target,
+                ..
+            } = &shape.payload
+            else {
+                continue;
+            };
+            let SymbolicTypeShapeSkeleton::Resolved {
+                value: trait_ty, ..
+            } = trait_ref
+            else {
+                continue;
+            };
+            let SymbolicType::NominalPath {
+                declaration,
+                arguments,
+            } = trait_ty
+            else {
+                continue;
+            };
+            if declaration != trait_path {
+                continue;
+            }
+            let SymbolicTypeShapeSkeleton::Resolved {
+                value: target_ty, ..
+            } = target
+            else {
+                continue;
+            };
+            if target_ty != self_ty {
+                continue;
+            }
+            if !shape.generic_parameters.is_empty() || !shape.predicates.is_empty() {
+                // Generic or predicate-bearing impls need head binding and
+                // entailment authority; keep the caller's fail-closed gap.
+                return None;
+            }
+            if arguments.first() != Some(&GenericArgumentShape::Type(self_ty.clone())) {
+                // The compiler-trait relation pins Self to the first explicit
+                // argument; a violating impl is declaration-judgment
+                // territory, never a body-side selection.
+                return None;
+            }
+            selected.push(arguments.clone());
+        }
+        match selected.len() {
+            0 => None,
+            1 => Some(Some(selected.pop().expect("one selection row"))),
+            _ => {
+                self.source_error(
+                    span,
+                    "TRAIT002",
+                    "ordinary `for` selects among multiple coherent iterator impls",
+                );
+                Some(None)
+            }
+        }
+    }
+
     /// Returns the named required-method shape and the trait's generic formal
     /// kinds for an ordinary or compiler-known trait path.
     fn trait_method_shape(
@@ -6206,13 +6385,37 @@ impl BodyChecker<'_, '_, '_> {
                             Some(item.clone())
                         }
                         Some(_) => {
-                            self.gap(
-                                iterator.span,
-                                BodyCheckIncompletenessKind::MissingEmbeddedTraitIdentity,
-                                "ordinary `for` requires IntoIterator/Iterator selection, whose compiler-known stable identities are not yet exposed",
-                            );
-                            complete = false;
-                            None
+                            let source =
+                                iterator_value
+                                    .as_ref()
+                                    .and_then(|value| match &value.input {
+                                        TypedExpressionInput::Known(ty) => Some(ty.clone()),
+                                        _ => None,
+                                    });
+                            match source {
+                                Some(source) => {
+                                    match self.lower_ordinary_for_items(&source, iterator.span) {
+                                        Some(Some((_, item))) => Some(item),
+                                        Some(None) => {
+                                            complete = false;
+                                            None
+                                        }
+                                        None => {
+                                            self.gap(
+                                                iterator.span,
+                                                BodyCheckIncompletenessKind::MissingMethodSelection,
+                                                "ordinary `for` has no authoritative IntoIterator/Iterator selection among the target's ordinary impls",
+                                            );
+                                            complete = false;
+                                            None
+                                        }
+                                    }
+                                }
+                                None => {
+                                    complete = false;
+                                    None
+                                }
+                            }
                         }
                         None => {
                             complete = false;
@@ -9569,5 +9772,109 @@ mod tests {
         let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
             .unwrap_or_else(|failure| panic!("float bindings must close: {failure:#?}"));
         assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn ordinary_for_selects_the_unique_iterator_impl_pair() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct Src {\n",
+            "    pub start: i32,\n",
+            "}\n",
+            "pub struct It {\n",
+            "    current: i32,\n",
+            "}\n",
+            "impl IntoIterator<Src, It> for Src {\n",
+            "    fn into_iter(self) -> It {\n",
+            "        It { current: self.start }\n",
+            "    }\n",
+            "}\n",
+            "impl Iterator<It, i32> for It {\n",
+            "    fn next(&mut self) -> Option<i32> {\n",
+            "        Option::None\n",
+            "    }\n",
+            "}\n",
+            "pub fn total(source: Src) -> i32 {\n",
+            "    let mut sum = 0i32;\n",
+            "    for element in source {\n",
+            "        sum += element;\n",
+            "    }\n",
+            "    sum\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("for selection must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+        let calls = bodies
+            .bodies()
+            .flat_map(C2BodyView::calls)
+            .filter_map(|call| match call.callee() {
+                CheckedBodyCallee::TraitMethod { trait_path, method } => {
+                    Some((trait_path.name.clone(), method.as_ref(), call.result()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            calls.iter().any(|(trait_name, method, result)| {
+                trait_name == "IntoIterator"
+                    && *method == "into_iter"
+                    && matches!(
+                        result,
+                        SymbolicType::NominalPath { declaration, .. } if declaration.name == "It"
+                    )
+            }),
+            "calls={calls:#?}"
+        );
+        assert!(
+            calls.iter().any(|(trait_name, method, result)| {
+                trait_name == "Iterator"
+                    && *method == "next"
+                    && matches!(
+                        result,
+                        SymbolicType::NominalPath { declaration, arguments }
+                            if declaration.name == "Option"
+                                && arguments
+                                    == &[GenericArgumentShape::Type(SymbolicType::I32)]
+                    )
+            }),
+            "calls={calls:#?}"
+        );
+    }
+
+    #[test]
+    fn ordinary_for_without_an_impl_pair_stays_an_honest_gap() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn spin(limit: i32) -> i32 {\n",
+            "    let mut sum = 0i32;\n",
+            "    for element in limit {\n",
+            "        sum += element;\n",
+            "    }\n",
+            "    sum\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "an absent impl pair is a recorded gap, not a rejection: {:?}",
+            failure.diagnostics()
+        );
+        assert!(failure
+            .incompleteness()
+            .iter()
+            .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingMethodSelection));
     }
 }
