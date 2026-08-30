@@ -15,8 +15,9 @@ use std::sync::Arc;
 use arche_foundation::identity::PackageId;
 use arche_frontend::embedded_core::{
     CompilerNominalKind, CompilerPrimitiveTypePattern, CompilerTraitAuthority,
-    CompilerTraitCallablePattern, CompilerTraitReceiverMode, CompilerTraitSelfRelation,
-    CompilerTraitTypePattern, UserImplPolicy, VerifiedEmbeddedCoreAuthority, VirtualNamespace,
+    CompilerTraitCallablePattern, CompilerTraitKind, CompilerTraitReceiverMode,
+    CompilerTraitSelfRelation, CompilerTraitTypePattern, UserImplPolicy,
+    VerifiedEmbeddedCoreAuthority, VirtualNamespace,
 };
 use arche_frontend::{
     encode_symbolic_const, encode_symbolic_predicate, encode_symbolic_type, C2TypeTemplateBlocker,
@@ -477,7 +478,7 @@ pub fn check_declarations_c2(
             &mut blockers,
         );
         let owner = resolve_owner_contextual_self(input, &inputs, &mut blockers);
-        record_unimplemented_judgments(input, &shape, catalog.embedded, &mut blockers);
+        record_unimplemented_judgments(input, &shape, &mut blockers);
         let definition_audit = audit_declaration_shape(&shape);
         let owner_audit = audit_definition_owner(&owner);
         collect_pending_blockers(
@@ -544,6 +545,35 @@ pub fn check_declarations_c2(
                     push_diagnostic(
                         input,
                         "TYPE001",
+                        message.clone(),
+                        input.definition.key.span,
+                        &mut diagnostics,
+                    );
+                }
+                provisional.push(None);
+                continue;
+            }
+        }
+
+        match map_key_judgment(&shape, catalog.embedded) {
+            MapKeyOutcome::Discharged => {}
+            MapKeyOutcome::Blocked => {
+                let judgment = UnimplementedDeclarationJudgment::MapKeyComparison;
+                blockers.push(DeclarationCheckBlocker {
+                    package: package_scope(input),
+                    target: input.target,
+                    path: input.path.clone(),
+                    span: input.definition.key.span,
+                    item: input.definition.hir_item,
+                    debug_spelling: format!("{judgment:?}"),
+                    reason: DeclarationCheckBlockerReason::MissingDeclarationJudgment(judgment),
+                });
+            }
+            MapKeyOutcome::Rejected(messages) => {
+                for message in messages {
+                    push_diagnostic(
+                        input,
+                        "TRAIT002",
                         message.clone(),
                         input.definition.key.span,
                         &mut diagnostics,
@@ -2858,160 +2888,53 @@ fn check_workspace_sizedness(
     outcomes
 }
 
-fn record_unimplemented_judgments(
-    input: &InputRow<'_>,
-    shape: &SymbolicDeclarationShapeSkeleton,
+/// Outcome of the map-key comparison judgment for one declaration.
+enum MapKeyOutcome {
+    /// No embedded map mention, or every key is eligible.
+    Discharged,
+    /// A key is categorically ineligible; messages become TRAIT002.
+    Rejected(Vec<String>),
+    /// A key needs authority this judgment does not yet carry (structural
+    /// EcsKey proofs, unresolved shapes); the fail-closed blocker stays.
+    Blocked,
+}
+
+fn collect_type_map_keys(
+    ty: &SymbolicType,
     embedded: &VerifiedEmbeddedCoreAuthority,
-    blockers: &mut Vec<DeclarationCheckBlocker>,
+    out: &mut Vec<SymbolicType>,
 ) {
-    let mut judgments = Vec::new();
-    if let SymbolicDeclarationPayloadSkeleton::Impl { trait_ref, .. } = &shape.payload {
-        judgments.push(if trait_ref.is_none() {
-            UnimplementedDeclarationJudgment::InherentMethodUniqueness
-        } else {
-            UnimplementedDeclarationJudgment::ImplCoherenceOverlap
-        });
-    }
-    if shape_mentions_embedded_map(shape, embedded) {
-        judgments.push(UnimplementedDeclarationJudgment::MapKeyComparison);
-    }
-    for judgment in judgments {
-        blockers.push(DeclarationCheckBlocker {
-            package: package_scope(input),
-            target: input.target,
-            path: input.path.clone(),
-            span: input.definition.key.span,
-            item: input.definition.hir_item,
-            debug_spelling: format!("{judgment:?}"),
-            reason: DeclarationCheckBlockerReason::MissingDeclarationJudgment(judgment),
-        });
-    }
-}
-
-fn shape_mentions_embedded_map(
-    shape: &SymbolicDeclarationShapeSkeleton,
-    embedded: &VerifiedEmbeddedCoreAuthority,
-) -> bool {
-    let map = |ty: &SymbolicType| type_mentions_embedded_map(ty, embedded);
-    let map_shape = |shape: &arche_frontend::SymbolicTypeShapeSkeleton| match shape {
-        arche_frontend::SymbolicTypeShapeSkeleton::Resolved { value, .. } => map(value),
-        arche_frontend::SymbolicTypeShapeSkeleton::Pending(_) => false,
-    };
-    let map_effects = |effects: &arche_frontend::SymbolicEffectSetsSkeleton| {
-        effects
-            .requires
-            .iter()
-            .chain(effects.throws.iter())
-            .any(|effect| match effect {
-                arche_frontend::SymbolicEffectShapeSkeleton::Resolved { value, .. } => map(value),
-                arche_frontend::SymbolicEffectShapeSkeleton::Pending(_) => false,
-            })
-    };
-    let map_callable = |callable: &arche_frontend::SymbolicCallableShapeSkeleton| {
-        callable
-            .parameters
-            .iter()
-            .any(|parameter| map_shape(&parameter.ty))
-            || map_shape(&callable.result)
-            || callable.resume.as_ref().is_some_and(map_shape)
-            || callable.yields.as_ref().is_some_and(map_shape)
-            || map_effects(&callable.effects)
-    };
-    let map_methods = |methods: &[arche_frontend::SymbolicMethodShapeSkeleton]| {
-        methods
-            .iter()
-            .any(|method| shape_mentions_embedded_map(&method.shape, embedded))
-    };
-    let payload = match &shape.payload {
-        SymbolicDeclarationPayloadSkeleton::World
-        | SymbolicDeclarationPayloadSkeleton::Tag
-        | SymbolicDeclarationPayloadSkeleton::Schedule { .. } => false,
-        SymbolicDeclarationPayloadSkeleton::Record(record) => {
-            record.fields.iter().any(|field| map_shape(&field.ty))
-        }
-        SymbolicDeclarationPayloadSkeleton::Enum(variants) => variants
-            .iter()
-            .any(|variant| variant.fields.iter().any(|field| map_shape(&field.ty))),
-        SymbolicDeclarationPayloadSkeleton::Callable(callable) => map_callable(callable),
-        SymbolicDeclarationPayloadSkeleton::System {
-            accesses,
-            implied_requires,
-            result,
-            effects,
-        } => {
-            accesses.iter().any(|access| match access {
-                arche_frontend::SymbolicSystemAccessShapeSkeleton::CapabilityShared(ty)
-                | arche_frontend::SymbolicSystemAccessShapeSkeleton::CapabilityMutable(ty)
-                | arche_frontend::SymbolicSystemAccessShapeSkeleton::ResourceRead(ty)
-                | arche_frontend::SymbolicSystemAccessShapeSkeleton::ResourceWrite(ty) => {
-                    map_shape(ty)
-                }
-                arche_frontend::SymbolicSystemAccessShapeSkeleton::Query(terms) => {
-                    terms.iter().any(|term| map_shape(&term.ty))
-                }
-                arche_frontend::SymbolicSystemAccessShapeSkeleton::Commands => false,
-            }) || implied_requires
-                .iter()
-                .any(|requirement| map_shape(&requirement.referent))
-                || map_shape(result)
-                || map_effects(effects)
-        }
-        SymbolicDeclarationPayloadSkeleton::Trait { methods } => map_methods(methods),
-        SymbolicDeclarationPayloadSkeleton::Impl {
-            trait_ref,
-            target,
-            methods,
-            ..
-        } => trait_ref.as_ref().is_some_and(map_shape) || map_shape(target) || map_methods(methods),
-        SymbolicDeclarationPayloadSkeleton::Alias { target } => map_shape(target),
-        SymbolicDeclarationPayloadSkeleton::Const { ty }
-        | SymbolicDeclarationPayloadSkeleton::Static { ty, .. } => map_shape(ty),
-        SymbolicDeclarationPayloadSkeleton::Query { terms } => {
-            terms.iter().any(|term| map_shape(&term.ty))
+    let walk_set = |set: &arche_frontend::SymbolicTypeEffectSet, out: &mut Vec<SymbolicType>| {
+        for member in set.members() {
+            collect_type_map_keys(member, embedded, out);
         }
     };
-    payload
-        || shape.predicates.iter().any(|predicate| match predicate {
-            arche_frontend::SymbolicPredicateShapeSkeleton::Resolved { value, .. } => {
-                match &**value {
-                    SymbolicPredicate::Trait {
-                        self_type,
-                        arguments,
-                        ..
-                    } => {
-                        map(self_type)
-                            || arguments.iter().any(|argument| match argument {
-                                GenericArgumentShape::Type(ty) => map(ty),
-                                _ => false,
-                            })
-                    }
-                    SymbolicPredicate::TypeOutlives { ty, .. } => map(ty),
-                    SymbolicPredicate::LifetimeOutlives { .. } => false,
-                }
-            }
-            arche_frontend::SymbolicPredicateShapeSkeleton::Pending(_) => false,
-        })
-}
-
-fn type_mentions_embedded_map(ty: &SymbolicType, embedded: &VerifiedEmbeddedCoreAuthority) -> bool {
-    let map = |child: &SymbolicType| type_mentions_embedded_map(child, embedded);
-    let map_set = |set: &arche_frontend::SymbolicTypeEffectSet| set.members().iter().any(map);
     match ty {
         SymbolicType::NominalPath {
             declaration,
             arguments,
         } => {
-            (declaration.name == "Map" && is_embedded_path(declaration, embedded))
-                || arguments.iter().any(|argument| match argument {
-                    GenericArgumentShape::Type(child) => map(child),
-                    _ => false,
-                })
+            if declaration.name == "Map" && is_embedded_path(declaration, embedded) {
+                if let Some(GenericArgumentShape::Type(key)) = arguments.first() {
+                    out.push(key.clone());
+                }
+            }
+            for argument in arguments {
+                if let GenericArgumentShape::Type(child) = argument {
+                    collect_type_map_keys(child, embedded, out);
+                }
+            }
         }
-        SymbolicType::Slice(element) => map(element),
-        SymbolicType::Array { element, .. } => map(element),
-        SymbolicType::Tuple(elements) => elements.iter().any(map),
+        SymbolicType::Slice(element) | SymbolicType::Array { element, .. } => {
+            collect_type_map_keys(element, embedded, out);
+        }
+        SymbolicType::Tuple(elements) => {
+            for element in elements {
+                collect_type_map_keys(element, embedded, out);
+            }
+        }
         SymbolicType::Reference { pointee, .. } | SymbolicType::RawPointer { pointee, .. } => {
-            map(pointee)
+            collect_type_map_keys(pointee, embedded, out);
         }
         SymbolicType::FunctionPointer {
             parameters,
@@ -3019,7 +2942,14 @@ fn type_mentions_embedded_map(ty: &SymbolicType, embedded: &VerifiedEmbeddedCore
             requires,
             throws,
             ..
-        } => parameters.iter().any(map) || map(result) || map_set(requires) || map_set(throws),
+        } => {
+            for parameter in parameters {
+                collect_type_map_keys(parameter, embedded, out);
+            }
+            collect_type_map_keys(result, embedded, out);
+            walk_set(requires, out);
+            walk_set(throws, out);
+        }
         SymbolicType::Closure {
             captures,
             parameters,
@@ -3029,15 +2959,20 @@ fn type_mentions_embedded_map(ty: &SymbolicType, embedded: &VerifiedEmbeddedCore
             arguments,
             ..
         } => {
-            captures.iter().any(|capture| map(&capture.ty))
-                || parameters.iter().any(map)
-                || map(result)
-                || map_set(requires)
-                || map_set(throws)
-                || arguments.iter().any(|argument| match argument {
-                    GenericArgumentShape::Type(child) => map(child),
-                    _ => false,
-                })
+            for capture in captures {
+                collect_type_map_keys(&capture.ty, embedded, out);
+            }
+            for parameter in parameters {
+                collect_type_map_keys(parameter, embedded, out);
+            }
+            collect_type_map_keys(result, embedded, out);
+            walk_set(requires, out);
+            walk_set(throws, out);
+            for argument in arguments {
+                if let GenericArgumentShape::Type(child) = argument {
+                    collect_type_map_keys(child, embedded, out);
+                }
+            }
         }
         SymbolicType::Generator {
             captures,
@@ -3049,26 +2984,289 @@ fn type_mentions_embedded_map(ty: &SymbolicType, embedded: &VerifiedEmbeddedCore
             throws,
             ..
         } => {
-            captures.iter().any(|capture| map(&capture.ty))
-                || parameters.iter().any(map)
-                || map(resume)
-                || map(yields)
-                || map(result)
-                || map_set(requires)
-                || map_set(throws)
+            for capture in captures {
+                collect_type_map_keys(&capture.ty, embedded, out);
+            }
+            for parameter in parameters {
+                collect_type_map_keys(parameter, embedded, out);
+            }
+            collect_type_map_keys(resume, embedded, out);
+            collect_type_map_keys(yields, embedded, out);
+            collect_type_map_keys(result, embedded, out);
+            walk_set(requires, out);
+            walk_set(throws, out);
         }
-        SymbolicType::JoinHandle { result, throws } => map(result) || map_set(throws),
+        SymbolicType::JoinHandle { result, throws } => {
+            collect_type_map_keys(result, embedded, out);
+            walk_set(throws, out);
+        }
         SymbolicType::GeneratorFactory {
             captures,
             parameters,
             produced_generator,
             ..
         } => {
-            captures.iter().any(|capture| map(&capture.ty))
-                || parameters.iter().any(map)
-                || map(produced_generator)
+            for capture in captures {
+                collect_type_map_keys(&capture.ty, embedded, out);
+            }
+            for parameter in parameters {
+                collect_type_map_keys(parameter, embedded, out);
+            }
+            collect_type_map_keys(produced_generator, embedded, out);
         }
-        _ => false,
+        _ => {}
+    }
+}
+
+fn collect_shape_map_keys(
+    shape: &SymbolicDeclarationShapeSkeleton,
+    embedded: &VerifiedEmbeddedCoreAuthority,
+    out: &mut Vec<SymbolicType>,
+) {
+    let walk_shape = |shape: &arche_frontend::SymbolicTypeShapeSkeleton,
+                      out: &mut Vec<SymbolicType>| {
+        if let arche_frontend::SymbolicTypeShapeSkeleton::Resolved { value, .. } = shape {
+            collect_type_map_keys(value, embedded, out);
+        }
+    };
+    let walk_effects = |effects: &arche_frontend::SymbolicEffectSetsSkeleton,
+                        out: &mut Vec<SymbolicType>| {
+        for effect in effects.requires.iter().chain(effects.throws.iter()) {
+            if let arche_frontend::SymbolicEffectShapeSkeleton::Resolved { value, .. } = effect {
+                collect_type_map_keys(value, embedded, out);
+            }
+        }
+    };
+    let walk_callable = |callable: &arche_frontend::SymbolicCallableShapeSkeleton,
+                         out: &mut Vec<SymbolicType>| {
+        for parameter in &callable.parameters {
+            walk_shape(&parameter.ty, out);
+        }
+        walk_shape(&callable.result, out);
+        if let Some(resume) = &callable.resume {
+            walk_shape(resume, out);
+        }
+        if let Some(yields) = &callable.yields {
+            walk_shape(yields, out);
+        }
+        walk_effects(&callable.effects, out);
+    };
+    match &shape.payload {
+        SymbolicDeclarationPayloadSkeleton::World
+        | SymbolicDeclarationPayloadSkeleton::Tag
+        | SymbolicDeclarationPayloadSkeleton::Schedule { .. } => {}
+        SymbolicDeclarationPayloadSkeleton::Record(record) => {
+            for field in &record.fields {
+                walk_shape(&field.ty, out);
+            }
+        }
+        SymbolicDeclarationPayloadSkeleton::Enum(variants) => {
+            for variant in variants {
+                for field in &variant.fields {
+                    walk_shape(&field.ty, out);
+                }
+            }
+        }
+        SymbolicDeclarationPayloadSkeleton::Callable(callable) => walk_callable(callable, out),
+        SymbolicDeclarationPayloadSkeleton::System {
+            accesses,
+            implied_requires,
+            result,
+            effects,
+        } => {
+            for access in accesses {
+                match access {
+                    arche_frontend::SymbolicSystemAccessShapeSkeleton::CapabilityShared(ty)
+                    | arche_frontend::SymbolicSystemAccessShapeSkeleton::CapabilityMutable(ty)
+                    | arche_frontend::SymbolicSystemAccessShapeSkeleton::ResourceRead(ty)
+                    | arche_frontend::SymbolicSystemAccessShapeSkeleton::ResourceWrite(ty) => {
+                        walk_shape(ty, out);
+                    }
+                    arche_frontend::SymbolicSystemAccessShapeSkeleton::Query(terms) => {
+                        for term in terms {
+                            walk_shape(&term.ty, out);
+                        }
+                    }
+                    arche_frontend::SymbolicSystemAccessShapeSkeleton::Commands => {}
+                }
+            }
+            for requirement in implied_requires {
+                walk_shape(&requirement.referent, out);
+            }
+            walk_shape(result, out);
+            walk_effects(effects, out);
+        }
+        SymbolicDeclarationPayloadSkeleton::Trait { methods } => {
+            for method in methods {
+                collect_shape_map_keys(&method.shape, embedded, out);
+            }
+        }
+        SymbolicDeclarationPayloadSkeleton::Impl {
+            trait_ref,
+            target,
+            methods,
+            ..
+        } => {
+            if let Some(trait_ref) = trait_ref {
+                walk_shape(trait_ref, out);
+            }
+            walk_shape(target, out);
+            for method in methods {
+                collect_shape_map_keys(&method.shape, embedded, out);
+            }
+        }
+        SymbolicDeclarationPayloadSkeleton::Alias { target } => walk_shape(target, out),
+        SymbolicDeclarationPayloadSkeleton::Const { ty }
+        | SymbolicDeclarationPayloadSkeleton::Static { ty, .. } => walk_shape(ty, out),
+        SymbolicDeclarationPayloadSkeleton::Query { terms } => {
+            for term in terms {
+                walk_shape(&term.ty, out);
+            }
+        }
+    }
+    for predicate in &shape.predicates {
+        if let arche_frontend::SymbolicPredicateShapeSkeleton::Resolved { value, .. } = predicate {
+            match &**value {
+                SymbolicPredicate::Trait {
+                    self_type,
+                    arguments,
+                    ..
+                } => {
+                    collect_type_map_keys(self_type, embedded, out);
+                    for argument in arguments {
+                        if let GenericArgumentShape::Type(ty) = argument {
+                            collect_type_map_keys(ty, embedded, out);
+                        }
+                    }
+                }
+                SymbolicPredicate::TypeOutlives { ty, .. } => {
+                    collect_type_map_keys(ty, embedded, out);
+                }
+                SymbolicPredicate::LifetimeOutlives { .. } => {}
+            }
+        }
+    }
+}
+
+/// The map-key comparison judgment: sealed map comparison is exactly
+/// `Eq<K,K>`/`Ord<K,K>` with `Self = K`. Primitive scalar keys and `String`
+/// rederive the sealed operation, a bound key discharges through its indexed
+/// `Eq` and `Ord` predicates, float keys are categorically ineligible
+/// (TRAIT002), and every other key family awaits the structural EcsKey
+/// authority behind the fail-closed blocker.
+fn map_key_judgment(
+    shape: &SymbolicDeclarationShapeSkeleton,
+    embedded: &VerifiedEmbeddedCoreAuthority,
+) -> MapKeyOutcome {
+    let mut keys = Vec::new();
+    collect_shape_map_keys(shape, embedded, &mut keys);
+    if keys.is_empty() {
+        return MapKeyOutcome::Discharged;
+    }
+    let has_indexed = |key: &SymbolicType, kind: CompilerTraitKind| {
+        shape.predicates.iter().any(|predicate| {
+            let arche_frontend::SymbolicPredicateShapeSkeleton::Resolved { value, .. } = predicate
+            else {
+                return false;
+            };
+            let SymbolicPredicate::Trait {
+                trait_path,
+                self_type,
+                arguments,
+            } = &**value
+            else {
+                return false;
+            };
+            if self_type != key {
+                return false;
+            }
+            let identity_arguments = arguments.is_empty()
+                || matches!(
+                    arguments.as_slice(),
+                    [GenericArgumentShape::Type(left), GenericArgumentShape::Type(right)]
+                        if left == key && right == key
+                );
+            identity_arguments
+                && compiler_trait_for_path(embedded, trait_path)
+                    .is_some_and(|authority| authority.kind() == kind)
+        })
+    };
+    let mut messages = Vec::new();
+    let mut blocked = false;
+    for key in &keys {
+        match key {
+            SymbolicType::F32 | SymbolicType::F64 => {
+                messages.push(
+                    "float map keys are categorically ineligible: exact same-type float \
+                     comparison is a syntax-only primitive exception and furnishes no Eq/Ord \
+                     selection"
+                        .to_owned(),
+                );
+            }
+            SymbolicType::I8
+            | SymbolicType::I16
+            | SymbolicType::I32
+            | SymbolicType::I64
+            | SymbolicType::U8
+            | SymbolicType::U16
+            | SymbolicType::U32
+            | SymbolicType::U64
+            | SymbolicType::Isize
+            | SymbolicType::Usize
+            | SymbolicType::Bool
+            | SymbolicType::Char
+            | SymbolicType::Entity
+            | SymbolicType::Unit => {}
+            SymbolicType::NominalPath {
+                declaration,
+                arguments,
+            } if declaration.name == "String"
+                && arguments.is_empty()
+                && is_embedded_path(declaration, embedded) => {}
+            SymbolicType::BoundType { .. } => {
+                if !(has_indexed(key, CompilerTraitKind::Eq)
+                    && has_indexed(key, CompilerTraitKind::Ord))
+                {
+                    blocked = true;
+                }
+            }
+            _ => {
+                blocked = true;
+            }
+        }
+    }
+    if !messages.is_empty() {
+        MapKeyOutcome::Rejected(messages)
+    } else if blocked {
+        MapKeyOutcome::Blocked
+    } else {
+        MapKeyOutcome::Discharged
+    }
+}
+
+fn record_unimplemented_judgments(
+    input: &InputRow<'_>,
+    shape: &SymbolicDeclarationShapeSkeleton,
+    blockers: &mut Vec<DeclarationCheckBlocker>,
+) {
+    let mut judgments = Vec::new();
+    if let SymbolicDeclarationPayloadSkeleton::Impl { trait_ref, .. } = &shape.payload {
+        judgments.push(if trait_ref.is_none() {
+            UnimplementedDeclarationJudgment::InherentMethodUniqueness
+        } else {
+            UnimplementedDeclarationJudgment::ImplCoherenceOverlap
+        });
+    }
+    for judgment in judgments {
+        blockers.push(DeclarationCheckBlocker {
+            package: package_scope(input),
+            target: input.target,
+            path: input.path.clone(),
+            span: input.definition.key.span,
+            item: input.definition.hir_item,
+            debug_spelling: format!("{judgment:?}"),
+            reason: DeclarationCheckBlockerReason::MissingDeclarationJudgment(judgment),
+        });
     }
 }
 
@@ -4288,40 +4486,48 @@ mod tests {
             vec![J::ImplCoherenceOverlap]
         );
         assert_eq!(
-            judgment_blockers("pub struct Table { pub scores: Map<f32, i32> }\n"),
-            vec![J::MapKeyComparison]
-        );
-        assert_eq!(
-            judgment_blockers(
-                "pub fn lookup(table: &Map<i32, i32>) -> usize {\n    table.len()\n}\n"
-            ),
+            judgment_blockers(concat!(
+                "pub struct Holder { pub value: i32 }\n",
+                "pub struct Boxed { pub scores: Map<Holder, i32> }\n",
+            )),
             vec![J::MapKeyComparison]
         );
     }
 
     #[test]
     fn real_c2_v1_declarations_block_only_on_recorded_authority_gaps() {
-        for corpus in ["language-game", "language-environment"] {
-            let handoff = corpus_handoff(corpus);
-            let declarations = DeclarationTable::build(&handoff).unwrap();
-            let failure = check_declarations_c2(&handoff, &declarations).unwrap_err();
-            assert_eq!(failure.internal_error(), None, "{corpus}");
-            assert!(
-                failure.diagnostics().is_none(),
-                "{corpus}: {:?}",
-                failure.diagnostics()
-            );
-            assert!(!failure.blockers().is_empty(), "{corpus}");
-            assert!(
-                failure.blockers().iter().all(|blocker| matches!(
-                    blocker.reason(),
-                    DeclarationCheckBlockerReason::MissingDeclarationJudgment(_)
-                )),
-                "{corpus}: {:#?}",
+        // The game corpus still blocks on the remaining impl-family judgments.
+        let handoff = corpus_handoff("language-game");
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let failure = check_declarations_c2(&handoff, &declarations).unwrap_err();
+        assert_eq!(failure.internal_error(), None);
+        assert!(
+            failure.diagnostics().is_none(),
+            "{:?}",
+            failure.diagnostics()
+        );
+        assert!(!failure.blockers().is_empty());
+        assert!(
+            failure.blockers().iter().all(|blocker| matches!(
+                blocker.reason(),
+                DeclarationCheckBlockerReason::MissingDeclarationJudgment(_)
+            )),
+            "{:#?}",
+            failure.blockers()
+        );
+        assert_eq!(failure.partial().len(), declarations.len());
+
+        // The environment corpus's declarations now check completely.
+        let handoff = corpus_handoff("language-environment");
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let facts = check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+            panic!(
+                "environment declarations must close: {:?} {:?}",
+                failure.diagnostics(),
                 failure.blockers()
-            );
-            assert_eq!(failure.partial().len(), declarations.len(), "{corpus}");
-        }
+            )
+        });
+        assert_eq!(facts.len(), declarations.len());
     }
 
     #[test]
@@ -4731,5 +4937,42 @@ mod tests {
                 failure.blockers()
             )
         });
+    }
+
+    #[test]
+    fn map_key_judgment_discharges_rejects_and_blocks() {
+        let float_key = declaration_rejection("pub struct Table { pub scores: Map<f32, i32> }\n");
+        assert!(float_key.contains("TRAIT002"), "{float_key}");
+        assert!(float_key.contains("float map keys"), "{float_key}");
+
+        for source in [
+            "pub fn lookup(table: &Map<i32, i32>) -> usize {\n    table.len()\n}\n",
+            concat!(
+                "pub struct Board<K, V> where K: Eq + Ord {\n",
+                "    pub scores: Map<K, V>,\n",
+                "}\n",
+            ),
+            "pub struct Names { pub scores: Map<String, i32> }\n",
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!(
+                    "eligible map keys must close: {:?} {:?}",
+                    failure.diagnostics(),
+                    failure.blockers()
+                )
+            });
+        }
+
+        use UnimplementedDeclarationJudgment as J;
+        assert_eq!(
+            judgment_blockers(concat!(
+                "pub struct Board<K, V> where K: Eq {\n",
+                "    pub scores: Map<K, V>,\n",
+                "}\n",
+            )),
+            vec![J::MapKeyComparison]
+        );
     }
 }

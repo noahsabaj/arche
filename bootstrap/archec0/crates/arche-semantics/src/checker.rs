@@ -250,16 +250,23 @@ mod tests {
 
     #[test]
     fn real_v1_input_blocks_without_fabricating_a_source_rejection() {
-        for corpus in ["language-game", "language-environment"] {
-            let failure = check_workspace_c2(corpus_frontend(corpus)).unwrap_err();
-            let C2CheckFailure::Blocked(blocked) = failure else {
-                panic!("{corpus} must remain an internal C2 authority blocker");
-            };
-            assert_eq!(blocked.stage(), C2BlockStage::DeclarationOrBodyAuthority);
-            assert!(blocked.declarations().is_some());
-            assert!(blocked.declaration_result().is_some());
-            assert!(blocked.body_result().is_some());
-        }
+        // The game corpus still terminates blocked on the impl-family
+        // declaration judgments, without fabricating a rejection.
+        let failure = check_workspace_c2(corpus_frontend("language-game")).unwrap_err();
+        let C2CheckFailure::Blocked(blocked) = failure else {
+            panic!("language-game must remain an internal C2 authority blocker");
+        };
+        assert_eq!(blocked.stage(), C2BlockStage::DeclarationOrBodyAuthority);
+        assert!(blocked.declarations().is_some());
+        assert!(blocked.declaration_result().is_some());
+        assert!(blocked.body_result().is_some());
+
+        // The environment corpus is a fully checked workspace.
+        let checked =
+            check_workspace_c2(corpus_frontend("language-environment")).unwrap_or_else(|failure| {
+                panic!("language-environment must check completely: {failure:?}")
+            });
+        assert!(checked.indexes().checked_type_count() > 0);
     }
 
     #[test]
