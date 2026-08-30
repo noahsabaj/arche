@@ -6930,7 +6930,18 @@ impl BodyChecker<'_, '_, '_> {
                         }
                     }
                     if let Some(lowered) = lowered {
-                        statements.push(lowered.input);
+                        // The body-level pass re-infers this value; an
+                        // annotation must ride along or an
+                        // annotation-determined inference variable (an empty
+                        // array's element, say) would be re-allocated with no
+                        // context and survive unresolved.
+                        statements.push(match &annotation {
+                            Some(target) => TypedExpressionInput::Coerce {
+                                value: Box::new(lowered.input),
+                                target: target.clone(),
+                            },
+                            None => lowered.input,
+                        });
                     }
                 }
                 AstStatementKind::For {
@@ -9678,51 +9689,14 @@ mod tests {
         table
     }
 
-    fn corpus_body_failure(name: &str) -> C2BodyCheckFailure {
-        let handoff = C2Handoff::begin(corpus_frontend(name)).unwrap();
-        let expected_bodies = handoff
-            .frontend()
-            .hir()
-            .packages
-            .iter()
-            .flat_map(|package| &package.targets)
-            .map(|target| target.bodies.len())
-            .sum::<usize>();
-        let declarations = DeclarationTable::build(&handoff).unwrap();
-        let checked_declarations = check_declarations_c2(&handoff, &declarations);
-        let checked_declarations = match &checked_declarations {
-            Ok(facts) => facts,
-            Err(failure) => failure.partial(),
-        };
-        let failure =
-            check_workspace_bodies_c2(&handoff, &declarations, checked_declarations).unwrap_err();
-        assert_eq!(
-            failure.partial().len(),
-            expected_bodies,
-            "corpus={name}, gaps={:?}",
-            failure.incompleteness()
-        );
-        failure
-    }
-
     #[test]
     fn real_v1_bodies_retain_every_body_and_never_turn_adapter_gaps_into_diagnostics() {
-        let failure = corpus_body_failure("language-game");
-        assert!(
-            failure.diagnostics().is_none(),
-            "diagnostics={:?}",
-            failure.diagnostics()
-        );
-        assert!(!failure.incompleteness().is_empty());
-        let complete = failure.partial().bodies().count();
-        assert!(complete > 0);
-        assert!(complete < failure.partial().len());
-        assert!(!failure.partial().all_authority_complete());
-
-        // The environment corpus's bodies now close completely: every body is
-        // retained and authority-complete, with no diagnostics minted.
-        let environment = corpus_body_complete("language-environment");
-        assert_eq!(environment.bodies().count(), environment.len());
+        // Both corpora's bodies close completely: every body is retained and
+        // authority-complete, with no diagnostics minted.
+        for corpus in ["language-game", "language-environment"] {
+            let table = corpus_body_complete(corpus);
+            assert_eq!(table.bodies().count(), table.len(), "corpus={corpus}");
+        }
     }
 
     #[test]
@@ -10005,16 +9979,16 @@ mod tests {
 
     #[test]
     fn checked_body_handles_are_owner_branded() {
-        let game = corpus_body_failure("language-game");
+        let game = corpus_body_complete("language-game");
         let environment = corpus_body_complete("language-environment");
-        let game_body = game.partial().bodies().next().unwrap();
+        let game_body = game.bodies().next().unwrap();
         let environment_body = environment.bodies().next().unwrap();
-        let game_handle = game.partial().handle(game_body.id()).unwrap();
+        let game_handle = game.handle(game_body.id()).unwrap();
         let environment_handle = environment.handle(environment_body.id()).unwrap();
 
-        assert!(game.partial().body(&game_handle).is_some());
+        assert!(game.body(&game_handle).is_some());
         assert!(environment.body(&environment_handle).is_some());
-        assert!(game.partial().body(&environment_handle).is_none());
+        assert!(game.body(&environment_handle).is_none());
         assert!(environment.body(&game_handle).is_none());
     }
 

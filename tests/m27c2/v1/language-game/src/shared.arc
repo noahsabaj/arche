@@ -383,8 +383,8 @@ where T: Clone + 'a, 'a: 'static {
             let resumed = yield seed;
             resumed
         };
-    let generator = generator_factory(recovered);
-    let resumed = generator.resume(1i32);
+    let mut generator = generator_factory(recovered);
+    let resumed = unsafe { Pin::new_unchecked(&mut generator) }.resume(1i32);
 
     unsafe {
         let array_pointer = bytes as *mut [u8; N];
