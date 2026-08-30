@@ -63,7 +63,9 @@ use crate::typing::{
     check_typed_expression, BinaryTypeOperator, CheckedExpression, TypeCheckError,
     TypeCheckErrorKind, TypedExpressionInput, TypingContext, UnaryTypeOperator,
 };
-use crate::{BinderFrame, BinderStack, LifetimeOutlives, TraitFrameSubstitution};
+use crate::{
+    classify_coercion, BinderFrame, BinderStack, LifetimeOutlives, TraitFrameSubstitution,
+};
 
 /// Opaque owner-branded handle for one checked C2 body.
 #[derive(Clone, Debug)]
@@ -899,6 +901,10 @@ impl LoweredValue {
 #[derive(Clone, Debug)]
 enum ConstructorSelection {
     Item {
+        item: HirItemId,
+        variant: Option<u64>,
+    },
+    PendingInference {
         item: HirItemId,
         variant: Option<u64>,
     },
@@ -2503,6 +2509,12 @@ impl BodyChecker<'_, '_, '_> {
             _ => Vec::new(),
         };
         let (form, declared_fields) = match selected.category {
+            ValueCategory::Constructor(ConstructorSelection::PendingInference {
+                item,
+                variant,
+            }) => {
+                return self.infer_record_literal(item, variant, fields, span);
+            }
             ValueCategory::Constructor(ConstructorSelection::Item { item, variant }) => {
                 let Some(entry) = self.catalog.definition(item) else {
                     self.gap(
@@ -3939,6 +3951,320 @@ impl BodyChecker<'_, '_, '_> {
         Some((value, &parts[1..]))
     }
 
+    /// Lowers every argument once, bottom-up, returning spans and checked
+    /// types for inference and acceptance checking.
+    fn lower_arguments_bottom_up(
+        &mut self,
+        arguments: &[AstExpression],
+    ) -> Option<Vec<(Span, SymbolicType)>> {
+        let mut checked = Vec::with_capacity(arguments.len());
+        for argument in arguments {
+            let value = self.lower_expression(argument, None)?;
+            let expression = self.materialize(&value, None, argument.span)?;
+            checked.push((argument.span, expression.ty().clone()));
+        }
+        Some(checked)
+    }
+
+    /// Emits exact mismatches between substituted parameter types and the
+    /// already-checked argument types without re-lowering any argument.
+    fn check_prepared_arguments(
+        &mut self,
+        parameters: &[SymbolicType],
+        checked: &[(Span, SymbolicType)],
+        span: Span,
+    ) {
+        if parameters.len() != checked.len() {
+            self.source_error(
+                span,
+                "TYPE002",
+                format!(
+                    "call expects {} arguments, found {}",
+                    parameters.len(),
+                    checked.len()
+                ),
+            );
+        }
+        let outlives = LifetimeOutlives::new([]);
+        for (parameter, (argument_span, actual)) in parameters.iter().zip(checked) {
+            let accepted = parameter == actual
+                || types_match_with_erased_body_lifetime(parameter, actual)
+                || classify_coercion(actual, parameter, &outlives).is_some();
+            if !accepted {
+                self.source_error(
+                    *argument_span,
+                    "TYPE002",
+                    format!("expected {parameter:?}, found {actual:?}"),
+                );
+            }
+        }
+    }
+
+    /// Infers a declaration's generic actuals from declared parameter types
+    /// and checked argument types. Type slots bind by structural first-order
+    /// unification, lifetime slots erase to the body-local marker, and an
+    /// unbound type or const slot fails closed with `None`.
+    fn infer_generic_actuals(
+        formals: &[GenericParameterKind],
+        declared: &[SymbolicType],
+        checked: &[(Span, SymbolicType)],
+    ) -> Option<Vec<GenericArgumentShape>> {
+        let mut slots: Vec<Option<SymbolicType>> = vec![None; formals.len()];
+        for (declared, (_, actual)) in declared.iter().zip(checked) {
+            bind_inference_slots(declared, actual, &mut slots);
+        }
+        formals
+            .iter()
+            .enumerate()
+            .map(|(index, formal)| match formal {
+                GenericParameterKind::Type => slots[index].take().map(GenericArgumentShape::Type),
+                GenericParameterKind::Lifetime => Some(GenericArgumentShape::Lifetime(
+                    SymbolicLifetime::ErasedLocal,
+                )),
+                GenericParameterKind::IntegerConst(_) => None,
+            })
+            .collect()
+    }
+
+    /// Argument-driven inference for a generic tuple/call-form constructor.
+    fn infer_tuple_constructor_call(
+        &mut self,
+        item: HirItemId,
+        variant: Option<u64>,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let (formals, form, fields) = self.constructor_shape(item, variant, span)?;
+        if form == SymbolicRecordForm::Record {
+            self.source_error(span, "TYPE002", "record constructor requires named fields");
+            return None;
+        }
+        let mut declared = Vec::new();
+        for field in &fields {
+            declared.push(self.require_type_shape(&field.ty, span)?);
+        }
+        let checked = self.lower_arguments_bottom_up(arguments)?;
+        let Some(actuals) = Self::infer_generic_actuals(&formals, &declared, &checked) else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingGenericInference,
+                "constructor arguments do not determine every generic actual",
+            );
+            return None;
+        };
+        let substituted: Vec<SymbolicType> = declared
+            .iter()
+            .map(|ty| substitute_type(ty, &actuals))
+            .collect();
+        self.check_prepared_arguments(&substituted, &checked, span);
+        let entry = self.catalog.definitions.get(&item)?;
+        let constructed = nominal_type(entry, actuals);
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: CheckedBodyCallee::DirectItem(item),
+            result: constructed.clone(),
+        });
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(
+            constructed,
+        )))
+    }
+
+    /// Argument-driven inference for a generic record literal.
+    fn infer_record_literal(
+        &mut self,
+        item: HirItemId,
+        variant: Option<u64>,
+        fields: &[arche_frontend::ast::AstRecordExpressionField],
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let (formals, form, declared_fields) = self.constructor_shape(item, variant, span)?;
+        if form != SymbolicRecordForm::Record {
+            self.source_error(
+                span,
+                "TYPE002",
+                "record literal path does not select a record-form constructor",
+            );
+            return None;
+        }
+        let mut declared_by_name = BTreeMap::new();
+        for field in &declared_fields {
+            let Some(name) = field.name.as_deref() else {
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingRetainedJoin,
+                    "record declaration payload contains an unnamed field",
+                );
+                return None;
+            };
+            declared_by_name.insert(name.to_owned(), field.ty.clone());
+        }
+        let mut declared = Vec::new();
+        let mut checked = Vec::new();
+        let mut seen = BTreeSet::new();
+        for field in fields {
+            let name = field.name.as_str();
+            if !seen.insert(name.to_owned()) {
+                self.source_error(
+                    field.span,
+                    "TYPE002",
+                    format!("duplicate record field `{name}`"),
+                );
+                continue;
+            }
+            let Some(shape) = declared_by_name.get(name) else {
+                self.source_error(
+                    field.span,
+                    "TYPE002",
+                    format!("unknown record field `{name}`"),
+                );
+                self.check_expression(&field.value, None);
+                continue;
+            };
+            let declared_ty = self.require_type_shape(shape, field.span)?;
+            let value = self.lower_expression(&field.value, None)?;
+            let expression = self.materialize(&value, None, field.span)?;
+            declared.push(declared_ty);
+            checked.push((field.span, expression.ty().clone()));
+        }
+        for name in declared_by_name.keys() {
+            if !seen.contains(name) {
+                self.source_error(span, "TYPE002", format!("missing record field `{name}`"));
+            }
+        }
+        let Some(actuals) = Self::infer_generic_actuals(&formals, &declared, &checked) else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingGenericInference,
+                "record fields do not determine every generic actual",
+            );
+            return None;
+        };
+        let substituted: Vec<SymbolicType> = declared
+            .iter()
+            .map(|ty| substitute_type(ty, &actuals))
+            .collect();
+        self.check_prepared_arguments(&substituted, &checked, span);
+        let entry = self.catalog.definitions.get(&item)?;
+        let constructed = nominal_type(entry, actuals);
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(
+            constructed,
+        )))
+    }
+
+    /// Returns a constructor's generic formals plus the selected variant or
+    /// record form and fields.
+    fn constructor_shape(
+        &mut self,
+        item: HirItemId,
+        variant: Option<u64>,
+        span: Span,
+    ) -> Option<(
+        Vec<GenericParameterKind>,
+        SymbolicRecordForm,
+        Vec<SymbolicFieldShapeSkeleton>,
+    )> {
+        let Some(entry) = self.catalog.definitions.get(&item) else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingRetainedJoin,
+                "constructor item has no declaration catalog row",
+            );
+            return None;
+        };
+        let declaration_shape =
+            checked_entry_shape(entry, self.scope.body.id, span, &mut self.gaps)?;
+        let formals = declaration_shape.generic_parameters.clone();
+        match (&declaration_shape.payload, variant) {
+            (SymbolicDeclarationPayloadSkeleton::Record(record), None) => {
+                Some((formals, record.form, record.fields.clone()))
+            }
+            (SymbolicDeclarationPayloadSkeleton::Enum(variants), Some(ordinal)) => {
+                let variant = usize::try_from(ordinal)
+                    .ok()
+                    .and_then(|ordinal| variants.get(ordinal))?;
+                Some((formals, variant.form, variant.fields.clone()))
+            }
+            (SymbolicDeclarationPayloadSkeleton::Tag, None) => {
+                Some((formals, SymbolicRecordForm::Unit, Vec::new()))
+            }
+            _ => {
+                self.source_error(span, "TYPE002", "value is not a constructor");
+                None
+            }
+        }
+    }
+
+    /// Argument-driven inference for a generic named-function call.
+    fn infer_function_call(
+        &mut self,
+        item: HirItemId,
+        associated: bool,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let Some(entry) = self.catalog.definitions.get(&item) else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingRetainedJoin,
+                "call target has no declaration catalog row",
+            );
+            return None;
+        };
+        let Some(declaration_shape) = entry.declaration_shape else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingRetainedJoin,
+                "call target has no structurally closed checked declaration row",
+            );
+            return None;
+        };
+        let SymbolicDeclarationPayloadSkeleton::Callable(callable) = &declaration_shape.payload
+        else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingRetainedJoin,
+                "call target has no callable payload",
+            );
+            return None;
+        };
+        let formals = declaration_shape.generic_parameters.clone();
+        let mut declared = Vec::new();
+        for parameter in &callable.parameters {
+            declared.push(self.require_type_shape(&parameter.ty, span)?);
+        }
+        let checked = self.lower_arguments_bottom_up(arguments)?;
+        let Some(actuals) = Self::infer_generic_actuals(&formals, &declared, &checked) else {
+            self.gap(
+                span,
+                BodyCheckIncompletenessKind::MissingGenericInference,
+                format!(
+                    "generic callable {item:?} has no explicit actuals and its arguments do not determine every generic actual"
+                ),
+            );
+            return None;
+        };
+        let signature = self.callable_signature(declaration_shape, &actuals, span)?;
+        self.check_prepared_arguments(&signature.parameters, &checked, span);
+        if !signature.requires.members().is_empty() || !signature.throws.members().is_empty() {
+            self.pending_c4(
+                span,
+                b"call-effect-membership".to_vec(),
+                "call effect membership is finalized by C4",
+            );
+        }
+        let result = signature.result.clone();
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: if associated {
+                CheckedBodyCallee::AssociatedItem(item)
+            } else {
+                CheckedBodyCallee::DirectItem(item)
+            },
+            result: result.clone(),
+        });
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)))
+    }
+
     /// Attempts inherent and trait-impl method selection for a receiver whose
     /// peeled type is a user nominal path, over the current target's impl
     /// declarations.
@@ -4703,17 +5029,9 @@ impl BodyChecker<'_, '_, '_> {
             }
             ValueCategory::PendingDirectFunction(item)
             | ValueCategory::PendingAssociatedFunction(item) => {
-                for argument in arguments {
-                    self.check_expression(argument, None);
-                }
-                self.gap(
-                    span,
-                    BodyCheckIncompletenessKind::MissingGenericInference,
-                    format!(
-                        "generic callable {item:?} has no explicit actuals and argument inference is not yet authoritative"
-                    ),
-                );
-                return None;
+                let associated =
+                    matches!(value.category, ValueCategory::PendingAssociatedFunction(_));
+                return self.infer_function_call(item, associated, arguments, span);
             }
             ValueCategory::Ordinary => CheckedBodyCallee::FunctionPointer,
             ValueCategory::Query { .. }
@@ -4771,6 +5089,9 @@ impl BodyChecker<'_, '_, '_> {
             _ => Vec::new(),
         };
         let (callee, form, fields) = match selection {
+            ConstructorSelection::PendingInference { item, variant } => {
+                return self.infer_tuple_constructor_call(item, variant, arguments, span);
+            }
             ConstructorSelection::Item { item, variant } => {
                 let Some(entry) = self.catalog.definition(item) else {
                     self.gap(
@@ -5289,7 +5610,19 @@ impl BodyChecker<'_, '_, '_> {
                 | DeclarationKind::Struct
                 | DeclarationKind::Component
                 | DeclarationKind::Resource => {
-                    let actuals = self.path_actuals_or_expected(path_use, entry, expected, span)?;
+                    let Some(actuals) =
+                        self.path_actuals_expected_or_inference(path_use, entry, expected, span)?
+                    else {
+                        return Some(LoweredValue {
+                            input: TypedExpressionInput::Unit,
+                            category: ValueCategory::Constructor(
+                                ConstructorSelection::PendingInference {
+                                    item,
+                                    variant: None,
+                                },
+                            ),
+                        });
+                    };
                     let ty = nominal_type(entry, actuals);
                     let input = TypedExpressionInput::Known(ty);
                     if constructor_is_unit(declaration_shape, None) {
@@ -5317,7 +5650,19 @@ impl BodyChecker<'_, '_, '_> {
                 }
             },
             HirItemRes::NominalConstructor { owner } => {
-                let actuals = self.path_actuals_or_expected(path_use, entry, expected, span)?;
+                let Some(actuals) =
+                    self.path_actuals_expected_or_inference(path_use, entry, expected, span)?
+                else {
+                    return Some(LoweredValue {
+                        input: TypedExpressionInput::Unit,
+                        category: ValueCategory::Constructor(
+                            ConstructorSelection::PendingInference {
+                                item: owner,
+                                variant: None,
+                            },
+                        ),
+                    });
+                };
                 let ty = nominal_type(entry, actuals);
                 let input = TypedExpressionInput::Known(ty);
                 if constructor_is_unit(declaration_shape, None) {
@@ -5333,7 +5678,27 @@ impl BodyChecker<'_, '_, '_> {
                 }
             }
             HirItemRes::EnumVariant { owner, ordinal } => {
-                let actuals = self.path_actuals_or_expected(path_use, entry, expected, span)?;
+                let Some(actuals) =
+                    self.path_actuals_expected_or_inference(path_use, entry, expected, span)?
+                else {
+                    if constructor_is_unit(declaration_shape, Some(ordinal)) {
+                        self.gap(
+                            span,
+                            BodyCheckIncompletenessKind::MissingGenericInference,
+                            "unit variant of a generic enum has no argument to infer from",
+                        );
+                        return None;
+                    }
+                    return Some(LoweredValue {
+                        input: TypedExpressionInput::Unit,
+                        category: ValueCategory::Constructor(
+                            ConstructorSelection::PendingInference {
+                                item: owner,
+                                variant: Some(ordinal),
+                            },
+                        ),
+                    });
+                };
                 let ty = nominal_type(entry, actuals);
                 let input = TypedExpressionInput::Known(ty);
                 if constructor_is_unit(declaration_shape, Some(ordinal)) {
@@ -5560,19 +5925,22 @@ impl BodyChecker<'_, '_, '_> {
         Some(output)
     }
 
-    fn path_actuals_or_expected(
+    /// Like `path_actuals_or_expected`, but a zero-actual generic use with no
+    /// matching contextual type reports `Some(None)` (argument inference may
+    /// still decide) instead of recording a gap.
+    fn path_actuals_expected_or_inference(
         &mut self,
         path_use: &arche_frontend::HirPathUse,
         entry: &DefinitionEntry<'_>,
         expected: Option<&SymbolicType>,
         span: Span,
-    ) -> Option<Vec<GenericArgumentShape>> {
+    ) -> Option<Option<Vec<GenericArgumentShape>>> {
         let actuals = self.path_actuals(path_use, span)?;
         let declaration_shape =
             checked_entry_shape(entry, self.scope.body.id, span, &mut self.gaps)?;
         let formal_count = declaration_shape.generic_parameters.len();
         if actuals.len() == formal_count {
-            return Some(actuals);
+            return Some(Some(actuals));
         }
         if actuals.is_empty() {
             if let Some(SymbolicType::NominalPath {
@@ -5581,9 +5949,10 @@ impl BodyChecker<'_, '_, '_> {
             }) = expected
             {
                 if declaration == &entry.semantic_path() && arguments.len() == formal_count {
-                    return Some(arguments.clone());
+                    return Some(Some(arguments.clone()));
                 }
             }
+            return Some(None);
         }
         self.gap(
             span,
@@ -7391,6 +7760,65 @@ fn pattern_type_to_symbolic(ty: &PatternType) -> Option<SymbolicType> {
         | PatternType::Record(_)
         | PatternType::Enum(_)
         | PatternType::Unsupported(_) => None,
+    }
+}
+
+/// First-order structural unification binding depth-0 declaration type slots
+/// from a checked argument type. Mismatched constructors bind nothing; the
+/// caller's completeness check decides.
+fn bind_inference_slots(
+    declared: &SymbolicType,
+    actual: &SymbolicType,
+    slots: &mut [Option<SymbolicType>],
+) {
+    match (declared, actual) {
+        (SymbolicType::BoundType { depth: 0, index }, actual) => {
+            if let Ok(slot) = usize::try_from(*index) {
+                if let Some(entry) = slots.get_mut(slot) {
+                    if entry.is_none() {
+                        *entry = Some(actual.clone());
+                    }
+                }
+            }
+        }
+        (
+            SymbolicType::Reference { pointee: left, .. },
+            SymbolicType::Reference { pointee: right, .. },
+        )
+        | (
+            SymbolicType::RawPointer { pointee: left, .. },
+            SymbolicType::RawPointer { pointee: right, .. },
+        )
+        | (SymbolicType::Slice(left), SymbolicType::Slice(right))
+        | (SymbolicType::Array { element: left, .. }, SymbolicType::Array { element: right, .. }) => {
+            bind_inference_slots(left, right, slots)
+        }
+        (SymbolicType::Tuple(left), SymbolicType::Tuple(right)) if left.len() == right.len() => {
+            for (left, right) in left.iter().zip(right) {
+                bind_inference_slots(left, right, slots);
+            }
+        }
+        (
+            SymbolicType::NominalPath {
+                declaration: left_declaration,
+                arguments: left_arguments,
+            },
+            SymbolicType::NominalPath {
+                declaration: right_declaration,
+                arguments: right_arguments,
+            },
+        ) if left_declaration == right_declaration
+            && left_arguments.len() == right_arguments.len() =>
+        {
+            for (left, right) in left_arguments.iter().zip(right_arguments) {
+                if let (GenericArgumentShape::Type(left), GenericArgumentShape::Type(right)) =
+                    (left, right)
+                {
+                    bind_inference_slots(left, right, slots);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
