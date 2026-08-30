@@ -15,6 +15,8 @@ mod diagnostic;
 mod formation;
 mod literal;
 mod model;
+#[cfg(test)]
+mod negative_matrix_tests;
 mod pattern;
 mod readiness;
 mod sealed;

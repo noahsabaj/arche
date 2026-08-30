@@ -10,5 +10,6 @@ publish = false
 arche-foundation = { path = "../arche-foundation" }
 arche-frontend = { path = "../arche-frontend" }
 arche-package = { path = "../arche-package" }
+blake3 = { version = "=1.8.5", features = ["pure"] }
 num-bigint = "=0.4.8"
 num-traits = "=0.2.19"

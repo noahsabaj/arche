@@ -56,6 +56,7 @@ impl TypeCheckError {
             | TypeCheckErrorKind::UnresolvedInferenceVariable
             | TypeCheckErrorKind::RecursiveInferenceType => TypeDiagnosticCode::InvalidFormation,
             TypeCheckErrorKind::Mismatch { .. }
+            | TypeCheckErrorKind::ArrayExpressionTypeMismatch { .. }
             | TypeCheckErrorKind::ExpectedBoolean { .. }
             | TypeCheckErrorKind::BreakOutsideLoop
             | TypeCheckErrorKind::ReturnOutsideCallable => TypeDiagnosticCode::TypeMismatch,
@@ -72,6 +73,15 @@ impl TypeCheckError {
         self.kind.as_ref()
     }
 
+    /// The diagnostic prose without the separately stored taxonomy code.
+    ///
+    /// [`fmt::Display`] remains useful as a self-contained error rendering,
+    /// while semantic diagnostics use this view so their `code` and `message`
+    /// fields do not redundantly encode the same prefix.
+    pub fn message(&self) -> impl fmt::Display + '_ {
+        TypeCheckErrorMessage(self)
+    }
+
     fn new(kind: TypeCheckErrorKind) -> Self {
         Self {
             kind: Box::new(kind),
@@ -82,6 +92,12 @@ impl TypeCheckError {
 impl fmt::Display for TypeCheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}: ", self.code().as_str())?;
+        self.fmt_message(formatter)
+    }
+}
+
+impl TypeCheckError {
+    fn fmt_message(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind.as_ref() {
             TypeCheckErrorKind::Binder(error) => write!(formatter, "invalid bound type: {error:?}"),
             TypeCheckErrorKind::GenericFormation(error) => {
@@ -95,6 +111,9 @@ impl fmt::Display for TypeCheckError {
             }
             TypeCheckErrorKind::Mismatch { expected, actual } => {
                 write!(formatter, "expected {expected:?}, found {actual:?}")
+            }
+            TypeCheckErrorKind::ArrayExpressionTypeMismatch { .. } => {
+                formatter.write_str("array expression cannot satisfy the expected non-array type")
             }
             TypeCheckErrorKind::ExpectedBoolean { actual } => {
                 write!(formatter, "expected bool, found {actual:?}")
@@ -124,6 +143,14 @@ impl fmt::Display for TypeCheckError {
     }
 }
 
+struct TypeCheckErrorMessage<'a>(&'a TypeCheckError);
+
+impl fmt::Display for TypeCheckErrorMessage<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt_message(formatter)
+    }
+}
+
 impl std::error::Error for TypeCheckError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -135,6 +162,9 @@ pub enum TypeCheckErrorKind {
     Mismatch {
         expected: SymbolicType,
         actual: SymbolicType,
+    },
+    ArrayExpressionTypeMismatch {
+        expected: SymbolicType,
     },
     ExpectedBoolean {
         actual: SymbolicType,
@@ -686,7 +716,10 @@ impl<'a> TypeChecker<'a> {
             TypedExpressionInput::AddAssignment { place_type, value } => {
                 validate_type(place_type, self.context.binders())?;
                 let place = InferType::Symbolic(place_type.clone());
-                let value = self.infer(value, Some(&place))?;
+                let mut value = self.infer(value, None)?;
+                if self.contains_variable(value.result_type())? {
+                    self.constrain_expected(&mut value, &place)?;
+                }
                 RawExpression {
                     natural_type: InferType::Symbolic(SymbolicType::Unit),
                     coerced_type: None,
@@ -744,6 +777,15 @@ impl<'a> TypeChecker<'a> {
         elements: &[TypedExpressionInput],
         expected: Option<&InferType>,
     ) -> Result<RawExpression, TypeCheckError> {
+        if let Some(expected) = expected {
+            if array_element(expected).is_none() && !self.contains_variable(expected)? {
+                return Err(TypeCheckError::new(
+                    TypeCheckErrorKind::ArrayExpressionTypeMismatch {
+                        expected: self.resolve_type(expected)?,
+                    },
+                ));
+            }
+        }
         let expected_element = expected.and_then(array_element);
         let element_type =
             expected_element.map_or_else(|| self.variable(VariableClass::Any), Ok)?;
@@ -999,10 +1041,7 @@ impl<'a> TypeChecker<'a> {
         }
 
         let operand = self.infer(operand, expected)?;
-        let natural_type = match operator {
-            UnaryTypeOperator::LogicalNot => InferType::Symbolic(SymbolicType::Bool),
-            UnaryTypeOperator::Negate | UnaryTypeOperator::BitNot => operand.result_type().clone(),
-        };
+        let natural_type = operand.result_type().clone();
         Ok(RawExpression {
             natural_type,
             coerced_type: None,
@@ -1038,9 +1077,8 @@ impl<'a> TypeChecker<'a> {
         }
 
         let comparison = is_comparison(operator);
-        let result_hint = if comparison { None } else { expected };
-        let left = self.infer(left, result_hint)?;
-        let right = self.infer(right, result_hint)?;
+        let left = self.infer(left, None)?;
+        let right = self.infer(right, None)?;
         self.unify_operator_types(left.result_type(), right.result_type())?;
         let natural_type = if comparison {
             InferType::Symbolic(SymbolicType::Bool)
@@ -2350,6 +2388,24 @@ mod tests {
             .ty(),
             &expected
         );
+
+        let mismatch = check_typed_expression(
+            &TypedExpressionInput::Array(Vec::new()),
+            Some(&SymbolicType::Bool),
+            &context(),
+        )
+        .unwrap_err();
+        assert_eq!(mismatch.code().as_str(), "TYPE002");
+        assert_eq!(
+            mismatch.kind(),
+            &TypeCheckErrorKind::ArrayExpressionTypeMismatch {
+                expected: SymbolicType::Bool,
+            }
+        );
+        assert_eq!(
+            mismatch.message().to_string(),
+            "array expression cannot satisfy the expected non-array type"
+        );
     }
 
     #[test]
@@ -2505,6 +2561,18 @@ mod tests {
         let checked = check(&add).unwrap();
         assert_eq!(checked.ty(), &SymbolicType::U16);
 
+        let contextual_add = TypedExpressionInput::Binary {
+            operator: BinaryTypeOperator::Add,
+            left: Box::new(integer("1", None)),
+            right: Box::new(integer("2", None)),
+        };
+        assert_eq!(
+            check_typed_expression(&contextual_add, Some(&SymbolicType::U16), &context())
+                .unwrap()
+                .ty(),
+            &SymbolicType::U16
+        );
+
         let unsigned_neg = TypedExpressionInput::Unary {
             operator: UnaryTypeOperator::Negate,
             operand: Box::new(TypedExpressionInput::Known(SymbolicType::U16)),
@@ -2521,6 +2589,19 @@ mod tests {
         };
         assert_eq!(check(&float_rem).unwrap_err().code().as_str(), "TRAIT002");
 
+        let mixed_add = TypedExpressionInput::Binary {
+            operator: BinaryTypeOperator::Add,
+            left: Box::new(TypedExpressionInput::Known(SymbolicType::I64)),
+            right: Box::new(TypedExpressionInput::Known(SymbolicType::U32)),
+        };
+        assert_eq!(
+            check_typed_expression(&mixed_add, Some(&SymbolicType::I64), &context())
+                .unwrap_err()
+                .code()
+                .as_str(),
+            "TRAIT002"
+        );
+
         let logical_not_integer = TypedExpressionInput::Unary {
             operator: UnaryTypeOperator::LogicalNot,
             operand: Box::new(integer("1", None)),
@@ -2529,6 +2610,25 @@ mod tests {
             check(&logical_not_integer).unwrap_err().code().as_str(),
             "TRAIT002"
         );
+
+        let error = check(&logical_not_integer).unwrap_err();
+        assert_eq!(
+            error.message().to_string(),
+            "no primitive Unary(LogicalNot) selection for left=I32, right=None, result=I32"
+        );
+        assert_eq!(
+            error.to_string(),
+            "TRAIT002: no primitive Unary(LogicalNot) selection for left=I32, right=None, result=I32"
+        );
+
+        let typed_logical_not = TypedExpressionInput::Unary {
+            operator: UnaryTypeOperator::LogicalNot,
+            operand: Box::new(integer("0", Some(IntegerSuffix::U32))),
+        };
+        let error =
+            check_typed_expression(&typed_logical_not, Some(&SymbolicType::U32), &context())
+                .unwrap_err();
+        assert_eq!(error.code().as_str(), "TRAIT002");
     }
 
     #[test]
@@ -2564,6 +2664,31 @@ mod tests {
             value: Box::new(TypedExpressionInput::Known(SymbolicType::I32)),
         };
         assert_eq!(check(&mismatch).unwrap_err().code().as_str(), "TYPE002");
+    }
+
+    #[test]
+    fn add_assignment_contextualizes_untyped_literals_but_selects_typed_operands() {
+        let contextual = TypedExpressionInput::AddAssignment {
+            place_type: SymbolicType::I64,
+            value: Box::new(integer("1", None)),
+        };
+        assert_eq!(check(&contextual).unwrap().ty(), &SymbolicType::Unit);
+
+        let mixed = TypedExpressionInput::AddAssignment {
+            place_type: SymbolicType::I64,
+            value: Box::new(TypedExpressionInput::Known(SymbolicType::U32)),
+        };
+        let error = check(&mixed).unwrap_err();
+        assert_eq!(error.code().as_str(), "TRAIT002");
+        assert!(matches!(
+            error.kind(),
+            TypeCheckErrorKind::UnsatisfiedPrimitiveOperator {
+                operator: PrimitiveExpressionOperator::AddAssignment,
+                left: SymbolicType::I64,
+                right: Some(SymbolicType::U32),
+                result: SymbolicType::I64,
+            }
+        ));
     }
 
     #[test]
