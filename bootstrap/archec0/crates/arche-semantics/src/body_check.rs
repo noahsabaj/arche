@@ -4499,6 +4499,9 @@ impl BodyChecker<'_, '_, '_> {
             SymbolicCallableParameterMode::ReceiverShared
             | SymbolicCallableParameterMode::ReceiverMutable => {
                 let SymbolicType::Reference { pointee, .. } = &expected_receiver else {
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
                     self.gap(
                         span,
                         BodyCheckIncompletenessKind::MissingMethodSelection,
@@ -4813,6 +4816,9 @@ impl BodyChecker<'_, '_, '_> {
         let receiver_ok = match receiver_parameter.mode {
             SymbolicCallableParameterMode::ReceiverShared => {
                 let SymbolicType::Reference { pointee, .. } = &expected_receiver else {
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
                     self.gap(
                         span,
                         BodyCheckIncompletenessKind::MissingMethodSelection,
@@ -6409,6 +6415,7 @@ impl BodyChecker<'_, '_, '_> {
 
         let mut joined = expected.cloned();
         let mut complete = patterns_valid;
+        let mut all_arms_diverge = !arms.is_empty();
         for arm in arms {
             if !patterns_valid {
                 // A definitive pattern diagnostic already rejects this body.
@@ -6424,11 +6431,19 @@ impl BodyChecker<'_, '_, '_> {
                 }
             }
             let value = self.lower_expression(&arm.value, joined.as_ref());
+            // A diverging arm contributes no value: it is typed on its own
+            // and never joined, so a unit-typed block ending in return or
+            // throw cannot fabricate a mismatch against the joined type.
+            let arm_diverges = value
+                .as_ref()
+                .is_some_and(|value| input_diverges(&value.input));
+            all_arms_diverge &= arm_diverges;
+            let expected_arm = if arm_diverges { None } else { joined.as_ref() };
             let checked = value
                 .as_ref()
-                .and_then(|value| self.materialize(value, joined.as_ref(), arm.value.span));
+                .and_then(|value| self.materialize(value, expected_arm, arm.value.span));
             if let Some(checked) = checked {
-                if joined.is_none() {
+                if !arm_diverges && joined.is_none() {
                     joined = Some(checked.ty().clone());
                 }
             } else {
@@ -6437,6 +6452,13 @@ impl BodyChecker<'_, '_, '_> {
         }
         if !complete {
             return None;
+        }
+        if all_arms_diverge {
+            // Every arm diverges, so the match itself can never complete
+            // normally; it joins to the never type.
+            return Some(LoweredValue::ordinary(TypedExpressionInput::Known(
+                SymbolicType::Never,
+            )));
         }
         joined.map(|ty| LoweredValue::ordinary(TypedExpressionInput::Known(ty)))
     }
@@ -8095,12 +8117,34 @@ fn erase_method_frame_lifetimes(ty: SymbolicType) -> SymbolicType {
     }
 }
 
-/// Syntactic divergence: the block's final statement is an expression whose
-/// control never falls through.
 /// True when evaluating this checked expression can never complete normally:
 /// it types as the never type, or a statement or block position inside it
-/// does. Only block structure needs recursion; every joining construct
-/// (if/match/loop) already reports never through its own checked type.
+/// does. Only block structure needs recursion: if requires both branches,
+/// loops report never through their checked type, and lower_match joins an
+/// all-diverging match to the never type before it reaches this judgment.
+/// Divergence over a pre-typing expression input: a value whose evaluation
+/// can never complete normally. Mirrors `checked_expression_diverges` for the
+/// positions match-arm joining must exempt before types are joined.
+fn input_diverges(input: &TypedExpressionInput) -> bool {
+    match input {
+        TypedExpressionInput::Known(SymbolicType::Never)
+        | TypedExpressionInput::Return(_)
+        | TypedExpressionInput::Break(_)
+        | TypedExpressionInput::Continue => true,
+        TypedExpressionInput::Block { statements, tail } => {
+            statements.iter().any(input_diverges) || tail.as_deref().is_some_and(input_diverges)
+        }
+        TypedExpressionInput::If {
+            then_branch,
+            else_branch,
+            ..
+        } => else_branch
+            .as_deref()
+            .is_some_and(|else_branch| input_diverges(then_branch) && input_diverges(else_branch)),
+        _ => false,
+    }
+}
+
 fn checked_expression_diverges(expression: &CheckedExpression) -> bool {
     if expression.ty() == &SymbolicType::Never {
         return true;
@@ -9333,5 +9377,77 @@ mod tests {
         let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
             .unwrap_or_else(|failure| panic!("identity raw pointer must close: {failure:#?}"));
         assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn diverging_match_arms_join_to_never_without_fabricated_mismatches() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum ChoiceP {\n",
+            "    One(i32),\n",
+            "    Two,\n",
+            "}\n",
+            "pub fn else_match(value: ChoiceP, flag: bool) -> i32 {\n",
+            "    let ChoiceP::One(inner) = value else {\n",
+            "        match flag {\n",
+            "            true => {\n",
+            "                return 0i32;\n",
+            "            },\n",
+            "            false => {\n",
+            "                return 1i32;\n",
+            "            },\n",
+            "        }\n",
+            "    };\n",
+            "    inner\n",
+            "}\n",
+            "pub fn mixed_statement(flag: bool) -> i32 {\n",
+            "    match flag {\n",
+            "        true => return 0i32,\n",
+            "        false => {\n",
+            "            return 1i32;\n",
+            "        },\n",
+            "    };\n",
+            "    2i32\n",
+            "}\n",
+            "pub fn never_coerces(flag: bool) -> i32 {\n",
+            "    let chosen: i32 = match flag {\n",
+            "        true => return 1i32,\n",
+            "        false => return 2i32,\n",
+            "    };\n",
+            "    chosen\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("diverging match arms must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn mismatched_match_arms_are_still_type002() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn broken(flag: bool) -> i32 {\n",
+            "    match flag {\n",
+            "        true => 1i32,\n",
+            "        false => 'x',\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(failure.diagnostics().is_some());
+        assert!(diagnostics.contains("TYPE002"), "diagnostics={diagnostics}");
     }
 }
