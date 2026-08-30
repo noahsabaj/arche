@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use arche_foundation::identity::PackageId;
 use arche_frontend::embedded_core::{
-    CompilerPrimitiveTypePattern, CompilerTraitAuthority, CompilerTraitCallablePattern,
-    CompilerTraitReceiverMode, CompilerTraitSelfRelation, CompilerTraitTypePattern, UserImplPolicy,
-    VerifiedEmbeddedCoreAuthority, VirtualNamespace,
+    CompilerNominalKind, CompilerPrimitiveTypePattern, CompilerTraitAuthority,
+    CompilerTraitCallablePattern, CompilerTraitReceiverMode, CompilerTraitSelfRelation,
+    CompilerTraitTypePattern, UserImplPolicy, VerifiedEmbeddedCoreAuthority, VirtualNamespace,
 };
 use arche_frontend::{
     encode_symbolic_const, encode_symbolic_predicate, encode_symbolic_type, C2TypeTemplateBlocker,
@@ -26,7 +26,7 @@ use arche_frontend::{
     SemanticDefinitionInventorySkeleton, Span, SymbolicCallableParameterMode,
     SymbolicCallableShapeSkeleton, SymbolicDeclarationPayloadSkeleton,
     SymbolicDeclarationShapeSkeleton, SymbolicDefinitionOwnerSkeleton, SymbolicEffectSetsSkeleton,
-    SymbolicEffectShapeSkeleton, SymbolicPendingShape, SymbolicPredicate,
+    SymbolicEffectShapeSkeleton, SymbolicLifetime, SymbolicPendingShape, SymbolicPredicate,
     SymbolicPredicateShapeSkeleton, SymbolicSystemAccessShapeSkeleton, SymbolicType,
     SymbolicTypeShapeSkeleton, TargetId, TargetRoot,
 };
@@ -449,11 +449,12 @@ pub fn check_declarations_c2(
         });
     }
     let catalog = build_catalog(handoff, &inputs);
+    let sizedness = check_workspace_sizedness(handoff, &inputs, catalog.embedded);
 
     check_trait_impl_visibility(&inputs, &mut diagnostics);
 
     let mut provisional = Vec::with_capacity(inputs.len());
-    for input in &inputs {
+    for (input_index, input) in inputs.iter().enumerate() {
         let c1_definition_audit = audit_declaration_shape(&input.definition.symbolic_shape);
         let c1_owner_audit = audit_definition_owner(&input.definition.key.owner_path);
         report_inconsistencies(
@@ -491,6 +492,35 @@ pub fn check_declarations_c2(
         if !definition_audit.post_c2_is_closed() || !owner_audit.post_c2_is_closed() {
             provisional.push(None);
             continue;
+        }
+
+        match &sizedness[input_index] {
+            SizednessOutcome::Sized => {}
+            SizednessOutcome::Unknown => {
+                let judgment = UnimplementedDeclarationJudgment::SizednessRecursion;
+                blockers.push(DeclarationCheckBlocker {
+                    package: package_scope(input),
+                    target: input.target,
+                    path: input.path.clone(),
+                    span: input.definition.key.span,
+                    item: input.definition.hir_item,
+                    debug_spelling: format!("{judgment:?}"),
+                    reason: DeclarationCheckBlockerReason::MissingDeclarationJudgment(judgment),
+                });
+            }
+            SizednessOutcome::Rejected(messages) => {
+                for message in messages {
+                    push_diagnostic(
+                        input,
+                        "TYPE001",
+                        message.clone(),
+                        input.definition.key.span,
+                        &mut diagnostics,
+                    );
+                }
+                provisional.push(None);
+                continue;
+            }
         }
 
         if let Err(message) = validate_generic_layout(input, &shape) {
@@ -2217,6 +2247,452 @@ fn compiler_trait_for_path<'a>(
         .compiler_trait_for_c1_definition(definition)
 }
 
+/// Outcome of the sizedness/recursion judgment for one declaration.
+enum SizednessOutcome {
+    /// Every storage path is sized and any recursion is regular through
+    /// approved indirection.
+    Sized,
+    /// The declaration violates the sizedness contract; messages become
+    /// TYPE001 rejections.
+    Rejected(Vec<String>),
+    /// The judgment cannot decide (an unresolved referenced declaration, an
+    /// alias cycle, or a potential cycle through a generic argument
+    /// position); the fail-closed blocker stays.
+    Unknown,
+}
+
+/// One structural mention of a workspace nominal inside a declaration's
+/// stored field types.
+struct NominalMention {
+    target: usize,
+    arguments: Vec<GenericArgumentShape>,
+    /// The mention sits behind approved sized indirection.
+    indirect: bool,
+    /// The mention appears inside another user nominal's generic arguments,
+    /// where this judgment does not model the container's storage.
+    via_argument: bool,
+}
+
+struct SizednessWalk<'a> {
+    inputs: &'a [InputRow<'a>],
+    paths: &'a BTreeMap<SemanticDeclarationPath, usize>,
+    embedded: &'a VerifiedEmbeddedCoreAuthority,
+    mentions: Vec<NominalMention>,
+    bare_unsized: Vec<String>,
+    unknown: bool,
+}
+
+impl SizednessWalk<'_> {
+    fn embedded_kind(&self, path: &SemanticDeclarationPath) -> Option<CompilerNominalKind> {
+        if !is_embedded_path(path, self.embedded) {
+            return None;
+        }
+        self.embedded
+            .typed_c2()
+            .nominals()
+            .iter()
+            .find_map(|authority| {
+                let row = self.embedded.definition(authority.c1_definition())?;
+                (row.name() == path.name).then(|| authority.kind())
+            })
+    }
+
+    fn walk_field(&mut self, name: &str, ty: &SymbolicType) {
+        match ty {
+            SymbolicType::Slice(_) | SymbolicType::Str => {
+                self.bare_unsized.push(format!(
+                    "field `{name}` stores the unsized slice/str type directly; every \
+                     user-declared nominal is sized"
+                ));
+            }
+            _ => self.walk(ty, false, false, &mut Vec::new()),
+        }
+    }
+
+    fn walk(
+        &mut self,
+        ty: &SymbolicType,
+        indirect: bool,
+        via_argument: bool,
+        alias_stack: &mut Vec<usize>,
+    ) {
+        match ty {
+            SymbolicType::Reference { pointee, .. } | SymbolicType::RawPointer { pointee, .. } => {
+                self.walk(pointee, true, via_argument, alias_stack);
+            }
+            SymbolicType::FunctionPointer {
+                parameters,
+                result,
+                requires,
+                throws,
+                ..
+            } => {
+                for ty in parameters
+                    .iter()
+                    .chain(std::iter::once(result.as_ref()))
+                    .chain(requires.members())
+                    .chain(throws.members())
+                {
+                    self.walk(ty, true, via_argument, alias_stack);
+                }
+            }
+            SymbolicType::Tuple(fields) => {
+                for field in fields {
+                    self.walk(field, indirect, via_argument, alias_stack);
+                }
+            }
+            SymbolicType::Slice(element) => {
+                // A non-bare slice sits behind indirection by construction.
+                self.walk(element, true, via_argument, alias_stack);
+            }
+            SymbolicType::Array { element, .. } => {
+                self.walk(element, indirect, via_argument, alias_stack);
+            }
+            SymbolicType::NominalPath {
+                declaration,
+                arguments,
+            } => {
+                if let Some(kind) = self.embedded_kind(declaration) {
+                    let embedded_indirect = !matches!(
+                        kind,
+                        CompilerNominalKind::Option
+                            | CompilerNominalKind::Result
+                            | CompilerNominalKind::GeneratorState
+                            | CompilerNominalKind::Pin
+                            | CompilerNominalKind::MaybeUninit
+                    );
+                    for argument in arguments {
+                        if let GenericArgumentShape::Type(ty) = argument {
+                            self.walk(ty, indirect || embedded_indirect, via_argument, alias_stack);
+                        }
+                    }
+                    return;
+                }
+                let Some(&target) = self.paths.get(declaration) else {
+                    self.unknown = true;
+                    return;
+                };
+                if declaration.kind == DeclarationKind::TypeAlias {
+                    if alias_stack.contains(&target) {
+                        // Alias cycles are the TypeAliasCycle judgment's
+                        // authority; stay undecided here.
+                        self.unknown = true;
+                        return;
+                    }
+                    let payload = &self.inputs[target].definition.symbolic_shape.payload;
+                    let SymbolicDeclarationPayloadSkeleton::Alias {
+                        target: alias_target,
+                    } = payload
+                    else {
+                        self.unknown = true;
+                        return;
+                    };
+                    let arche_frontend::SymbolicTypeShapeSkeleton::Resolved { value, .. } =
+                        alias_target
+                    else {
+                        self.unknown = true;
+                        return;
+                    };
+                    let Some(expanded) = substitute_identity_frame(value, arguments) else {
+                        self.unknown = true;
+                        return;
+                    };
+                    alias_stack.push(target);
+                    self.walk(&expanded, indirect, via_argument, alias_stack);
+                    alias_stack.pop();
+                    return;
+                }
+                self.mentions.push(NominalMention {
+                    target,
+                    arguments: arguments.clone(),
+                    indirect,
+                    via_argument,
+                });
+                for argument in arguments {
+                    if let GenericArgumentShape::Type(ty) = argument {
+                        self.walk(ty, indirect, true, alias_stack);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Substitutes depth-zero bound coordinates with the supplied arguments; any
+/// mismatch or deeper structure this simple frame cannot express is `None`.
+fn substitute_identity_frame(
+    ty: &SymbolicType,
+    arguments: &[GenericArgumentShape],
+) -> Option<SymbolicType> {
+    Some(match ty {
+        SymbolicType::BoundType { depth: 0, index } => {
+            match arguments.get(usize::try_from(*index).ok()?)? {
+                GenericArgumentShape::Type(ty) => ty.clone(),
+                _ => return None,
+            }
+        }
+        SymbolicType::BoundType { .. } => return None,
+        SymbolicType::Reference {
+            mutability,
+            lifetime,
+            pointee,
+        } => SymbolicType::Reference {
+            mutability: *mutability,
+            lifetime: lifetime.clone(),
+            pointee: Box::new(substitute_identity_frame(pointee, arguments)?),
+        },
+        SymbolicType::RawPointer {
+            mutability,
+            pointee,
+        } => SymbolicType::RawPointer {
+            mutability: *mutability,
+            pointee: Box::new(substitute_identity_frame(pointee, arguments)?),
+        },
+        SymbolicType::Slice(element) => {
+            SymbolicType::Slice(Box::new(substitute_identity_frame(element, arguments)?))
+        }
+        SymbolicType::Array { element, length } => SymbolicType::Array {
+            element: Box::new(substitute_identity_frame(element, arguments)?),
+            length: length.clone(),
+        },
+        SymbolicType::Tuple(fields) => SymbolicType::Tuple(
+            fields
+                .iter()
+                .map(|field| substitute_identity_frame(field, arguments))
+                .collect::<Option<Vec<_>>>()?,
+        ),
+        SymbolicType::NominalPath {
+            declaration,
+            arguments: inner,
+        } => SymbolicType::NominalPath {
+            declaration: declaration.clone(),
+            arguments: inner
+                .iter()
+                .map(|argument| {
+                    Some(match argument {
+                        GenericArgumentShape::Type(ty) => {
+                            GenericArgumentShape::Type(substitute_identity_frame(ty, arguments)?)
+                        }
+                        other => other.clone(),
+                    })
+                })
+                .collect::<Option<Vec<_>>>()?,
+        },
+        other => other.clone(),
+    })
+}
+
+/// True when `arguments` is exactly the identity instantiation of `formals`.
+fn is_identity_instantiation(
+    arguments: &[GenericArgumentShape],
+    formals: &[GenericParameterKind],
+) -> bool {
+    arguments.len() == formals.len()
+        && arguments.iter().enumerate().all(|(index, argument)| {
+            let index = index as u64;
+            match argument {
+                GenericArgumentShape::Type(SymbolicType::BoundType { depth: 0, index: i }) => {
+                    *i == index
+                }
+                GenericArgumentShape::Lifetime(SymbolicLifetime::Bound { depth: 0, index: i }) => {
+                    *i == index
+                }
+                GenericArgumentShape::IntegerConst(constant) => matches!(
+                    &constant.node,
+                    arche_frontend::SymbolicConstNode::Bound { depth: 0, index: i } if *i == index
+                ),
+                _ => false,
+            }
+        })
+}
+
+/// The sizedness/recursion declaration judgment (design doc 830-839): every
+/// user nominal is sized, bare slice/str fields are rejected, direct
+/// recursive storage cycles are rejected, recursion through approved sized
+/// indirection must re-enter with the identical normalized substitution, and
+/// aliases are transparent. Undecidable shapes stay fail-closed blockers.
+fn check_workspace_sizedness(
+    handoff: &C2Handoff,
+    inputs: &[InputRow<'_>],
+    embedded: &VerifiedEmbeddedCoreAuthority,
+) -> Vec<SizednessOutcome> {
+    let mut paths = BTreeMap::new();
+    for (index, input) in inputs.iter().enumerate() {
+        let Some(package) = handoff
+            .frontend()
+            .inventory()
+            .packages
+            .iter()
+            .find(|package| package.package == input.declaration.package())
+        else {
+            continue;
+        };
+        paths.insert(
+            SemanticDeclarationPath {
+                registry_origin: package.provenance.registry_origin.clone(),
+                package_name: package.provenance.scoped_name.clone(),
+                target: input.definition.key.module.target.clone(),
+                modules: input.definition.key.module.path.clone(),
+                kind: input.definition.key.kind,
+                name: input.definition.key.name.clone(),
+            },
+            index,
+        );
+    }
+
+    let mut edges: Vec<Vec<NominalMention>> = Vec::with_capacity(inputs.len());
+    let mut outcomes: Vec<SizednessOutcome> = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let shape = &input.definition.symbolic_shape;
+        let is_nominal = matches!(
+            shape.payload,
+            SymbolicDeclarationPayloadSkeleton::Record(_)
+                | SymbolicDeclarationPayloadSkeleton::Enum(_)
+        );
+        if !is_nominal {
+            edges.push(Vec::new());
+            outcomes.push(SizednessOutcome::Sized);
+            continue;
+        }
+        let mut walk = SizednessWalk {
+            inputs,
+            paths: &paths,
+            embedded,
+            mentions: Vec::new(),
+            bare_unsized: Vec::new(),
+            unknown: false,
+        };
+        let mut fields: Vec<(String, &arche_frontend::SymbolicTypeShapeSkeleton)> = Vec::new();
+        match &shape.payload {
+            SymbolicDeclarationPayloadSkeleton::Record(record) => {
+                for (index, field) in record.fields.iter().enumerate() {
+                    fields.push((
+                        field.name.clone().unwrap_or_else(|| index.to_string()),
+                        &field.ty,
+                    ));
+                }
+            }
+            SymbolicDeclarationPayloadSkeleton::Enum(variants) => {
+                for variant in variants {
+                    for (index, field) in variant.fields.iter().enumerate() {
+                        fields.push((
+                            format!(
+                                "{}.{}",
+                                variant.name,
+                                field.name.clone().unwrap_or_else(|| index.to_string())
+                            ),
+                            &field.ty,
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+        for (name, field) in fields {
+            match field {
+                arche_frontend::SymbolicTypeShapeSkeleton::Resolved { value, .. } => {
+                    walk.walk_field(&name, value);
+                }
+                arche_frontend::SymbolicTypeShapeSkeleton::Pending(_) => {
+                    // Pending shapes already hold their own blockers.
+                }
+            }
+        }
+        outcomes.push(if !walk.bare_unsized.is_empty() {
+            SizednessOutcome::Rejected(walk.bare_unsized)
+        } else if walk.unknown {
+            SizednessOutcome::Unknown
+        } else {
+            SizednessOutcome::Sized
+        });
+        edges.push(walk.mentions);
+    }
+
+    // Reachability over structural (non-argument) mentions.
+    let reach = |use_inline_only: bool| -> Vec<BTreeSet<usize>> {
+        (0..inputs.len())
+            .map(|start| {
+                let mut seen = BTreeSet::new();
+                let mut queue = vec![start];
+                while let Some(node) = queue.pop() {
+                    for mention in &edges[node] {
+                        if mention.via_argument || (use_inline_only && mention.indirect) {
+                            continue;
+                        }
+                        if seen.insert(mention.target) {
+                            queue.push(mention.target);
+                        }
+                    }
+                }
+                seen
+            })
+            .collect()
+    };
+    let reach_union = reach(false);
+    let reach_inline = reach(true);
+
+    for index in 0..inputs.len() {
+        if matches!(outcomes[index], SizednessOutcome::Rejected(_)) {
+            continue;
+        }
+        let mut messages = Vec::new();
+        let mut unknown = matches!(outcomes[index], SizednessOutcome::Unknown);
+        if reach_inline[index].contains(&index) {
+            messages.push(format!(
+                "`{}` participates in a direct recursive storage cycle with no approved sized \
+                 indirection",
+                inputs[index].definition.key.name
+            ));
+        } else if reach_union[index].contains(&index) {
+            // Recursive through indirection: every structural edge between
+            // members of this cycle must re-enter with the identity
+            // substitution.
+            for mention in &edges[index] {
+                if mention.via_argument {
+                    continue;
+                }
+                let target = mention.target;
+                let in_cycle = reach_union[target].contains(&index)
+                    && (target == index || reach_union[index].contains(&target));
+                if !in_cycle {
+                    continue;
+                }
+                let formals: Vec<GenericParameterKind> = inputs[target]
+                    .definition
+                    .symbolic_shape
+                    .generic_parameters
+                    .clone();
+                if !is_identity_instantiation(&mention.arguments, &formals) {
+                    messages.push(format!(
+                        "nonregular recursive re-entry of `{}`: a recursive nominal must re-enter \
+                         with its identical normalized generic substitution",
+                        inputs[target].definition.key.name
+                    ));
+                }
+            }
+        }
+        // A potential cycle hidden inside another nominal's generic arguments
+        // stays undecided.
+        if !unknown {
+            for mention in &edges[index] {
+                if mention.via_argument
+                    && (mention.target == index || reach_union[mention.target].contains(&index))
+                {
+                    unknown = true;
+                    break;
+                }
+            }
+        }
+        if !messages.is_empty() {
+            outcomes[index] = SizednessOutcome::Rejected(messages);
+        } else if unknown {
+            outcomes[index] = SizednessOutcome::Unknown;
+        }
+    }
+    outcomes
+}
+
 fn record_unimplemented_judgments(
     input: &InputRow<'_>,
     shape: &SymbolicDeclarationShapeSkeleton,
@@ -2225,10 +2701,6 @@ fn record_unimplemented_judgments(
 ) {
     let mut judgments = Vec::new();
     match &shape.payload {
-        SymbolicDeclarationPayloadSkeleton::Record(_)
-        | SymbolicDeclarationPayloadSkeleton::Enum(_) => {
-            judgments.push(UnimplementedDeclarationJudgment::SizednessRecursion);
-        }
         SymbolicDeclarationPayloadSkeleton::Alias { .. } => {
             judgments.push(UnimplementedDeclarationJudgment::TypeAliasCycle);
         }
@@ -3639,22 +4111,6 @@ mod tests {
     fn unimplemented_declaration_judgments_fail_closed() {
         use UnimplementedDeclarationJudgment as J;
         assert_eq!(
-            judgment_blockers("pub struct Loopy { pub next: Loopy }\n"),
-            vec![J::SizednessRecursion]
-        );
-        assert_eq!(
-            judgment_blockers("pub struct A { pub b: B }\npub struct B { pub a: A }\n"),
-            vec![J::SizednessRecursion]
-        );
-        assert_eq!(
-            judgment_blockers("pub enum Tree { Node { left: Tree, right: Tree } }\n"),
-            vec![J::SizednessRecursion]
-        );
-        assert_eq!(
-            judgment_blockers("pub struct Holder { pub raw: str }\n"),
-            vec![J::SizednessRecursion]
-        );
-        assert_eq!(
             judgment_blockers("pub type A = B;\npub type B = A;\n"),
             vec![J::TypeAliasCycle]
         );
@@ -3664,7 +4120,7 @@ mod tests {
                 "impl Holder { pub fn value(&self) -> i32 { self.value } }\n",
                 "impl Holder { pub fn value(&self) -> i32 { self.value } }\n",
             )),
-            vec![J::SizednessRecursion, J::InherentMethodUniqueness]
+            vec![J::InherentMethodUniqueness]
         );
         assert_eq!(
             judgment_blockers(concat!(
@@ -3673,11 +4129,11 @@ mod tests {
                 "impl One for Holder { fn one(&self) -> i32 { 1i32 } }\n",
                 "impl One for Holder { fn one(&self) -> i32 { 2i32 } }\n",
             )),
-            vec![J::SizednessRecursion, J::ImplCoherenceOverlap]
+            vec![J::ImplCoherenceOverlap]
         );
         assert_eq!(
             judgment_blockers("pub struct Table { pub scores: Map<f32, i32> }\n"),
-            vec![J::SizednessRecursion, J::MapKeyComparison]
+            vec![J::MapKeyComparison]
         );
         assert_eq!(
             judgment_blockers(
@@ -4017,6 +4473,82 @@ mod tests {
         assert_eq!(
             effect_subset(&[pending], &[]),
             Err("effect member remains PendingC2".to_owned())
+        );
+    }
+
+    fn declaration_rejection(source: &str) -> String {
+        let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let failure = check_declarations_c2(&handoff, &declarations).unwrap_err();
+        assert!(failure.internal_error().is_none());
+        format!(
+            "{:?}",
+            failure.diagnostics().unwrap_or_else(|| panic!(
+                "expected a rejection, blockers={:?}",
+                failure.blockers()
+            ))
+        )
+    }
+
+    #[test]
+    fn sizedness_judgment_rejects_cycles_and_bare_unsized_fields() {
+        let direct = declaration_rejection("pub struct Loopy { pub next: Loopy }\n");
+        assert!(direct.contains("TYPE001"), "{direct}");
+        assert!(
+            direct.contains("direct recursive storage cycle"),
+            "{direct}"
+        );
+
+        let mutual =
+            declaration_rejection("pub struct A { pub b: B }\npub struct B { pub a: A }\n");
+        assert!(
+            mutual.contains("direct recursive storage cycle"),
+            "{mutual}"
+        );
+
+        let tree = declaration_rejection("pub enum Tree { Node { left: Tree, right: Tree } }\n");
+        assert!(tree.contains("direct recursive storage cycle"), "{tree}");
+
+        let bare = declaration_rejection("pub struct Holder { pub raw: str }\n");
+        assert!(bare.contains("unsized"), "{bare}");
+
+        let nonregular =
+            declaration_rejection("pub struct Nest<T> { pub inner: Box<Nest<Option<T>>> }\n");
+        assert!(nonregular.contains("nonregular"), "{nonregular}");
+    }
+
+    #[test]
+    fn sizedness_judgment_accepts_regular_indirection() {
+        for source in [
+            "pub struct List { pub next: Option<Box<List>> }\n",
+            concat!(
+                "pub struct Even { pub odd: Option<Box<Odd>> }\n",
+                "pub struct Odd { pub even: Option<Box<Even>> }\n",
+            ),
+            "pub struct Rope<T> { pub left: Option<Box<Rope<T>>>, pub item: T }\n",
+            "pub struct Flat { pub values: Vec<Flat> }\n",
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!(
+                    "regular indirection must close: {:?} {:?}",
+                    failure.diagnostics(),
+                    failure.blockers()
+                )
+            });
+        }
+    }
+
+    #[test]
+    fn sizedness_judgment_stays_fail_closed_for_argument_position_cycles() {
+        use UnimplementedDeclarationJudgment as J;
+        assert_eq!(
+            judgment_blockers(concat!(
+                "pub struct P<T> { pub x: Box<T> }\n",
+                "pub struct Q { pub p: P<Q> }\n",
+            )),
+            vec![J::SizednessRecursion]
         );
     }
 }
