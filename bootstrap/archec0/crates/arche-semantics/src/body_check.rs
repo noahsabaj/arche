@@ -36,9 +36,9 @@ use arche_frontend::{
     ResolvedSymbolicItem, ResolvedSymbolicTargetHir, ResolvedSymbolicType, SemanticBodyKind,
     SemanticDeclarationPath, SemanticDefinitionInventorySkeleton, Span, SymbolicConstExpression,
     SymbolicConstNode, SymbolicDeclarationPayloadSkeleton, SymbolicDeclarationShapeSkeleton,
-    SymbolicDefinitionOwnerSkeleton, SymbolicLifetime, SymbolicPredicate,
-    SymbolicPredicateShapeSkeleton, SymbolicRecordForm, SymbolicType, SymbolicTypeEffectSet,
-    SymbolicTypeShapeSkeleton, TargetId, TargetRoot, UnresolvedPathKind,
+    SymbolicDefinitionOwnerSkeleton, SymbolicFieldShapeSkeleton, SymbolicLifetime,
+    SymbolicPredicate, SymbolicPredicateShapeSkeleton, SymbolicRecordForm, SymbolicType,
+    SymbolicTypeEffectSet, SymbolicTypeShapeSkeleton, TargetId, TargetRoot, UnresolvedPathKind,
 };
 use arche_package::PortablePath;
 
@@ -313,6 +313,7 @@ pub enum CheckedBodyCallee {
     AssociatedItem(HirItemId),
     FunctionPointer,
     EmbeddedMethod(VirtualMethodId),
+    EmbeddedDefinition(VirtualDefinitionId),
     QueryIteration,
     CommandSpawn,
 }
@@ -2540,28 +2541,40 @@ impl BodyChecker<'_, '_, '_> {
                 }
             }
             ValueCategory::Constructor(ConstructorSelection::EmbeddedRecord(definition)) => {
-                for field in fields {
-                    self.check_expression(&field.value, None);
+                match self.embedded_record_form(definition) {
+                    Some(pair) => pair,
+                    None => {
+                        for field in fields {
+                            self.check_expression(&field.value, None);
+                        }
+                        self.gap(
+                            span,
+                            BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                            format!(
+                                "embedded record constructor {definition:?} has no typed C2 field descriptor"
+                            ),
+                        );
+                        return None;
+                    }
                 }
-                self.gap(
-                    span,
-                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                    format!(
-                        "embedded record constructor {definition:?} has no typed C2 field descriptor"
-                    ),
-                );
-                return None;
             }
             ValueCategory::Constructor(ConstructorSelection::EmbeddedVariant(variant)) => {
-                for field in fields {
-                    self.check_expression(&field.value, None);
+                match self.embedded_variant_form(variant) {
+                    Some((_, form, variant_fields)) => (form, variant_fields),
+                    None => {
+                        for field in fields {
+                            self.check_expression(&field.value, None);
+                        }
+                        self.gap(
+                            span,
+                            BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                            format!(
+                                "embedded variant {variant:?} has no typed C2 field descriptor"
+                            ),
+                        );
+                        return None;
+                    }
                 }
-                self.gap(
-                    span,
-                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                    format!("embedded enum variant {variant:?} has no typed C2 field descriptor"),
-                );
-                return None;
             }
             _ => {
                 self.source_error(span, "TYPE002", "record literal path is not a constructor");
@@ -3661,6 +3674,67 @@ impl BodyChecker<'_, '_, '_> {
         })
     }
 
+    fn embedded_nominal_shape(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<&SymbolicDeclarationShapeSkeleton> {
+        self.catalog
+            .handoff
+            .frontend()
+            .inventory()
+            .embedded_core
+            .typed_c2()
+            .nominal_declaration_shape(definition)
+    }
+
+    fn embedded_record_form(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<(SymbolicRecordForm, Vec<SymbolicFieldShapeSkeleton>)> {
+        match &self.embedded_nominal_shape(definition)?.payload {
+            SymbolicDeclarationPayloadSkeleton::Record(record) => {
+                Some((record.form, record.fields.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    fn embedded_variant_form(
+        &self,
+        variant: VirtualEnumVariantId,
+    ) -> Option<(
+        VirtualDefinitionId,
+        SymbolicRecordForm,
+        Vec<SymbolicFieldShapeSkeleton>,
+    )> {
+        let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+        let row = core.enum_variant(variant)?;
+        let owner = row.owner();
+        let ordinal = usize::try_from(row.ordinal()).ok()?;
+        match &core.typed_c2().nominal_declaration_shape(owner)?.payload {
+            SymbolicDeclarationPayloadSkeleton::Enum(variants) => {
+                let variant = variants.get(ordinal)?;
+                Some((owner, variant.form, variant.fields.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    fn zero_generic_embedded_nominal_type(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<SymbolicType> {
+        let shape = self.embedded_nominal_shape(definition)?;
+        if !shape.generic_parameters.is_empty() {
+            return None;
+        }
+        let declaration = self.embedded_declaration_path(definition)?;
+        Some(SymbolicType::NominalPath {
+            declaration,
+            arguments: Vec::new(),
+        })
+    }
+
     fn embedded_core_definition_for_path(
         &self,
         declaration: &SemanticDeclarationPath,
@@ -3883,26 +3957,36 @@ impl BodyChecker<'_, '_, '_> {
                 (CheckedBodyCallee::DirectItem(item), form, fields)
             }
             ConstructorSelection::EmbeddedRecord(definition) => {
-                for argument in arguments {
-                    self.check_expression(argument, None);
-                }
-                self.gap(
-                    span,
-                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                    format!("embedded constructor {definition:?} lacks typed field signatures"),
-                );
-                return None;
+                let Some((form, fields)) = self.embedded_record_form(definition) else {
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
+                    self.gap(
+                        span,
+                        BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                        format!("embedded constructor {definition:?} lacks typed field signatures"),
+                    );
+                    return None;
+                };
+                (
+                    CheckedBodyCallee::EmbeddedDefinition(definition),
+                    form,
+                    fields,
+                )
             }
             ConstructorSelection::EmbeddedVariant(variant) => {
-                for argument in arguments {
-                    self.check_expression(argument, None);
-                }
-                self.gap(
-                    span,
-                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                    format!("embedded variant {variant:?} lacks typed field signatures"),
-                );
-                return None;
+                let Some((owner, form, fields)) = self.embedded_variant_form(variant) else {
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
+                    self.gap(
+                        span,
+                        BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                        format!("embedded variant {variant:?} lacks typed field signatures"),
+                    );
+                    return None;
+                };
+                (CheckedBodyCallee::EmbeddedDefinition(owner), form, fields)
             }
         };
         if form == SymbolicRecordForm::Record {
@@ -4459,7 +4543,12 @@ impl BodyChecker<'_, '_, '_> {
                 None
             }
             BuiltinResTarget::EnumVariant(variant) => {
-                let Some(expected) = expected.cloned() else {
+                let known = expected.cloned().or_else(|| {
+                    let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+                    let owner = core.enum_variant(variant).map(|row| row.owner())?;
+                    self.zero_generic_embedded_nominal_type(owner)
+                });
+                let Some(known) = known else {
                     self.gap(
                         span,
                         BodyCheckIncompletenessKind::MissingGenericInference,
@@ -4470,14 +4559,17 @@ impl BodyChecker<'_, '_, '_> {
                     return None;
                 };
                 Some(LoweredValue {
-                    input: TypedExpressionInput::Known(expected),
+                    input: TypedExpressionInput::Known(known),
                     category: ValueCategory::Constructor(ConstructorSelection::EmbeddedVariant(
                         variant,
                     )),
                 })
             }
             BuiltinResTarget::RecordConstructor(definition) => {
-                let Some(expected) = expected.cloned() else {
+                let known = expected
+                    .cloned()
+                    .or_else(|| self.zero_generic_embedded_nominal_type(definition));
+                let Some(known) = known else {
                     self.gap(
                         span,
                         BodyCheckIncompletenessKind::MissingGenericInference,
@@ -4488,7 +4580,7 @@ impl BodyChecker<'_, '_, '_> {
                     return None;
                 };
                 Some(LoweredValue {
-                    input: TypedExpressionInput::Known(expected),
+                    input: TypedExpressionInput::Known(known),
                     category: ValueCategory::Constructor(ConstructorSelection::EmbeddedRecord(
                         definition,
                     )),
