@@ -819,6 +819,11 @@ enum LocalValue {
 enum ValueCategory {
     Ordinary,
     DirectFunction(HirItemId),
+    EmbeddedInclude {
+        definition: VirtualDefinitionId,
+        kind: arche_frontend::include_inputs::IncludeInputKind,
+    },
+    EmbeddedPanic(VirtualDefinitionId),
     AssociatedFunction(HirItemId),
     EmbeddedFunction {
         method: VirtualMethodId,
@@ -2826,6 +2831,8 @@ impl BodyChecker<'_, '_, '_> {
             | ValueCategory::Ordinary
             | ValueCategory::Constructor(_)
             | ValueCategory::Query { .. }
+            | ValueCategory::EmbeddedInclude { .. }
+            | ValueCategory::EmbeddedPanic(_)
             | ValueCategory::Commands => {
                 self.source_error(
                     call_span,
@@ -3818,6 +3825,136 @@ impl BodyChecker<'_, '_, '_> {
         self.resolved_generic_actuals(&arguments, span)
     }
 
+    fn lower_embedded_include_call(
+        &mut self,
+        definition: VirtualDefinitionId,
+        kind: arche_frontend::include_inputs::IncludeInputKind,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<LoweredValue> {
+        use arche_frontend::include_inputs::IncludeInputKind;
+        let static_str = SymbolicType::Reference {
+            mutability: Mutability::Shared,
+            lifetime: SymbolicLifetime::Static,
+            pointee: Box::new(SymbolicType::Str),
+        };
+        let [argument] = arguments else {
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
+            self.source_error(
+                span,
+                "TYPE002",
+                format!(
+                    "`{}` requires exactly one string-literal portable path",
+                    kind.source_name()
+                ),
+            );
+            return None;
+        };
+        let AstExpressionKind::Literal(AstLiteral::String(path)) = &argument.kind else {
+            self.check_expression(argument, None);
+            self.source_error(
+                span,
+                "TYPE002",
+                format!(
+                    "`{}` requires exactly one string-literal portable path",
+                    kind.source_name()
+                ),
+            );
+            return None;
+        };
+        let path = path.clone();
+        self.check_expression(argument, Some(&static_str));
+        let result = match kind {
+            IncludeInputKind::Str => static_str,
+            IncludeInputKind::Bytes => {
+                let Some(length) = self.include_input_byte_length(path.as_ref()) else {
+                    self.gap(
+                        span,
+                        BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                        "include input has no retained source-tree commitment",
+                    );
+                    return None;
+                };
+                SymbolicType::Reference {
+                    mutability: Mutability::Shared,
+                    lifetime: SymbolicLifetime::Static,
+                    pointee: Box::new(SymbolicType::Array {
+                        element: Box::new(SymbolicType::U8),
+                        length: SymbolicConstExpression {
+                            integer_type: arche_frontend::IntegerType::Usize,
+                            node: SymbolicConstNode::IntegerLiteral(length.to_le_bytes().to_vec()),
+                        },
+                    }),
+                }
+            }
+        };
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: CheckedBodyCallee::EmbeddedDefinition(definition),
+            result: result.clone(),
+        });
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)))
+    }
+
+    fn include_input_byte_length(&self, path: &str) -> Option<u64> {
+        let portable = arche_package::PortablePath::new(path).ok()?;
+        let frontend = self.catalog.handoff.frontend();
+        let package_node = frontend
+            .hir()
+            .packages
+            .iter()
+            .find(|package| {
+                package
+                    .targets
+                    .iter()
+                    .any(|target| std::ptr::eq(target, self.scope.target))
+            })
+            .map(|package| package.package_node)?;
+        frontend
+            .sources()
+            .source_entries(package_node)
+            .into_iter()
+            .find(|entry| entry.path == portable)
+            .map(|entry| entry.byte_length)
+    }
+
+    fn lower_embedded_panic_call(
+        &mut self,
+        definition: VirtualDefinitionId,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let [argument] = arguments else {
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
+            self.source_error(
+                span,
+                "TYPE002",
+                "`panic` requires exactly one payload argument",
+            );
+            return None;
+        };
+        self.check_expression(argument, None);
+        let mut dependency = b"embedded-panic-unwind-payload".to_vec();
+        dependency.extend_from_slice(&u64::from(definition.ordinal()).to_le_bytes());
+        self.pending_c4(
+            span,
+            dependency,
+            "panic UnwindPayload judgment is finalized by C4",
+        );
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: CheckedBodyCallee::EmbeddedDefinition(definition),
+            result: SymbolicType::Never,
+        });
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(
+            SymbolicType::Never,
+        )))
+    }
+
     fn lower_call_part(
         &mut self,
         value: LoweredValue,
@@ -3826,6 +3963,12 @@ impl BodyChecker<'_, '_, '_> {
     ) -> Option<LoweredValue> {
         if let ValueCategory::Constructor(selection) = &value.category {
             return self.lower_tuple_constructor_call(&value, selection.clone(), arguments, span);
+        }
+        if let ValueCategory::EmbeddedInclude { definition, kind } = value.category {
+            return self.lower_embedded_include_call(definition, kind, arguments, span);
+        }
+        if let ValueCategory::EmbeddedPanic(definition) = value.category {
+            return self.lower_embedded_panic_call(definition, arguments, span);
         }
         let callee = match value.category {
             ValueCategory::DirectFunction(item) => CheckedBodyCallee::DirectItem(item),
@@ -3872,7 +4015,9 @@ impl BodyChecker<'_, '_, '_> {
             ValueCategory::Ordinary => CheckedBodyCallee::FunctionPointer,
             ValueCategory::Query { .. }
             | ValueCategory::Commands
-            | ValueCategory::Constructor(_) => {
+            | ValueCategory::Constructor(_)
+            | ValueCategory::EmbeddedInclude { .. }
+            | ValueCategory::EmbeddedPanic(_) => {
                 self.source_error(span, "TYPE002", "value is not callable");
                 return None;
             }
@@ -4588,6 +4733,44 @@ impl BodyChecker<'_, '_, '_> {
             }
             BuiltinResTarget::Prelude(prelude) => match prelude {
                 VirtualPreludeTarget::Definition(definition) => {
+                    let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+                    if let Some(function) = core
+                        .projection()
+                        .functions()
+                        .iter()
+                        .find(|row| row.definition() == definition)
+                    {
+                        // The include intrinsics and `panic` are callable
+                        // prelude values; `materialize` fails closed if one
+                        // reaches an ordinary expression context, so the
+                        // placeholder input below is never trusted.
+                        let category = match function.lowering() {
+                            arche_frontend::embedded_core::VirtualFunctionLowering::Intrinsic {
+                                id: 70,
+                                ..
+                            } => Some(ValueCategory::EmbeddedInclude {
+                                definition,
+                                kind: arche_frontend::include_inputs::IncludeInputKind::Bytes,
+                            }),
+                            arche_frontend::embedded_core::VirtualFunctionLowering::Intrinsic {
+                                id: 71,
+                                ..
+                            } => Some(ValueCategory::EmbeddedInclude {
+                                definition,
+                                kind: arche_frontend::include_inputs::IncludeInputKind::Str,
+                            }),
+                            arche_frontend::embedded_core::VirtualFunctionLowering::CompilerOwnedBody => {
+                                Some(ValueCategory::EmbeddedPanic(definition))
+                            }
+                            _ => None,
+                        };
+                        if let Some(category) = category {
+                            return Some(LoweredValue {
+                                input: TypedExpressionInput::Unit,
+                                category,
+                            });
+                        }
+                    }
                     if let Some(expected) = expected.cloned() {
                         Some(LoweredValue {
                             input: TypedExpressionInput::Known(expected),
