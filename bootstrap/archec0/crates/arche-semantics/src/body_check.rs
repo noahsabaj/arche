@@ -6437,13 +6437,17 @@ impl BodyChecker<'_, '_, '_> {
             let arm_diverges = value
                 .as_ref()
                 .is_some_and(|value| input_diverges(&value.input));
-            all_arms_diverge &= arm_diverges;
             let expected_arm = if arm_diverges { None } else { joined.as_ref() };
             let checked = value
                 .as_ref()
                 .and_then(|value| self.materialize(value, expected_arm, arm.value.span));
             if let Some(checked) = checked {
-                if !arm_diverges && joined.is_none() {
+                // An arm whose checked type is never (a bare loop, say) is
+                // also diverging: it must not seed the join, or later
+                // value-carrying arms would fabricate mismatches against it.
+                let arm_never = arm_diverges || checked.ty() == &SymbolicType::Never;
+                all_arms_diverge &= arm_never;
+                if !arm_never && joined.is_none() {
                     joined = Some(checked.ty().clone());
                 }
             } else {
@@ -8117,14 +8121,10 @@ fn erase_method_frame_lifetimes(ty: SymbolicType) -> SymbolicType {
     }
 }
 
-/// True when evaluating this checked expression can never complete normally:
-/// it types as the never type, or a statement or block position inside it
-/// does. Only block structure needs recursion: if requires both branches,
-/// loops report never through their checked type, and lower_match joins an
-/// all-diverging match to the never type before it reaches this judgment.
-/// Divergence over a pre-typing expression input: a value whose evaluation
-/// can never complete normally. Mirrors `checked_expression_diverges` for the
-/// positions match-arm joining must exempt before types are joined.
+/// Divergence over a pre-typing expression input: return, throw, break,
+/// continue, a known never value, a block with a diverging statement or
+/// tail, or an if whose branches both diverge. Loop shapes are left to the
+/// typing algebra, whose checked never type the match join also honors.
 fn input_diverges(input: &TypedExpressionInput) -> bool {
     match input {
         TypedExpressionInput::Known(SymbolicType::Never)
@@ -8145,6 +8145,11 @@ fn input_diverges(input: &TypedExpressionInput) -> bool {
     }
 }
 
+/// True when evaluating this checked expression can never complete normally:
+/// it types as the never type, or a statement or block position inside it
+/// does. Only block structure needs recursion: if requires both branches,
+/// loops report never through their checked type, and lower_match joins an
+/// all-diverging match to the never type before it reaches this judgment.
 fn checked_expression_diverges(expression: &CheckedExpression) -> bool {
     if expression.ty() == &SymbolicType::Never {
         return true;
@@ -9449,5 +9454,46 @@ mod tests {
         let diagnostics = format!("{:?}", failure.diagnostics());
         assert!(failure.diagnostics().is_some());
         assert!(diagnostics.contains("TYPE002"), "diagnostics={diagnostics}");
+    }
+
+    #[test]
+    fn never_typed_arms_do_not_seed_the_join() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn statement_position(flag: bool) -> i32 {\n",
+            "    match flag {\n",
+            "        true => loop {\n",
+            "        },\n",
+            "        false => {},\n",
+            "    };\n",
+            "    0i32\n",
+            "}\n",
+            "pub fn value_position(flag: bool) -> i32 {\n",
+            "    let chosen = match flag {\n",
+            "        true => loop {\n",
+            "        },\n",
+            "        false => 5i32,\n",
+            "    };\n",
+            "    chosen\n",
+            "}\n",
+            "pub fn all_loops(flag: bool) -> i32 {\n",
+            "    let spun: i32 = match flag {\n",
+            "        true => loop {\n",
+            "        },\n",
+            "        false => loop {\n",
+            "        },\n",
+            "    };\n",
+            "    spun\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("never-typed arms must not seed: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
     }
 }
