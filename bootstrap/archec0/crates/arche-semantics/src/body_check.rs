@@ -36,9 +36,9 @@ use arche_frontend::{
     ResolvedSymbolicItem, ResolvedSymbolicTargetHir, ResolvedSymbolicType, SemanticBodyKind,
     SemanticDeclarationPath, SemanticDefinitionInventorySkeleton, Span, SymbolicConstExpression,
     SymbolicConstNode, SymbolicDeclarationPayloadSkeleton, SymbolicDeclarationShapeSkeleton,
-    SymbolicDefinitionOwnerSkeleton, SymbolicLifetime, SymbolicPredicate,
-    SymbolicPredicateShapeSkeleton, SymbolicRecordForm, SymbolicType, SymbolicTypeEffectSet,
-    SymbolicTypeShapeSkeleton, TargetId, TargetRoot, UnresolvedPathKind,
+    SymbolicDefinitionOwnerSkeleton, SymbolicFieldShapeSkeleton, SymbolicLifetime,
+    SymbolicPredicate, SymbolicPredicateShapeSkeleton, SymbolicRecordForm, SymbolicType,
+    SymbolicTypeEffectSet, SymbolicTypeShapeSkeleton, TargetId, TargetRoot, UnresolvedPathKind,
 };
 use arche_package::PortablePath;
 
@@ -313,6 +313,7 @@ pub enum CheckedBodyCallee {
     AssociatedItem(HirItemId),
     FunctionPointer,
     EmbeddedMethod(VirtualMethodId),
+    EmbeddedDefinition(VirtualDefinitionId),
     QueryIteration,
     CommandSpawn,
 }
@@ -2540,28 +2541,40 @@ impl BodyChecker<'_, '_, '_> {
                 }
             }
             ValueCategory::Constructor(ConstructorSelection::EmbeddedRecord(definition)) => {
-                for field in fields {
-                    self.check_expression(&field.value, None);
+                match self.embedded_record_form(definition) {
+                    Some(pair) => pair,
+                    None => {
+                        for field in fields {
+                            self.check_expression(&field.value, None);
+                        }
+                        self.gap(
+                            span,
+                            BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                            format!(
+                                "embedded record constructor {definition:?} has no typed C2 field descriptor"
+                            ),
+                        );
+                        return None;
+                    }
                 }
-                self.gap(
-                    span,
-                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                    format!(
-                        "embedded record constructor {definition:?} has no typed C2 field descriptor"
-                    ),
-                );
-                return None;
             }
             ValueCategory::Constructor(ConstructorSelection::EmbeddedVariant(variant)) => {
-                for field in fields {
-                    self.check_expression(&field.value, None);
+                match self.embedded_variant_form(variant) {
+                    Some((_, form, variant_fields)) => (form, variant_fields),
+                    None => {
+                        for field in fields {
+                            self.check_expression(&field.value, None);
+                        }
+                        self.gap(
+                            span,
+                            BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                            format!(
+                                "embedded variant {variant:?} has no typed C2 field descriptor"
+                            ),
+                        );
+                        return None;
+                    }
                 }
-                self.gap(
-                    span,
-                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                    format!("embedded enum variant {variant:?} has no typed C2 field descriptor"),
-                );
-                return None;
             }
             _ => {
                 self.source_error(span, "TYPE002", "record literal path is not a constructor");
@@ -2639,7 +2652,10 @@ impl BodyChecker<'_, '_, '_> {
         parts: &[arche_frontend::ast::AstPostfix],
         expected: Option<&SymbolicType>,
     ) -> Option<LoweredValue> {
-        let mut value = self.lower_expression(base, expected)?;
+        let (mut value, parts) = match self.embedded_prelude_call_head(base, parts) {
+            Some((value, rest)) => (value?, rest),
+            None => (self.lower_expression(base, expected)?, parts),
+        };
         for part in parts {
             value = match &part.kind {
                 AstPostfixKind::Call(arguments) => {
@@ -3661,6 +3677,94 @@ impl BodyChecker<'_, '_, '_> {
         })
     }
 
+    fn embedded_nominal_shape(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<&SymbolicDeclarationShapeSkeleton> {
+        self.catalog
+            .handoff
+            .frontend()
+            .inventory()
+            .embedded_core
+            .typed_c2()
+            .nominal_declaration_shape(definition)
+    }
+
+    fn embedded_record_form(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<(SymbolicRecordForm, Vec<SymbolicFieldShapeSkeleton>)> {
+        match &self.embedded_nominal_shape(definition)?.payload {
+            SymbolicDeclarationPayloadSkeleton::Record(record) => {
+                Some((record.form, record.fields.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    fn embedded_variant_form(
+        &self,
+        variant: VirtualEnumVariantId,
+    ) -> Option<(
+        VirtualDefinitionId,
+        SymbolicRecordForm,
+        Vec<SymbolicFieldShapeSkeleton>,
+    )> {
+        let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+        let row = core.enum_variant(variant)?;
+        let owner = row.owner();
+        let ordinal = usize::try_from(row.ordinal()).ok()?;
+        match &core.typed_c2().nominal_declaration_shape(owner)?.payload {
+            SymbolicDeclarationPayloadSkeleton::Enum(variants) => {
+                let variant = variants.get(ordinal)?;
+                Some((owner, variant.form, variant.fields.clone()))
+            }
+            _ => None,
+        }
+    }
+
+    /// Adopts the contextual type for an embedded construction only when it
+    /// names the same embedded nominal with the exact generic arity; any other
+    /// expected type never instantiates a foreign constructor.
+    fn adopt_expected_embedded_nominal(
+        &self,
+        definition: VirtualDefinitionId,
+        expected: Option<&SymbolicType>,
+    ) -> Option<SymbolicType> {
+        let SymbolicType::NominalPath {
+            declaration,
+            arguments,
+        } = expected?
+        else {
+            return None;
+        };
+        let owner_path = self.embedded_declaration_path(definition)?;
+        let formals = self
+            .embedded_nominal_shape(definition)?
+            .generic_parameters
+            .len();
+        if declaration == &owner_path && arguments.len() == formals {
+            Some(expected?.clone())
+        } else {
+            None
+        }
+    }
+
+    fn zero_generic_embedded_nominal_type(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<SymbolicType> {
+        let shape = self.embedded_nominal_shape(definition)?;
+        if !shape.generic_parameters.is_empty() {
+            return None;
+        }
+        let declaration = self.embedded_declaration_path(definition)?;
+        Some(SymbolicType::NominalPath {
+            declaration,
+            arguments: Vec::new(),
+        })
+    }
+
     fn embedded_core_definition_for_path(
         &self,
         declaration: &SemanticDeclarationPath,
@@ -3742,6 +3846,202 @@ impl BodyChecker<'_, '_, '_> {
         }
         let arguments = rows[0].arguments.clone();
         self.resolved_generic_actuals(&arguments, span)
+    }
+
+    /// Detects `include_str(...)`, `include_bytes(...)`, and `panic(...)` as a
+    /// direct postfix call on a prelude-function path and types the call
+    /// without ever materializing the function as a value. Every other use of
+    /// those names falls through to the honest prelude gap.
+    fn embedded_prelude_call_head<'p>(
+        &mut self,
+        base: &AstExpression,
+        parts: &'p [arche_frontend::ast::AstPostfix],
+    ) -> Option<(Option<LoweredValue>, &'p [arche_frontend::ast::AstPostfix])> {
+        use arche_frontend::embedded_core::VirtualFunctionLowering;
+        use arche_frontend::include_inputs::IncludeInputKind;
+        let AstExpressionKind::Path(path) = &base.kind else {
+            return None;
+        };
+        if path.generic_arguments.is_some() {
+            return None;
+        }
+        let first = parts.first()?;
+        let AstPostfixKind::Call(arguments) = &first.kind else {
+            return None;
+        };
+        let resolution = self
+            .scope
+            .target
+            .path_resolutions
+            .iter()
+            .find(|resolution| resolution.span == path.span)?;
+        if resolution.unresolved.is_some() {
+            return None;
+        }
+        let [Res::Builtin(arche_frontend::BuiltinRes {
+            target: BuiltinResTarget::Prelude(VirtualPreludeTarget::Definition(definition)),
+        })] = resolution.resolutions.as_slice()
+        else {
+            return None;
+        };
+        let definition = *definition;
+        let lowering = {
+            let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+            core.projection()
+                .functions()
+                .iter()
+                .find(|row| row.definition() == definition)
+                .map(|row| row.lowering())
+        }?;
+        let value = match lowering {
+            VirtualFunctionLowering::Intrinsic { id: 70, .. } => self.lower_embedded_include_call(
+                definition,
+                IncludeInputKind::Bytes,
+                arguments,
+                first.span,
+            ),
+            VirtualFunctionLowering::Intrinsic { id: 71, .. } => self.lower_embedded_include_call(
+                definition,
+                IncludeInputKind::Str,
+                arguments,
+                first.span,
+            ),
+            VirtualFunctionLowering::CompilerOwnedBody => {
+                self.lower_embedded_panic_call(definition, arguments, first.span)
+            }
+            VirtualFunctionLowering::Intrinsic { .. } => return None,
+        };
+        Some((value, &parts[1..]))
+    }
+
+    fn lower_embedded_include_call(
+        &mut self,
+        definition: VirtualDefinitionId,
+        kind: arche_frontend::include_inputs::IncludeInputKind,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<LoweredValue> {
+        use arche_frontend::include_inputs::IncludeInputKind;
+        let static_str = SymbolicType::Reference {
+            mutability: Mutability::Shared,
+            lifetime: SymbolicLifetime::Static,
+            pointee: Box::new(SymbolicType::Str),
+        };
+        let [argument] = arguments else {
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
+            self.source_error(
+                span,
+                "TYPE002",
+                format!(
+                    "`{}` requires exactly one string-literal portable path",
+                    kind.source_name()
+                ),
+            );
+            return None;
+        };
+        let AstExpressionKind::Literal(AstLiteral::String(path)) = &argument.kind else {
+            self.check_expression(argument, None);
+            self.source_error(
+                span,
+                "TYPE002",
+                format!(
+                    "`{}` requires exactly one string-literal portable path",
+                    kind.source_name()
+                ),
+            );
+            return None;
+        };
+        let path = path.clone();
+        self.check_expression(argument, Some(&static_str));
+        let result = match kind {
+            IncludeInputKind::Str => static_str,
+            IncludeInputKind::Bytes => {
+                let Some(length) = self.include_input_byte_length(path.as_ref()) else {
+                    self.gap(
+                        span,
+                        BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                        "include input has no retained source-tree commitment",
+                    );
+                    return None;
+                };
+                SymbolicType::Reference {
+                    mutability: Mutability::Shared,
+                    lifetime: SymbolicLifetime::Static,
+                    pointee: Box::new(SymbolicType::Array {
+                        element: Box::new(SymbolicType::U8),
+                        length: SymbolicConstExpression {
+                            integer_type: arche_frontend::IntegerType::Usize,
+                            node: SymbolicConstNode::IntegerLiteral(length.to_le_bytes().to_vec()),
+                        },
+                    }),
+                }
+            }
+        };
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: CheckedBodyCallee::EmbeddedDefinition(definition),
+            result: result.clone(),
+        });
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)))
+    }
+
+    fn include_input_byte_length(&self, path: &str) -> Option<u64> {
+        let portable = arche_package::PortablePath::new(path).ok()?;
+        let frontend = self.catalog.handoff.frontend();
+        let package_node = frontend
+            .hir()
+            .packages
+            .iter()
+            .find(|package| {
+                package
+                    .targets
+                    .iter()
+                    .any(|target| std::ptr::eq(target, self.scope.target))
+            })
+            .map(|package| package.package_node)?;
+        frontend
+            .sources()
+            .source_entries(package_node)
+            .into_iter()
+            .find(|entry| entry.path == portable)
+            .map(|entry| entry.byte_length)
+    }
+
+    fn lower_embedded_panic_call(
+        &mut self,
+        definition: VirtualDefinitionId,
+        arguments: &[AstExpression],
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let [argument] = arguments else {
+            for argument in arguments {
+                self.check_expression(argument, None);
+            }
+            self.source_error(
+                span,
+                "TYPE002",
+                "`panic` requires exactly one payload argument",
+            );
+            return None;
+        };
+        self.check_expression(argument, None);
+        let mut dependency = b"embedded-panic-unwind-payload".to_vec();
+        dependency.extend_from_slice(&u64::from(definition.ordinal()).to_le_bytes());
+        self.pending_c4(
+            span,
+            dependency,
+            "panic UnwindPayload judgment is finalized by C4",
+        );
+        self.calls.push(CheckedBodyCall {
+            span,
+            callee: CheckedBodyCallee::EmbeddedDefinition(definition),
+            result: SymbolicType::Never,
+        });
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(
+            SymbolicType::Never,
+        )))
     }
 
     fn lower_call_part(
@@ -3883,26 +4183,36 @@ impl BodyChecker<'_, '_, '_> {
                 (CheckedBodyCallee::DirectItem(item), form, fields)
             }
             ConstructorSelection::EmbeddedRecord(definition) => {
-                for argument in arguments {
-                    self.check_expression(argument, None);
-                }
-                self.gap(
-                    span,
-                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                    format!("embedded constructor {definition:?} lacks typed field signatures"),
-                );
-                return None;
+                let Some((form, fields)) = self.embedded_record_form(definition) else {
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
+                    self.gap(
+                        span,
+                        BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                        format!("embedded constructor {definition:?} lacks typed field signatures"),
+                    );
+                    return None;
+                };
+                (
+                    CheckedBodyCallee::EmbeddedDefinition(definition),
+                    form,
+                    fields,
+                )
             }
             ConstructorSelection::EmbeddedVariant(variant) => {
-                for argument in arguments {
-                    self.check_expression(argument, None);
-                }
-                self.gap(
-                    span,
-                    BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
-                    format!("embedded variant {variant:?} lacks typed field signatures"),
-                );
-                return None;
+                let Some((owner, form, fields)) = self.embedded_variant_form(variant) else {
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
+                    self.gap(
+                        span,
+                        BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable,
+                        format!("embedded variant {variant:?} lacks typed field signatures"),
+                    );
+                    return None;
+                };
+                (CheckedBodyCallee::EmbeddedDefinition(owner), form, fields)
             }
         };
         if form == SymbolicRecordForm::Record {
@@ -4459,7 +4769,15 @@ impl BodyChecker<'_, '_, '_> {
                 None
             }
             BuiltinResTarget::EnumVariant(variant) => {
-                let Some(expected) = expected.cloned() else {
+                let owner = {
+                    let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+                    core.enum_variant(variant).map(|row| row.owner())
+                };
+                let known = owner.and_then(|owner| {
+                    self.adopt_expected_embedded_nominal(owner, expected)
+                        .or_else(|| self.zero_generic_embedded_nominal_type(owner))
+                });
+                let Some(known) = known else {
                     self.gap(
                         span,
                         BodyCheckIncompletenessKind::MissingGenericInference,
@@ -4470,14 +4788,17 @@ impl BodyChecker<'_, '_, '_> {
                     return None;
                 };
                 Some(LoweredValue {
-                    input: TypedExpressionInput::Known(expected),
+                    input: TypedExpressionInput::Known(known),
                     category: ValueCategory::Constructor(ConstructorSelection::EmbeddedVariant(
                         variant,
                     )),
                 })
             }
             BuiltinResTarget::RecordConstructor(definition) => {
-                let Some(expected) = expected.cloned() else {
+                let known = self
+                    .adopt_expected_embedded_nominal(definition, expected)
+                    .or_else(|| self.zero_generic_embedded_nominal_type(definition));
+                let Some(known) = known else {
                     self.gap(
                         span,
                         BodyCheckIncompletenessKind::MissingGenericInference,
@@ -4488,7 +4809,7 @@ impl BodyChecker<'_, '_, '_> {
                     return None;
                 };
                 Some(LoweredValue {
-                    input: TypedExpressionInput::Known(expected),
+                    input: TypedExpressionInput::Known(known),
                     category: ValueCategory::Constructor(ConstructorSelection::EmbeddedRecord(
                         definition,
                     )),
@@ -4496,9 +4817,12 @@ impl BodyChecker<'_, '_, '_> {
             }
             BuiltinResTarget::Prelude(prelude) => match prelude {
                 VirtualPreludeTarget::Definition(definition) => {
-                    if let Some(expected) = expected.cloned() {
+                    let known = self
+                        .adopt_expected_embedded_nominal(definition, expected)
+                        .or_else(|| self.zero_generic_embedded_nominal_type(definition));
+                    if let Some(known) = known {
                         Some(LoweredValue {
-                            input: TypedExpressionInput::Known(expected),
+                            input: TypedExpressionInput::Known(known),
                             category: ValueCategory::Constructor(
                                 ConstructorSelection::EmbeddedRecord(definition),
                             ),
@@ -7284,5 +7608,161 @@ mod tests {
             &PatternType::Integer(PatternIntegerType::Signed(8)),
         )
         .is_err());
+    }
+
+    #[test]
+    fn embedded_record_construction_never_adopts_a_foreign_expected_type() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn cross() -> ProcessSpec {\n",
+            "    ProcessOutput {\n",
+            "        status: 0i32,\n",
+            "        stdout: Vec::new(),\n",
+            "        stderr: Vec::new(),\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(
+            failure.diagnostics().is_some(),
+            "a well-formed ProcessOutput literal must never satisfy a ProcessSpec context: {:?}",
+            failure.incompleteness()
+        );
+        assert!(diagnostics.contains("TYPE00"), "diagnostics={diagnostics}");
+    }
+
+    #[test]
+    fn embedded_variant_construction_with_a_foreign_expected_type_fails_closed() {
+        let handoff = C2Handoff::begin(inline_frontend(
+            "pub fn cross() -> Option<i32> { Result::Ok(1i32) }\n",
+        ))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "the refused adoption is an authority gap, not a source rejection: {:?}",
+            failure.diagnostics()
+        );
+        assert!(
+            failure
+                .incompleteness()
+                .iter()
+                .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingGenericInference),
+            "gaps={:?}",
+            failure.incompleteness()
+        );
+    }
+
+    #[test]
+    fn matching_generic_expected_types_still_close_embedded_variant_constructions() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn some() -> Option<i32> { Option::Some(1i32) }\n",
+            "pub fn none() -> Option<i32> { Option::None }\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("matching adoption must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+        let results = bodies
+            .bodies()
+            .flat_map(C2BodyView::calls)
+            .map(CheckedBodyCall::result)
+            .collect::<Vec<_>>();
+        assert!(
+            results.iter().any(|result| matches!(
+                result,
+                SymbolicType::NominalPath { declaration, arguments }
+                    if declaration.name == "Option"
+                        && arguments == &[GenericArgumentShape::Type(SymbolicType::I32)]
+            )),
+            "results={results:#?}"
+        );
+    }
+
+    #[test]
+    fn prelude_function_names_are_not_values() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn first() -> i32 {\n",
+            "    let f = panic;\n",
+            "    1i32\n",
+            "}\n",
+            "pub fn second() -> i32 {\n",
+            "    let g = include_bytes;\n",
+            "    2i32\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "unfinished value semantics must stay gaps: {:?}",
+            failure.diagnostics()
+        );
+        let gaps = failure
+            .incompleteness()
+            .iter()
+            .filter(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingTypedEmbeddedCallable)
+            .count();
+        assert_eq!(gaps, 2, "gaps={:?}", failure.incompleteness());
+    }
+
+    #[test]
+    fn panic_calls_type_never_without_value_placeholders() {
+        let handoff =
+            C2Handoff::begin(inline_frontend("pub fn boom() { panic(\"boom\"); }\n")).unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("a direct panic call must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+        assert!(bodies
+            .bodies()
+            .flat_map(C2BodyView::calls)
+            .any(|call| call.result() == &SymbolicType::Never));
+    }
+
+    #[test]
+    fn panic_and_include_argument_mismatches_are_source_errors() {
+        let handoff =
+            C2Handoff::begin(inline_frontend("pub fn extra() { panic(\"a\", \"b\"); }\n")).unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(failure.diagnostics().is_some());
+        assert!(diagnostics.contains("TYPE002"), "diagnostics={diagnostics}");
     }
 }

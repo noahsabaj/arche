@@ -22,10 +22,11 @@ use crate::{
     mint_definition_id, try_canonicalize_declaration_shape, try_canonicalize_definition_owner,
     CanonicalDefinitionOwner, DeclarationKind, GenericArgumentShape, GenericParameterKind,
     Mutability, SemanticDeclarationPath, SymbolicCallableKind, SymbolicCallableParameterMode,
-    SymbolicCallableParameterSkeleton, SymbolicCallableShapeSkeleton,
-    SymbolicDeclarationPayloadSkeleton, SymbolicDeclarationShapeSkeleton,
-    SymbolicDefinitionOwnerSkeleton, SymbolicEffectSetsSkeleton, SymbolicLifetime,
-    SymbolicMethodShapeSkeleton, SymbolicType, SymbolicTypeShapeSkeleton, TargetRoot,
+    SymbolicCallableParameterSkeleton, SymbolicCallableShapeSkeleton, SymbolicConstExpression,
+    SymbolicConstNode, SymbolicDeclarationPayloadSkeleton, SymbolicDeclarationShapeSkeleton,
+    SymbolicDefinitionOwnerSkeleton, SymbolicEffectSetsSkeleton, SymbolicFieldShapeSkeleton,
+    SymbolicLifetime, SymbolicMethodShapeSkeleton, SymbolicRecordForm, SymbolicRecordShapeSkeleton,
+    SymbolicType, SymbolicTypeShapeSkeleton, SymbolicVariantShapeSkeleton, TargetRoot,
 };
 use crate::{FileId, SourcePosition, Span, EMBEDDED_CORE_FILE_ID};
 
@@ -690,6 +691,7 @@ pub struct EmbeddedCoreC2TypedProjection {
     primitive_definitions: Box<[(VirtualDefinitionId, CompilerPrimitiveTypePattern)]>,
     nominals: Box<[CompilerNominalAuthority]>,
     nominal_methods: Box<[CompilerNominalMethodAuthority]>,
+    nominal_shapes: Box<[(VirtualDefinitionId, SymbolicDeclarationShapeSkeleton)]>,
     _seal: private::TypedSeal,
 }
 
@@ -758,6 +760,19 @@ impl EmbeddedCoreC2TypedProjection {
             .iter()
             .find(|row| row.kind == kind)
             .expect("verified typed Core contains every embedded nominal")
+    }
+
+    /// Returns the typed declaration shape of one transparent embedded
+    /// nominal row, or `None` for a managed/capability/opaque row whose
+    /// structure is deliberately not source-constructible.
+    pub fn nominal_declaration_shape(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<&SymbolicDeclarationShapeSkeleton> {
+        self.nominal_shapes
+            .iter()
+            .find(|(candidate, _)| *candidate == definition)
+            .map(|(_, shape)| shape)
     }
 
     pub fn nominal_for_c1_definition(
@@ -2311,11 +2326,13 @@ fn build_typed_c2_projection(
         .collect::<Result<Vec<_>, _>>()?
         .into_boxed_slice();
     let nominal_methods = build_typed_nominal_methods(projection)?;
+    let nominal_shapes = build_typed_nominal_shapes(projection)?;
     Ok(EmbeddedCoreC2TypedProjection {
         compiler_traits,
         primitive_definitions,
         nominals,
         nominal_methods,
+        nominal_shapes,
         _seal: private::TypedSeal,
     })
 }
@@ -3683,6 +3700,325 @@ fn mint_embedded_definition_id(
         .ok_or(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?;
     mint_definition_id(path, owners, &shape)
         .map_err(|_| EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)
+}
+
+/// Builds the typed declaration shapes of every transparent embedded nominal
+/// from its published shape text, cross-checked against the C1 enum-variant
+/// and constructible-record rows. Managed, capability, and opaque rows keep no
+/// source-visible structure and produce no shape.
+fn build_typed_nominal_shapes(
+    projection: &EmbeddedCoreC1PackageProjection,
+) -> Result<
+    Box<[(VirtualDefinitionId, SymbolicDeclarationShapeSkeleton)]>,
+    EmbeddedCoreVerificationError,
+> {
+    let mut shapes = Vec::new();
+    for (_, name, shape_text, flavor, declaration_kind) in NOMINAL_TYPES {
+        if *flavor != VirtualTypeFlavor::Transparent {
+            continue;
+        }
+        let definition = find_definition_id(&projection.definitions, name, VirtualNamespace::Type)
+            .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority)?;
+        let parsed =
+            parse_transparent_nominal_shape(projection, name, shape_text, *declaration_kind)?;
+        match &parsed.payload {
+            SymbolicDeclarationPayloadSkeleton::Enum(variants) => {
+                let rows = projection
+                    .enum_variants
+                    .iter()
+                    .filter(|row| row.owner == definition)
+                    .collect::<Vec<_>>();
+                if rows.len() != variants.len() {
+                    return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority);
+                }
+                for row in rows {
+                    let variant = usize::try_from(row.ordinal)
+                        .ok()
+                        .and_then(|ordinal| variants.get(ordinal))
+                        .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority)?;
+                    if variant.name != row.name {
+                        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority);
+                    }
+                }
+            }
+            SymbolicDeclarationPayloadSkeleton::Record(_) => {
+                if !projection
+                    .record_constructors
+                    .iter()
+                    .any(|row| row.owner == definition)
+                {
+                    return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority);
+                }
+            }
+            _ => return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority),
+        }
+        shapes.push((definition, parsed));
+    }
+    for row in projection.record_constructors.iter() {
+        if !shapes
+            .iter()
+            .any(|(definition, _)| *definition == row.owner)
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority);
+        }
+    }
+    for row in projection.enum_variants.iter() {
+        if !shapes
+            .iter()
+            .any(|(definition, _)| *definition == row.owner)
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority);
+        }
+    }
+    shapes.sort_by_key(|(definition, _)| *definition);
+    Ok(shapes.into_boxed_slice())
+}
+
+fn parse_transparent_nominal_shape(
+    projection: &EmbeddedCoreC1PackageProjection,
+    name: &str,
+    shape_text: &str,
+    declaration_kind: VirtualDeclarationKind,
+) -> Result<SymbolicDeclarationShapeSkeleton, EmbeddedCoreVerificationError> {
+    const ERR: EmbeddedCoreVerificationError =
+        EmbeddedCoreVerificationError::InvalidTypedNominalAuthority;
+    let (keyword, expected_kind) = match declaration_kind {
+        VirtualDeclarationKind::Enum => ("pub enum ", VirtualDeclarationKind::Enum),
+        VirtualDeclarationKind::Struct => ("pub struct ", VirtualDeclarationKind::Struct),
+        _ => return Err(ERR),
+    };
+    let rest = shape_text.strip_prefix(keyword).ok_or(ERR)?;
+    let brace = rest.find('{').ok_or(ERR)?;
+    let head = rest[..brace].trim();
+    let body = rest[brace..]
+        .strip_prefix('{')
+        .and_then(|body| body.strip_suffix('}'))
+        .ok_or(ERR)?
+        .trim();
+    let (head_name, generics) = match head.split_once('<') {
+        Some((head_name, generics)) => {
+            let generics = generics.strip_suffix('>').ok_or(ERR)?;
+            (
+                head_name.trim(),
+                generics.split(',').map(str::trim).collect::<Vec<_>>(),
+            )
+        }
+        None => (head, Vec::new()),
+    };
+    if head_name != name {
+        return Err(ERR);
+    }
+    let payload = match expected_kind {
+        VirtualDeclarationKind::Enum => {
+            let mut variants = Vec::new();
+            for variant_text in split_nominal_body(body)? {
+                variants.push(parse_nominal_variant(projection, &generics, variant_text)?);
+            }
+            SymbolicDeclarationPayloadSkeleton::Enum(variants)
+        }
+        _ => SymbolicDeclarationPayloadSkeleton::Record(SymbolicRecordShapeSkeleton {
+            form: SymbolicRecordForm::Record,
+            fields: parse_nominal_named_fields(projection, &generics, body)?,
+        }),
+    };
+    Ok(SymbolicDeclarationShapeSkeleton {
+        generic_parameters: vec![GenericParameterKind::Type; generics.len()],
+        predicates: Vec::new(),
+        payload,
+    })
+}
+
+/// Splits a nominal body on top-level commas, respecting `<>`, `()`, `{}`,
+/// and `[]` nesting.
+fn split_nominal_body(body: &str) -> Result<Vec<&str>, EmbeddedCoreVerificationError> {
+    if body.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut depth = 0_i64;
+    let mut start = 0_usize;
+    let mut parts = Vec::new();
+    for (index, byte) in body.bytes().enumerate() {
+        match byte {
+            b'<' | b'(' | b'{' | b'[' => depth += 1,
+            b'>' | b')' | b'}' | b']' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(body[start..index].trim());
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority);
+    }
+    let tail = body[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+    Ok(parts)
+}
+
+fn parse_nominal_variant(
+    projection: &EmbeddedCoreC1PackageProjection,
+    generics: &[&str],
+    text: &str,
+) -> Result<SymbolicVariantShapeSkeleton, EmbeddedCoreVerificationError> {
+    const ERR: EmbeddedCoreVerificationError =
+        EmbeddedCoreVerificationError::InvalidTypedNominalAuthority;
+    let paren = text.find('(');
+    let brace = text.find('{');
+    if let (Some(paren_at), Some(brace_at)) = (paren, brace) {
+        // A record-form variant may hold a parenthesised field type; the
+        // earlier delimiter decides the form.
+        if brace_at < paren_at {
+            let name = text[..brace_at].trim();
+            let inner = text[brace_at..]
+                .strip_prefix('{')
+                .and_then(|inner| inner.strip_suffix('}'))
+                .ok_or(ERR)?
+                .trim();
+            return Ok(SymbolicVariantShapeSkeleton {
+                name: name.to_owned(),
+                form: SymbolicRecordForm::Record,
+                fields: parse_nominal_named_fields(projection, generics, inner)?,
+            });
+        }
+    }
+    if let Some(open) = paren {
+        let name = text[..open].trim();
+        let inner = text[open..]
+            .strip_prefix('(')
+            .and_then(|inner| inner.strip_suffix(')'))
+            .ok_or(ERR)?;
+        let fields = split_nominal_body(inner)?
+            .into_iter()
+            .map(|field| {
+                Ok(SymbolicFieldShapeSkeleton {
+                    name: None,
+                    ty: SymbolicTypeShapeSkeleton::resolved(parse_nominal_field_type(
+                        projection, generics, field,
+                    )?),
+                })
+            })
+            .collect::<Result<Vec<_>, EmbeddedCoreVerificationError>>()?;
+        return Ok(SymbolicVariantShapeSkeleton {
+            name: name.to_owned(),
+            form: SymbolicRecordForm::Tuple,
+            fields,
+        });
+    }
+    if let Some(open) = text.find('{') {
+        let name = text[..open].trim();
+        let inner = text[open..]
+            .strip_prefix('{')
+            .and_then(|inner| inner.strip_suffix('}'))
+            .ok_or(ERR)?
+            .trim();
+        return Ok(SymbolicVariantShapeSkeleton {
+            name: name.to_owned(),
+            form: SymbolicRecordForm::Record,
+            fields: parse_nominal_named_fields(projection, generics, inner)?,
+        });
+    }
+    Ok(SymbolicVariantShapeSkeleton {
+        name: text.trim().to_owned(),
+        form: SymbolicRecordForm::Unit,
+        fields: Vec::new(),
+    })
+}
+
+fn parse_nominal_named_fields(
+    projection: &EmbeddedCoreC1PackageProjection,
+    generics: &[&str],
+    body: &str,
+) -> Result<Vec<SymbolicFieldShapeSkeleton>, EmbeddedCoreVerificationError> {
+    const ERR: EmbeddedCoreVerificationError =
+        EmbeddedCoreVerificationError::InvalidTypedNominalAuthority;
+    split_nominal_body(body)?
+        .into_iter()
+        .map(|field| {
+            let field = field.strip_prefix("pub ").unwrap_or(field);
+            let (name, ty) = field.split_once(':').ok_or(ERR)?;
+            Ok(SymbolicFieldShapeSkeleton {
+                name: Some(name.trim().to_owned()),
+                ty: SymbolicTypeShapeSkeleton::resolved(parse_nominal_field_type(
+                    projection,
+                    generics,
+                    ty.trim(),
+                )?),
+            })
+        })
+        .collect()
+}
+
+fn parse_nominal_field_type(
+    projection: &EmbeddedCoreC1PackageProjection,
+    generics: &[&str],
+    text: &str,
+) -> Result<SymbolicType, EmbeddedCoreVerificationError> {
+    const ERR: EmbeddedCoreVerificationError =
+        EmbeddedCoreVerificationError::InvalidTypedNominalAuthority;
+    let text = text.trim();
+    if let Some(index) = generics.iter().position(|generic| *generic == text) {
+        return Ok(SymbolicType::BoundType {
+            depth: 0,
+            index: u64::try_from(index).map_err(|_| ERR)?,
+        });
+    }
+    match text {
+        "i8" => return Ok(SymbolicType::I8),
+        "i16" => return Ok(SymbolicType::I16),
+        "i32" => return Ok(SymbolicType::I32),
+        "i64" => return Ok(SymbolicType::I64),
+        "u8" => return Ok(SymbolicType::U8),
+        "u16" => return Ok(SymbolicType::U16),
+        "u32" => return Ok(SymbolicType::U32),
+        "u64" => return Ok(SymbolicType::U64),
+        "isize" => return Ok(SymbolicType::Isize),
+        "usize" => return Ok(SymbolicType::Usize),
+        "f32" => return Ok(SymbolicType::F32),
+        "f64" => return Ok(SymbolicType::F64),
+        "bool" => return Ok(SymbolicType::Bool),
+        "char" => return Ok(SymbolicType::Char),
+        "entity" => return Ok(SymbolicType::Entity),
+        "()" => return Ok(SymbolicType::Unit),
+        _ => {}
+    }
+    if let Some(inner) = text.strip_prefix('[') {
+        let inner = inner.strip_suffix(']').ok_or(ERR)?;
+        let (element, length) = inner.split_once(';').ok_or(ERR)?;
+        let element = parse_nominal_field_type(projection, generics, element)?;
+        let length: u64 = length.trim().parse().map_err(|_| ERR)?;
+        return Ok(SymbolicType::Array {
+            element: Box::new(element),
+            length: SymbolicConstExpression {
+                integer_type: crate::IntegerType::Usize,
+                node: SymbolicConstNode::IntegerLiteral(length.to_le_bytes().to_vec()),
+            },
+        });
+    }
+    let (nominal, arguments) = match text.split_once('<') {
+        Some((nominal, arguments)) => {
+            let arguments = arguments.strip_suffix('>').ok_or(ERR)?;
+            (nominal.trim(), split_nominal_body(arguments)?)
+        }
+        None => (text, Vec::new()),
+    };
+    let definition =
+        find_definition_id(&projection.definitions, nominal, VirtualNamespace::Type).ok_or(ERR)?;
+    let declaration = projection.declaration_path(definition).ok_or(ERR)?;
+    let arguments = arguments
+        .into_iter()
+        .map(|argument| {
+            Ok(GenericArgumentShape::Type(parse_nominal_field_type(
+                projection, generics, argument,
+            )?))
+        })
+        .collect::<Result<Vec<_>, EmbeddedCoreVerificationError>>()?;
+    Ok(SymbolicType::NominalPath {
+        declaration,
+        arguments,
+    })
 }
 
 fn verify_self_relation_coordinate(
@@ -6887,6 +7223,102 @@ mod tests {
     }
 
     #[test]
+    fn transparent_nominal_shapes_are_typed_and_cross_checked() {
+        let core = verified_embedded_core_authority().unwrap();
+        let typed = core.typed_c2();
+        let projection = core.projection();
+
+        let option = typed.nominal(CompilerNominalKind::Option);
+        let shape = typed
+            .nominal_declaration_shape(option.c1_definition())
+            .unwrap();
+        assert_eq!(shape.generic_parameters, vec![GenericParameterKind::Type]);
+        let SymbolicDeclarationPayloadSkeleton::Enum(variants) = &shape.payload else {
+            panic!("Option must parse as an enum payload");
+        };
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0].name, "None");
+        assert_eq!(variants[0].form, SymbolicRecordForm::Unit);
+        assert!(variants[0].fields.is_empty());
+        assert_eq!(variants[1].name, "Some");
+        assert_eq!(variants[1].form, SymbolicRecordForm::Tuple);
+        assert_eq!(
+            variants[1].fields[0].ty,
+            SymbolicTypeShapeSkeleton::resolved(SymbolicType::BoundType { depth: 0, index: 0 })
+        );
+
+        let socket = typed.nominal(CompilerNominalKind::SocketAddress);
+        let shape = typed
+            .nominal_declaration_shape(socket.c1_definition())
+            .unwrap();
+        let SymbolicDeclarationPayloadSkeleton::Enum(variants) = &shape.payload else {
+            panic!("SocketAddress must parse as an enum payload");
+        };
+        assert_eq!(variants[0].name, "V4");
+        assert_eq!(variants[0].form, SymbolicRecordForm::Record);
+        assert_eq!(variants[0].fields[0].name.as_deref(), Some("octets"));
+        assert_eq!(
+            variants[0].fields[0].ty,
+            SymbolicTypeShapeSkeleton::resolved(SymbolicType::Array {
+                element: Box::new(SymbolicType::U8),
+                length: SymbolicConstExpression {
+                    integer_type: crate::IntegerType::Usize,
+                    node: SymbolicConstNode::IntegerLiteral(4_u64.to_le_bytes().to_vec()),
+                },
+            })
+        );
+        assert_eq!(variants[0].fields[1].name.as_deref(), Some("port"));
+        assert_eq!(
+            variants[0].fields[1].ty,
+            SymbolicTypeShapeSkeleton::resolved(SymbolicType::U16)
+        );
+
+        let io_error = typed.nominal(CompilerNominalKind::IoError);
+        let shape = typed
+            .nominal_declaration_shape(io_error.c1_definition())
+            .unwrap();
+        let SymbolicDeclarationPayloadSkeleton::Record(record) = &shape.payload else {
+            panic!("IoError must parse as a record payload");
+        };
+        assert_eq!(record.form, SymbolicRecordForm::Record);
+        assert_eq!(record.fields[0].name.as_deref(), Some("code"));
+        assert_eq!(
+            record.fields[0].ty,
+            SymbolicTypeShapeSkeleton::resolved(SymbolicType::I32)
+        );
+        assert_eq!(record.fields[1].name.as_deref(), Some("message"));
+        let SymbolicTypeShapeSkeleton::Resolved {
+            value: SymbolicType::NominalPath { declaration, .. },
+            ..
+        } = &record.fields[1].ty
+        else {
+            panic!("IoError.message must be a nominal path");
+        };
+        assert_eq!(declaration.name, "String");
+
+        let vec = typed.nominal(CompilerNominalKind::Vec);
+        assert!(typed
+            .nominal_declaration_shape(vec.c1_definition())
+            .is_none());
+
+        for row in projection.enum_variants() {
+            let shape = typed.nominal_declaration_shape(row.owner()).unwrap();
+            let SymbolicDeclarationPayloadSkeleton::Enum(variants) = &shape.payload else {
+                panic!("enum-variant owner must parse as an enum payload");
+            };
+            let ordinal = usize::try_from(row.ordinal()).unwrap();
+            assert_eq!(variants[ordinal].name, row.name());
+        }
+        for row in projection.record_constructors() {
+            let shape = typed.nominal_declaration_shape(row.owner()).unwrap();
+            assert!(matches!(
+                &shape.payload,
+                SymbolicDeclarationPayloadSkeleton::Record(record) if !record.fields.is_empty()
+            ));
+        }
+    }
+
+    #[test]
     fn verified_factory_returns_one_exact_arc() {
         let first = verified_embedded_core_authority().unwrap();
         let second = verified_embedded_core_authority().unwrap();
@@ -7747,5 +8179,32 @@ mod tests {
             verify_panic_body(&panic_corrupt),
             Err(EmbeddedCoreVerificationError::InvalidPanicBody)
         );
+    }
+
+    #[test]
+    fn record_form_variants_tolerate_parenthesised_field_types() {
+        let (projection, _) = release_with_typed_projection();
+        let record = parse_nominal_variant(&projection, &[], "Custom { value: () }").unwrap();
+        assert_eq!(record.name, "Custom");
+        assert_eq!(record.form, SymbolicRecordForm::Record);
+        assert_eq!(record.fields.len(), 1);
+        assert_eq!(record.fields[0].name.as_deref(), Some("value"));
+        assert!(matches!(
+            &record.fields[0].ty,
+            SymbolicTypeShapeSkeleton::Resolved {
+                value: SymbolicType::Unit,
+                ..
+            }
+        ));
+
+        let tuple = parse_nominal_variant(&projection, &[], "Wrapped(())").unwrap();
+        assert_eq!(tuple.name, "Wrapped");
+        assert_eq!(tuple.form, SymbolicRecordForm::Tuple);
+        assert_eq!(tuple.fields.len(), 1);
+
+        let unit = parse_nominal_variant(&projection, &[], "Plain").unwrap();
+        assert_eq!(unit.name, "Plain");
+        assert_eq!(unit.form, SymbolicRecordForm::Unit);
+        assert!(unit.fields.is_empty());
     }
 }
