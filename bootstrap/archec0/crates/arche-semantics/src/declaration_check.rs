@@ -450,6 +450,10 @@ pub fn check_declarations_c2(
     }
     let catalog = build_catalog(handoff, &inputs);
     let sizedness = check_workspace_sizedness(handoff, &inputs, catalog.embedded);
+    let alias_cycles = {
+        let paths = declaration_path_index(handoff, &inputs);
+        check_workspace_alias_cycles(&inputs, &paths)
+    };
 
     check_trait_impl_visibility(&inputs, &mut diagnostics);
 
@@ -492,6 +496,33 @@ pub fn check_declarations_c2(
         if !definition_audit.post_c2_is_closed() || !owner_audit.post_c2_is_closed() {
             provisional.push(None);
             continue;
+        }
+
+        match &alias_cycles[input_index] {
+            AliasCycleOutcome::Acyclic => {}
+            AliasCycleOutcome::Unknown => {
+                let judgment = UnimplementedDeclarationJudgment::TypeAliasCycle;
+                blockers.push(DeclarationCheckBlocker {
+                    package: package_scope(input),
+                    target: input.target,
+                    path: input.path.clone(),
+                    span: input.definition.key.span,
+                    item: input.definition.hir_item,
+                    debug_spelling: format!("{judgment:?}"),
+                    reason: DeclarationCheckBlockerReason::MissingDeclarationJudgment(judgment),
+                });
+            }
+            AliasCycleOutcome::Cyclic(message) => {
+                push_diagnostic(
+                    input,
+                    "TYPE001",
+                    message.clone(),
+                    input.definition.key.span,
+                    &mut diagnostics,
+                );
+                provisional.push(None);
+                continue;
+            }
         }
 
         match &sizedness[input_index] {
@@ -2247,6 +2278,162 @@ fn compiler_trait_for_path<'a>(
         .compiler_trait_for_c1_definition(definition)
 }
 
+/// Canonical declaration path for every input row, for cross-declaration
+/// resolution inside workspace-global judgments.
+fn declaration_path_index(
+    handoff: &C2Handoff,
+    inputs: &[InputRow<'_>],
+) -> BTreeMap<SemanticDeclarationPath, usize> {
+    let mut paths = BTreeMap::new();
+    for (index, input) in inputs.iter().enumerate() {
+        let Some(package) = handoff
+            .frontend()
+            .inventory()
+            .packages
+            .iter()
+            .find(|package| package.package == input.declaration.package())
+        else {
+            continue;
+        };
+        paths.insert(
+            SemanticDeclarationPath {
+                registry_origin: package.provenance.registry_origin.clone(),
+                package_name: package.provenance.scoped_name.clone(),
+                target: input.definition.key.module.target.clone(),
+                modules: input.definition.key.module.path.clone(),
+                kind: input.definition.key.kind,
+                name: input.definition.key.name.clone(),
+            },
+            index,
+        );
+    }
+    paths
+}
+
+/// Outcome of the type-alias-cycle judgment for one declaration.
+enum AliasCycleOutcome {
+    /// Not an alias, or an alias whose expansion terminates.
+    Acyclic,
+    /// The alias participates in an alias cycle; the message becomes TYPE001.
+    Cyclic(String),
+    /// An aliased path could not be resolved; the fail-closed blocker stays.
+    Unknown,
+}
+
+/// The type-alias acyclicity judgment (design doc 838-839): aliases are
+/// transparent and nonnominal and may not form a cycle.
+fn check_workspace_alias_cycles(
+    inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
+) -> Vec<AliasCycleOutcome> {
+    fn alias_mentions(
+        ty: &SymbolicType,
+        paths: &BTreeMap<SemanticDeclarationPath, usize>,
+        out: &mut Vec<usize>,
+        unknown: &mut bool,
+    ) {
+        match ty {
+            SymbolicType::Reference { pointee, .. } | SymbolicType::RawPointer { pointee, .. } => {
+                alias_mentions(pointee, paths, out, unknown);
+            }
+            SymbolicType::Slice(element) | SymbolicType::Array { element, .. } => {
+                alias_mentions(element, paths, out, unknown);
+            }
+            SymbolicType::Tuple(fields) => {
+                for field in fields {
+                    alias_mentions(field, paths, out, unknown);
+                }
+            }
+            SymbolicType::FunctionPointer {
+                parameters,
+                result,
+                requires,
+                throws,
+                ..
+            } => {
+                for ty in parameters
+                    .iter()
+                    .chain(std::iter::once(result.as_ref()))
+                    .chain(requires.members())
+                    .chain(throws.members())
+                {
+                    alias_mentions(ty, paths, out, unknown);
+                }
+            }
+            SymbolicType::NominalPath {
+                declaration,
+                arguments,
+            } => {
+                if declaration.kind == DeclarationKind::TypeAlias {
+                    match paths.get(declaration) {
+                        Some(&index) => out.push(index),
+                        None => *unknown = true,
+                    }
+                }
+                for argument in arguments {
+                    if let GenericArgumentShape::Type(ty) = argument {
+                        alias_mentions(ty, paths, out, unknown);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut edges: Vec<Vec<usize>> = Vec::with_capacity(inputs.len());
+    let mut outcomes: Vec<AliasCycleOutcome> = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let payload = &input.definition.symbolic_shape.payload;
+        let SymbolicDeclarationPayloadSkeleton::Alias { target } = payload else {
+            edges.push(Vec::new());
+            outcomes.push(AliasCycleOutcome::Acyclic);
+            continue;
+        };
+        let mut mentioned = Vec::new();
+        let mut unknown = false;
+        match target {
+            SymbolicTypeShapeSkeleton::Resolved { value, .. } => {
+                alias_mentions(value, paths, &mut mentioned, &mut unknown);
+            }
+            SymbolicTypeShapeSkeleton::Pending(_) => {
+                // Pending targets hold their own blockers.
+            }
+        }
+        edges.push(mentioned);
+        outcomes.push(if unknown {
+            AliasCycleOutcome::Unknown
+        } else {
+            AliasCycleOutcome::Acyclic
+        });
+    }
+
+    for index in 0..inputs.len() {
+        if edges[index].is_empty() && !matches!(outcomes[index], AliasCycleOutcome::Unknown) {
+            continue;
+        }
+        let mut seen = BTreeSet::new();
+        let mut queue = edges[index].clone();
+        let mut cyclic = false;
+        while let Some(node) = queue.pop() {
+            if node == index {
+                cyclic = true;
+                break;
+            }
+            if seen.insert(node) {
+                queue.extend(edges[node].iter().copied());
+            }
+        }
+        if cyclic {
+            outcomes[index] = AliasCycleOutcome::Cyclic(format!(
+                "type alias `{}` participates in an alias cycle; aliases are transparent and \
+                 may not form a cycle",
+                inputs[index].definition.key.name
+            ));
+        }
+    }
+    outcomes
+}
+
 /// Outcome of the sizedness/recursion judgment for one declaration.
 enum SizednessOutcome {
     /// Every storage path is sized and any recursion is regular through
@@ -2517,29 +2704,7 @@ fn check_workspace_sizedness(
     inputs: &[InputRow<'_>],
     embedded: &VerifiedEmbeddedCoreAuthority,
 ) -> Vec<SizednessOutcome> {
-    let mut paths = BTreeMap::new();
-    for (index, input) in inputs.iter().enumerate() {
-        let Some(package) = handoff
-            .frontend()
-            .inventory()
-            .packages
-            .iter()
-            .find(|package| package.package == input.declaration.package())
-        else {
-            continue;
-        };
-        paths.insert(
-            SemanticDeclarationPath {
-                registry_origin: package.provenance.registry_origin.clone(),
-                package_name: package.provenance.scoped_name.clone(),
-                target: input.definition.key.module.target.clone(),
-                modules: input.definition.key.module.path.clone(),
-                kind: input.definition.key.kind,
-                name: input.definition.key.name.clone(),
-            },
-            index,
-        );
-    }
+    let paths = declaration_path_index(handoff, inputs);
 
     let mut edges: Vec<Vec<NominalMention>> = Vec::with_capacity(inputs.len());
     let mut outcomes: Vec<SizednessOutcome> = Vec::with_capacity(inputs.len());
@@ -2700,18 +2865,12 @@ fn record_unimplemented_judgments(
     blockers: &mut Vec<DeclarationCheckBlocker>,
 ) {
     let mut judgments = Vec::new();
-    match &shape.payload {
-        SymbolicDeclarationPayloadSkeleton::Alias { .. } => {
-            judgments.push(UnimplementedDeclarationJudgment::TypeAliasCycle);
-        }
-        SymbolicDeclarationPayloadSkeleton::Impl { trait_ref, .. } => {
-            judgments.push(if trait_ref.is_none() {
-                UnimplementedDeclarationJudgment::InherentMethodUniqueness
-            } else {
-                UnimplementedDeclarationJudgment::ImplCoherenceOverlap
-            });
-        }
-        _ => {}
+    if let SymbolicDeclarationPayloadSkeleton::Impl { trait_ref, .. } = &shape.payload {
+        judgments.push(if trait_ref.is_none() {
+            UnimplementedDeclarationJudgment::InherentMethodUniqueness
+        } else {
+            UnimplementedDeclarationJudgment::ImplCoherenceOverlap
+        });
     }
     if shape_mentions_embedded_map(shape, embedded) {
         judgments.push(UnimplementedDeclarationJudgment::MapKeyComparison);
@@ -4110,10 +4269,7 @@ mod tests {
     #[test]
     fn unimplemented_declaration_judgments_fail_closed() {
         use UnimplementedDeclarationJudgment as J;
-        assert_eq!(
-            judgment_blockers("pub type A = B;\npub type B = A;\n"),
-            vec![J::TypeAliasCycle]
-        );
+
         assert_eq!(
             judgment_blockers(concat!(
                 "pub struct Holder { pub value: i32 }\n",
@@ -4550,5 +4706,30 @@ mod tests {
             )),
             vec![J::SizednessRecursion]
         );
+    }
+
+    #[test]
+    fn alias_cycle_judgment_rejects_cycles_and_accepts_chains() {
+        let mutual = declaration_rejection("pub type A = B;\npub type B = A;\n");
+        assert!(mutual.contains("TYPE001"), "{mutual}");
+        assert!(mutual.contains("alias cycle"), "{mutual}");
+
+        let this = declaration_rejection("pub type Selfish = Selfish;\n");
+        assert!(this.contains("alias cycle"), "{this}");
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub type Bits = i32;\n",
+            "pub type Pair = (Bits, Bits);\n",
+            "pub type Deep = Vec<Pair>;\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+            panic!(
+                "acyclic alias chains must close: {:?} {:?}",
+                failure.diagnostics(),
+                failure.blockers()
+            )
+        });
     }
 }
