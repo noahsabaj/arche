@@ -320,6 +320,8 @@ pub enum CheckedBodyCallee {
     ClosureValue,
     /// A generator-factory call constructing the produced generator state.
     GeneratorFactoryValue,
+    /// The reserved resume postfix on a pinned generator state.
+    GeneratorResume,
     EmbeddedMethod(VirtualMethodId),
     EmbeddedDefinition(VirtualDefinitionId),
     TraitMethod {
@@ -3089,13 +3091,91 @@ impl BodyChecker<'_, '_, '_> {
                     LoweredValue::ordinary(TypedExpressionInput::Unit)
                 }
                 AstPostfixKind::Resume(resume) => {
-                    self.check_expression(resume, None);
-                    self.gap(
-                        part.span,
-                        BodyCheckIncompletenessKind::MissingGeneratorType,
-                        "resume postfix requires finalized generator suspension-state typing",
-                    );
-                    return None;
+                    // The reserved resume postfix types exactly on Pin<&mut G>
+                    // for a known generator G: the argument checks against
+                    // G's resume type and the call yields
+                    // GeneratorState<G::Yield, G::Return>.
+                    let receiver_ty = match &value.input {
+                        TypedExpressionInput::Known(ty) => Some(ty.clone()),
+                        _ => self
+                            .materialize(&value, None, part.span)
+                            .map(|checked| checked.ty().clone()),
+                    };
+                    let pinned = match &receiver_ty {
+                        Some(SymbolicType::NominalPath {
+                            declaration,
+                            arguments,
+                        }) if self.embedded_nominal_kind(declaration)
+                            == Some(CompilerNominalKind::Pin) =>
+                        {
+                            match arguments.as_slice() {
+                                [GenericArgumentShape::Type(SymbolicType::Reference {
+                                    mutability: Mutability::Mutable,
+                                    pointee,
+                                    ..
+                                })] => match &**pointee {
+                                    SymbolicType::Generator {
+                                        resume: resume_ty,
+                                        yields,
+                                        result,
+                                        throws,
+                                        ..
+                                    } => Some((
+                                        resume_ty.as_ref().clone(),
+                                        yields.as_ref().clone(),
+                                        result.as_ref().clone(),
+                                        throws.clone(),
+                                    )),
+                                    _ => None,
+                                },
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    let state_path = pinned.as_ref().and_then(|_| {
+                        let definition = {
+                            let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+                            core.typed_c2()
+                                .nominal(CompilerNominalKind::GeneratorState)
+                                .c1_definition()
+                        };
+                        self.embedded_declaration_path(definition)
+                    });
+                    match (pinned, state_path) {
+                        (Some((resume_ty, yields, completion, throws)), Some(declaration)) => {
+                            self.check_expression(resume, Some(&resume_ty));
+                            if !throws.members().is_empty() {
+                                self.pending_c4(
+                                    part.span,
+                                    b"generator-resume-throws".to_vec(),
+                                    "resume exception propagation is finalized by C4 effects",
+                                );
+                            }
+                            let state = SymbolicType::NominalPath {
+                                declaration,
+                                arguments: vec![
+                                    GenericArgumentShape::Type(yields),
+                                    GenericArgumentShape::Type(completion),
+                                ],
+                            };
+                            self.calls.push(CheckedBodyCall {
+                                span: part.span,
+                                callee: CheckedBodyCallee::GeneratorResume,
+                                result: state.clone(),
+                            });
+                            LoweredValue::ordinary(TypedExpressionInput::Known(state))
+                        }
+                        _ => {
+                            self.check_expression(resume, None);
+                            self.gap(
+                                part.span,
+                                BodyCheckIncompletenessKind::MissingGeneratorType,
+                                "resume postfix requires finalized generator suspension-state typing",
+                            );
+                            return None;
+                        }
+                    }
                 }
             };
         }
@@ -11557,5 +11637,74 @@ mod tests {
             diagnostics.contains("unsafe context"),
             "diagnostics={diagnostics}"
         );
+    }
+
+    #[test]
+    fn pinned_resume_types_the_generator_state() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn drive(seed: i32) -> i32 {\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let mut state = factory(seed);\n",
+            "    let resumed = unsafe { Pin::new_unchecked(&mut state) }.resume(1i32);\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("pinned resume must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+        assert!(bodies
+            .bodies()
+            .flat_map(C2BodyView::calls)
+            .any(|call| call.callee() == &CheckedBodyCallee::GeneratorResume
+                && matches!(
+                    call.result(),
+                    SymbolicType::NominalPath { declaration, arguments }
+                        if declaration.name == "GeneratorState"
+                            && arguments.len() == 2
+                )));
+    }
+
+    #[test]
+    fn resume_off_the_pin_stays_the_suspension_gap() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn drive(seed: i32) -> i32 {\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let mut state = factory(seed);\n",
+            "    let resumed = state.resume(1i32);\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "unpinned resume is later authority, not a rejection: {:?}",
+            failure.diagnostics()
+        );
+        assert!(failure
+            .incompleteness()
+            .iter()
+            .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingGeneratorType));
     }
 }
