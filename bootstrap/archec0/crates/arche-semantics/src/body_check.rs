@@ -316,6 +316,10 @@ pub enum CheckedBodyCallee {
     DirectItem(HirItemId),
     AssociatedItem(HirItemId),
     FunctionPointer,
+    /// A call through a first-class closure value.
+    ClosureValue,
+    /// A generator-factory call constructing the produced generator state.
+    GeneratorFactoryValue,
     EmbeddedMethod(VirtualMethodId),
     EmbeddedDefinition(VirtualDefinitionId),
     TraitMethod {
@@ -5471,26 +5475,70 @@ impl BodyChecker<'_, '_, '_> {
             TypedExpressionInput::Known(ty) => ty.clone(),
             _ => self.materialize(&value, None, span)?.ty().clone(),
         };
-        let SymbolicType::FunctionPointer {
-            parameters,
-            result,
-            requires,
-            throws,
-            ..
-        } = function_ty
-        else {
-            self.source_error(span, "TYPE002", "value is not a function pointer");
-            return None;
+        let (callee, parameters, result, has_effects) = match function_ty {
+            SymbolicType::FunctionPointer {
+                parameters,
+                result,
+                requires,
+                throws,
+                ..
+            } => {
+                let has_effects = !requires.members().is_empty() || !throws.members().is_empty();
+                (callee, parameters, *result, has_effects)
+            }
+            SymbolicType::Closure {
+                parameters,
+                result,
+                requires,
+                throws,
+                ..
+            } => {
+                let has_effects = !requires.members().is_empty() || !throws.members().is_empty();
+                (
+                    CheckedBodyCallee::ClosureValue,
+                    parameters,
+                    *result,
+                    has_effects,
+                )
+            }
+            SymbolicType::GeneratorFactory {
+                parameters,
+                factory_unsafe,
+                produced_generator,
+                ..
+            } => {
+                if factory_unsafe && self.unsafe_depth == 0 {
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
+                    self.source_error(
+                        span,
+                        "TYPE002",
+                        "unsafe generator factory call requires an unsafe context",
+                    );
+                    return None;
+                }
+                // Factory calls have exact empty requires/throws by contract.
+                (
+                    CheckedBodyCallee::GeneratorFactoryValue,
+                    parameters,
+                    *produced_generator,
+                    false,
+                )
+            }
+            _ => {
+                self.source_error(span, "TYPE002", "value is not a function pointer");
+                return None;
+            }
         };
         self.check_call_arguments(&parameters, arguments, span);
-        if !requires.members().is_empty() || !throws.members().is_empty() {
+        if has_effects {
             self.pending_c4(
                 span,
                 b"call-effect-membership".to_vec(),
                 "call effect membership is finalized by C4",
             );
         }
-        let result = *result;
         self.calls.push(CheckedBodyCall {
             span,
             callee,
@@ -11120,5 +11168,65 @@ mod tests {
             .incompleteness()
             .iter()
             .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingClosureType));
+    }
+
+    #[test]
+    fn closure_and_factory_values_are_callable_with_exact_signatures() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn drive(seed: i32) -> i32 {\n",
+            "    let doubler = move |value: i32|\n",
+            "        requires {} throws {} -> i32 {\n",
+            "            value + value\n",
+            "        };\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let state = factory(seed);\n",
+            "    doubler(seed)\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("callable values must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+        let callees = bodies
+            .bodies()
+            .flat_map(C2BodyView::calls)
+            .map(CheckedBodyCall::callee)
+            .collect::<Vec<_>>();
+        assert!(callees.contains(&&CheckedBodyCallee::ClosureValue));
+        assert!(callees.contains(&&CheckedBodyCallee::GeneratorFactoryValue));
+    }
+
+    #[test]
+    fn closure_call_argument_mismatches_are_type002() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn drive(seed: i32) -> i32 {\n",
+            "    let doubler = move |value: i32|\n",
+            "        requires {} throws {} -> i32 {\n",
+            "            value + value\n",
+            "        };\n",
+            "    doubler('x')\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(failure.diagnostics().is_some());
+        assert!(diagnostics.contains("TYPE002"), "diagnostics={diagnostics}");
     }
 }
