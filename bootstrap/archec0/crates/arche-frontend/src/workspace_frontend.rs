@@ -71,9 +71,26 @@ pub type WorkspaceInventorySkeleton = SemanticInventorySkeleton<Arc<VerifiedEmbe
 /// it. The inventory remains unverified until the later semantic gate.
 #[derive(Debug)]
 pub struct FrontendOutput {
-    pub hir: ResolvedSymbolicWorkspaceHir,
-    pub sources: Arc<SourceDatabase>,
-    pub inventory: WorkspaceInventorySkeleton,
+    hir: ResolvedSymbolicWorkspaceHir,
+    sources: Arc<SourceDatabase>,
+    inventory: WorkspaceInventorySkeleton,
+}
+
+impl FrontendOutput {
+    /// Returns the complete session-local symbolic HIR retained by C1.
+    pub fn hir(&self) -> &ResolvedSymbolicWorkspaceHir {
+        &self.hir
+    }
+
+    /// Returns the immutable source snapshots that produced this result.
+    pub fn sources(&self) -> &Arc<SourceDatabase> {
+        &self.sources
+    }
+
+    /// Returns the unverified semantic inventory skeleton retained by C1.
+    pub fn inventory(&self) -> &WorkspaceInventorySkeleton {
+        &self.inventory
+    }
 }
 
 /// One unpacked registry package supplied by the later package-cache adapter.
@@ -168,6 +185,9 @@ struct SymbolicShapeInputs {
     types: Vec<crate::ast::AstType>,
     consts: Vec<(AstConstExpression, IntegerType)>,
     effects: Vec<AstSymbolicEffect>,
+    // Type-namespace paths are retained only for noncanonical C2 template
+    // projection (not the encoded flattened C1 compatibility buckets).
+    c2_type_roots: Vec<crate::ast::AstType>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -247,6 +267,113 @@ pub struct ResolvedSymbolicShape {
     pub types: Vec<ResolvedSymbolicType>,
     pub consts: Vec<ResolvedSymbolicConst>,
     pub effects: Vec<ResolvedSymbolicEffect>,
+    // Noncanonical C1-to-C2 authority. This sidecar is deliberately omitted
+    // from every HIR/inventory/identity encoder.
+    c2_contextual_self_templates: Vec<C2ContextualSelfTypeProjection>,
+}
+
+impl ResolvedSymbolicShape {
+    /// Returns the single-authority structured template for one collapsed C1
+    /// contextual-`Self` type leaf.
+    ///
+    /// The lookup joins on the exact retained pending span and debug spelling.
+    /// It fails closed when no unique template was retained or relowering met
+    /// an independent pending/error condition.
+    pub fn contextual_self_type_template(
+        &self,
+        pending: &SymbolicPendingShape,
+    ) -> Result<&C2ContextualSelfTypeTemplate, C2TypeTemplateLookupError> {
+        if pending.kind != PendingShapeKind::ContextualSelf {
+            return Err(C2TypeTemplateLookupError::NotContextualSelf);
+        }
+        let mut matches = self
+            .c2_contextual_self_templates
+            .iter()
+            .filter(|projection| {
+                projection.pending_span == pending.source_span
+                    && projection.debug_spelling == pending.debug_spelling
+            });
+        let Some(first) = matches.next() else {
+            return Err(C2TypeTemplateLookupError::Missing);
+        };
+        if matches.any(|candidate| candidate.result != first.result) {
+            return Err(C2TypeTemplateLookupError::Ambiguous);
+        }
+        match &first.result {
+            Ok(template) => Ok(template),
+            Err(blocker) => Err(C2TypeTemplateLookupError::Blocked(blocker.clone())),
+        }
+    }
+}
+
+/// Immutable, noncanonical C1-to-C2 type template whose reserved leaves mark
+/// contextual `Self`. Construction remains private to frontend lowering.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct C2ContextualSelfTypeTemplate {
+    root_span: SymbolicSourceSpan,
+    debug_spelling: String,
+    template: Box<SymbolicType>,
+    hole_count: u64,
+}
+
+impl C2ContextualSelfTypeTemplate {
+    pub const fn root_span(&self) -> SymbolicSourceSpan {
+        self.root_span
+    }
+
+    pub fn debug_spelling(&self) -> &str {
+        &self.debug_spelling
+    }
+
+    pub const fn hole_count(&self) -> u64 {
+        self.hole_count
+    }
+
+    /// Replaces every retained contextual-`Self` leaf while preserving the
+    /// exact C1-resolved enclosing structure and binder coordinates.
+    pub fn instantiate_contextual_self(
+        &self,
+        self_type: &SymbolicType,
+    ) -> Result<SymbolicType, C2TypeTemplateInstantiationError> {
+        if symbolic_type_contains_c2_self_marker(self_type) {
+            return Err(C2TypeTemplateInstantiationError::ReservedTemplateCoordinate);
+        }
+        Ok(replace_c2_self_markers(&self.template, self_type))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum C2TypeTemplateBlocker {
+    AdditionalPending {
+        source_span: SymbolicSourceSpan,
+        kind: PendingShapeKind,
+        debug_spelling: String,
+    },
+    FrontendInvariant {
+        source_span: Option<SymbolicSourceSpan>,
+        code: String,
+        message: String,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum C2TypeTemplateLookupError {
+    NotContextualSelf,
+    Missing,
+    Ambiguous,
+    Blocked(C2TypeTemplateBlocker),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum C2TypeTemplateInstantiationError {
+    ReservedTemplateCoordinate,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct C2ContextualSelfTypeProjection {
+    pending_span: SymbolicSourceSpan,
+    debug_spelling: String,
+    result: Result<C2ContextualSelfTypeTemplate, C2TypeTemplateBlocker>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2464,6 +2591,14 @@ impl NestedBodyCollector<'_, '_, '_> {
         namespace: Option<Namespace>,
         generic_namespace: Option<Namespace>,
     ) -> Result<(), FrontendError> {
+        if namespace == Some(Namespace::Type) {
+            self.current_symbolic_inputs()
+                .c2_type_roots
+                .push(crate::ast::AstType::new(
+                    crate::ast::AstTypeKind::Path(path.clone()),
+                    path.span,
+                ));
+        }
         let formal_parameters = self.resolved_path_formal_parameters(path, generic_namespace)?;
         let lexical_local = (namespace == Some(Namespace::Value))
             .then(|| {
@@ -2672,6 +2807,7 @@ impl NestedBodyCollector<'_, '_, '_> {
             generics: self.pattern_resolution.generics,
             embedded_core: self.pattern_resolution.embedded_core,
             lifetime_domain: LifetimeDomain::BodyLocal,
+            contextual_self_template: false,
         }
     }
 
@@ -4599,6 +4735,7 @@ fn finish_symbolic_hir(
                     generics: &generics,
                     embedded_core,
                     lifetime_domain: LifetimeDomain::BodyLocal,
+                    contextual_self_template: false,
                 };
                 let elision_plan = declaration_elision_plan(&body_context, item)?;
                 let context = SymbolicLoweringContext {
@@ -5625,6 +5762,7 @@ struct SymbolicLoweringContext<'a, 'workspace> {
     generics: &'a BTreeMap<String, GenericParameterId>,
     embedded_core: &'a VerifiedEmbeddedCoreAuthority,
     lifetime_domain: LifetimeDomain<'a>,
+    contextual_self_template: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -6368,10 +6506,389 @@ fn lower_owner_self_type(
             | HirItemSource::ImplMethod(_)
             | HirItemSource::QueryParameter { .. },
         )
-        | None => Err(SymbolicLoweringError::pending(
-            UnresolvedPathKind::SelfTypePendingC2,
-            span,
-        )),
+        | None => {
+            if context.contextual_self_template {
+                Ok(c2_contextual_self_marker())
+            } else {
+                Err(SymbolicLoweringError::pending(
+                    UnresolvedPathKind::SelfTypePendingC2,
+                    span,
+                ))
+            }
+        }
+    }
+}
+
+const C2_CONTEXTUAL_SELF_MARKER_DEPTH: u64 = u64::MAX;
+const C2_CONTEXTUAL_SELF_MARKER_INDEX: u64 = u64::MAX;
+
+const fn c2_contextual_self_marker() -> SymbolicType {
+    SymbolicType::BoundType {
+        depth: C2_CONTEXTUAL_SELF_MARKER_DEPTH,
+        index: C2_CONTEXTUAL_SELF_MARKER_INDEX,
+    }
+}
+
+const fn is_c2_contextual_self_marker(ty: &SymbolicType) -> bool {
+    matches!(
+        ty,
+        SymbolicType::BoundType {
+            depth: C2_CONTEXTUAL_SELF_MARKER_DEPTH,
+            index: C2_CONTEXTUAL_SELF_MARKER_INDEX,
+        }
+    )
+}
+
+fn count_c2_self_markers(ty: &SymbolicType) -> usize {
+    rewrite_c2_self_markers(ty, None).1
+}
+
+fn symbolic_type_contains_c2_self_marker(ty: &SymbolicType) -> bool {
+    count_c2_self_markers(ty) != 0
+}
+
+fn replace_c2_self_markers(ty: &SymbolicType, replacement: &SymbolicType) -> SymbolicType {
+    rewrite_c2_self_markers(ty, Some(replacement)).0
+}
+
+fn rewrite_c2_self_markers(
+    ty: &SymbolicType,
+    replacement: Option<&SymbolicType>,
+) -> (SymbolicType, usize) {
+    if is_c2_contextual_self_marker(ty) {
+        return (replacement.unwrap_or(ty).clone(), 1);
+    }
+    match ty {
+        primitive @ (SymbolicType::I8
+        | SymbolicType::I16
+        | SymbolicType::I32
+        | SymbolicType::I64
+        | SymbolicType::U8
+        | SymbolicType::U16
+        | SymbolicType::U32
+        | SymbolicType::U64
+        | SymbolicType::Isize
+        | SymbolicType::Usize
+        | SymbolicType::F32
+        | SymbolicType::F64
+        | SymbolicType::Bool
+        | SymbolicType::Char
+        | SymbolicType::Entity
+        | SymbolicType::Unit
+        | SymbolicType::Never
+        | SymbolicType::Str
+        | SymbolicType::BoundType { .. }) => (primitive.clone(), 0),
+        SymbolicType::Slice(element) => {
+            let (element, count) = rewrite_c2_self_markers(element, replacement);
+            (SymbolicType::Slice(Box::new(element)), count)
+        }
+        SymbolicType::Array { element, length } => {
+            let (element, count) = rewrite_c2_self_markers(element, replacement);
+            (
+                SymbolicType::Array {
+                    element: Box::new(element),
+                    length: length.clone(),
+                },
+                count,
+            )
+        }
+        SymbolicType::Tuple(elements) => {
+            let (elements, count) = rewrite_c2_self_type_list(elements, replacement);
+            (SymbolicType::Tuple(elements), count)
+        }
+        SymbolicType::Reference {
+            mutability,
+            lifetime,
+            pointee,
+        } => {
+            let (pointee, count) = rewrite_c2_self_markers(pointee, replacement);
+            (
+                SymbolicType::Reference {
+                    mutability: *mutability,
+                    lifetime: lifetime.clone(),
+                    pointee: Box::new(pointee),
+                },
+                count,
+            )
+        }
+        SymbolicType::RawPointer {
+            mutability,
+            pointee,
+        } => {
+            let (pointee, count) = rewrite_c2_self_markers(pointee, replacement);
+            (
+                SymbolicType::RawPointer {
+                    mutability: *mutability,
+                    pointee: Box::new(pointee),
+                },
+                count,
+            )
+        }
+        SymbolicType::NominalPath {
+            declaration,
+            arguments,
+        } => {
+            let (arguments, count) = rewrite_c2_self_arguments(arguments, replacement);
+            (
+                SymbolicType::NominalPath {
+                    declaration: declaration.clone(),
+                    arguments,
+                },
+                count,
+            )
+        }
+        SymbolicType::FunctionPointer {
+            unsafe_,
+            parameters,
+            result,
+            requires,
+            throws,
+        } => {
+            let (parameters, mut count) = rewrite_c2_self_type_list(parameters, replacement);
+            let (result, result_count) = rewrite_c2_self_markers(result, replacement);
+            count = count.saturating_add(result_count);
+            let (requires, requires_count) = rewrite_c2_self_effect_set(requires, replacement);
+            count = count.saturating_add(requires_count);
+            let (throws, throws_count) = rewrite_c2_self_effect_set(throws, replacement);
+            count = count.saturating_add(throws_count);
+            (
+                SymbolicType::FunctionPointer {
+                    unsafe_: *unsafe_,
+                    parameters,
+                    result: Box::new(result),
+                    requires,
+                    throws,
+                },
+                count,
+            )
+        }
+        SymbolicType::Closure {
+            owner,
+            expression_ordinal,
+            captures,
+            parameters,
+            result,
+            requires,
+            throws,
+            arguments,
+        } => {
+            let (captures, mut count) = rewrite_c2_self_captures(captures, replacement);
+            let (parameters, parameter_count) = rewrite_c2_self_type_list(parameters, replacement);
+            count = count.saturating_add(parameter_count);
+            let (result, result_count) = rewrite_c2_self_markers(result, replacement);
+            count = count.saturating_add(result_count);
+            let (requires, requires_count) = rewrite_c2_self_effect_set(requires, replacement);
+            count = count.saturating_add(requires_count);
+            let (throws, throws_count) = rewrite_c2_self_effect_set(throws, replacement);
+            count = count.saturating_add(throws_count);
+            let (arguments, argument_count) = rewrite_c2_self_arguments(arguments, replacement);
+            count = count.saturating_add(argument_count);
+            (
+                SymbolicType::Closure {
+                    owner: owner.clone(),
+                    expression_ordinal: *expression_ordinal,
+                    captures,
+                    parameters,
+                    result: Box::new(result),
+                    requires,
+                    throws,
+                    arguments,
+                },
+                count,
+            )
+        }
+        SymbolicType::Generator {
+            target,
+            captures,
+            parameters,
+            factory_unsafe,
+            resume,
+            yields,
+            result,
+            requires,
+            throws,
+        } => {
+            let (target, mut count) = rewrite_c2_self_generator_target(target, replacement);
+            let (captures, capture_count) = rewrite_c2_self_captures(captures, replacement);
+            count = count.saturating_add(capture_count);
+            let (parameters, parameter_count) = rewrite_c2_self_type_list(parameters, replacement);
+            count = count.saturating_add(parameter_count);
+            let (resume, resume_count) = rewrite_c2_self_markers(resume, replacement);
+            count = count.saturating_add(resume_count);
+            let (yields, yields_count) = rewrite_c2_self_markers(yields, replacement);
+            count = count.saturating_add(yields_count);
+            let (result, result_count) = rewrite_c2_self_markers(result, replacement);
+            count = count.saturating_add(result_count);
+            let (requires, requires_count) = rewrite_c2_self_effect_set(requires, replacement);
+            count = count.saturating_add(requires_count);
+            let (throws, throws_count) = rewrite_c2_self_effect_set(throws, replacement);
+            count = count.saturating_add(throws_count);
+            (
+                SymbolicType::Generator {
+                    target: Box::new(target),
+                    captures,
+                    parameters,
+                    factory_unsafe: *factory_unsafe,
+                    resume: Box::new(resume),
+                    yields: Box::new(yields),
+                    result: Box::new(result),
+                    requires,
+                    throws,
+                },
+                count,
+            )
+        }
+        SymbolicType::JoinHandle { result, throws } => {
+            let (result, mut count) = rewrite_c2_self_markers(result, replacement);
+            let (throws, throws_count) = rewrite_c2_self_effect_set(throws, replacement);
+            count = count.saturating_add(throws_count);
+            (
+                SymbolicType::JoinHandle {
+                    result: Box::new(result),
+                    throws,
+                },
+                count,
+            )
+        }
+        SymbolicType::GeneratorFactory {
+            target,
+            captures,
+            call_trait,
+            parameters,
+            factory_unsafe,
+            produced_generator,
+        } => {
+            let (target, mut count) = rewrite_c2_self_generator_target(target, replacement);
+            let (captures, capture_count) = rewrite_c2_self_captures(captures, replacement);
+            count = count.saturating_add(capture_count);
+            let (parameters, parameter_count) = rewrite_c2_self_type_list(parameters, replacement);
+            count = count.saturating_add(parameter_count);
+            let (produced_generator, produced_count) =
+                rewrite_c2_self_markers(produced_generator, replacement);
+            count = count.saturating_add(produced_count);
+            (
+                SymbolicType::GeneratorFactory {
+                    target: Box::new(target),
+                    captures,
+                    call_trait: *call_trait,
+                    parameters,
+                    factory_unsafe: *factory_unsafe,
+                    produced_generator: Box::new(produced_generator),
+                },
+                count,
+            )
+        }
+    }
+}
+
+fn rewrite_c2_self_type_list(
+    types: &[SymbolicType],
+    replacement: Option<&SymbolicType>,
+) -> (Vec<SymbolicType>, usize) {
+    let mut count = 0_usize;
+    let types = types
+        .iter()
+        .map(|ty| {
+            let (ty, child_count) = rewrite_c2_self_markers(ty, replacement);
+            count = count.saturating_add(child_count);
+            ty
+        })
+        .collect();
+    (types, count)
+}
+
+fn rewrite_c2_self_arguments(
+    arguments: &[GenericArgumentShape],
+    replacement: Option<&SymbolicType>,
+) -> (Vec<GenericArgumentShape>, usize) {
+    let mut count = 0_usize;
+    let arguments = arguments
+        .iter()
+        .map(|argument| match argument {
+            GenericArgumentShape::Type(ty) => {
+                let (ty, child_count) = rewrite_c2_self_markers(ty, replacement);
+                count = count.saturating_add(child_count);
+                GenericArgumentShape::Type(ty)
+            }
+            GenericArgumentShape::Lifetime(lifetime) => {
+                GenericArgumentShape::Lifetime(lifetime.clone())
+            }
+            GenericArgumentShape::IntegerConst(value) => {
+                GenericArgumentShape::IntegerConst(value.clone())
+            }
+        })
+        .collect();
+    (arguments, count)
+}
+
+fn rewrite_c2_self_effect_set(
+    effects: &super::shape::SymbolicTypeEffectSet,
+    replacement: Option<&SymbolicType>,
+) -> (super::shape::SymbolicTypeEffectSet, usize) {
+    let (members, count) = rewrite_c2_self_type_list(effects.members(), replacement);
+    let effects = if effects.readiness() == SymbolicShapeReadiness::PendingC4 {
+        super::shape::SymbolicTypeEffectSet::pending_c4(members)
+    } else {
+        super::shape::SymbolicTypeEffectSet::resolved(members)
+    };
+    (effects, count)
+}
+
+fn rewrite_c2_self_captures(
+    captures: &[super::shape::SymbolicCapture],
+    replacement: Option<&SymbolicType>,
+) -> (Vec<super::shape::SymbolicCapture>, usize) {
+    let mut count = 0_usize;
+    let captures = captures
+        .iter()
+        .map(|capture| {
+            let (ty, child_count) = rewrite_c2_self_markers(&capture.ty, replacement);
+            count = count.saturating_add(child_count);
+            super::shape::SymbolicCapture {
+                ordinal: capture.ordinal,
+                mode: capture.mode,
+                ty,
+            }
+        })
+        .collect();
+    (captures, count)
+}
+
+fn rewrite_c2_self_generator_target(
+    target: &super::shape::GeneratorTarget,
+    replacement: Option<&SymbolicType>,
+) -> (super::shape::GeneratorTarget, usize) {
+    match target {
+        super::shape::GeneratorTarget::Named {
+            declaration,
+            arguments,
+            hidden_lifetime_binders,
+        } => {
+            let (arguments, count) = rewrite_c2_self_arguments(arguments, replacement);
+            (
+                super::shape::GeneratorTarget::Named {
+                    declaration: declaration.clone(),
+                    arguments,
+                    hidden_lifetime_binders: hidden_lifetime_binders.clone(),
+                },
+                count,
+            )
+        }
+        super::shape::GeneratorTarget::Anonymous {
+            owner,
+            expression_ordinal,
+            arguments,
+        } => {
+            let (arguments, count) = rewrite_c2_self_arguments(arguments, replacement);
+            (
+                super::shape::GeneratorTarget::Anonymous {
+                    owner: owner.clone(),
+                    expression_ordinal: *expression_ordinal,
+                    arguments,
+                },
+                count,
+            )
+        }
     }
 }
 
@@ -7175,6 +7692,7 @@ fn resolve_item_declaration_skeleton(
         generics: &generics,
         embedded_core,
         lifetime_domain: LifetimeDomain::BodyLocal,
+        contextual_self_template: false,
     };
     let elision_plan = declaration_elision_plan(&body_context, item)?;
     let context = SymbolicLoweringContext {
@@ -7214,6 +7732,7 @@ fn resolve_item_owner_skeleton(
         generics: &generics,
         embedded_core,
         lifetime_domain: LifetimeDomain::BodyLocal,
+        contextual_self_template: false,
     };
     let elision_plan = declaration_elision_plan(&body_context, item)?;
     let context = SymbolicLoweringContext {
@@ -7989,14 +8508,38 @@ fn resolve_symbolic_inputs(
     hidden_lifetime_binders: Vec<HiddenLifetimeBinder>,
     inputs: &SymbolicShapeInputs,
 ) -> Result<ResolvedSymbolicShape, FrontendError> {
+    let mut types = Vec::with_capacity(inputs.types.len());
+    let mut c2_contextual_self_templates = Vec::new();
+    for ty in &inputs.types {
+        let value = resolve_symbolic_type(context, ty)?;
+        if let ResolvedSymbolicType::Pending {
+            span,
+            reason: UnresolvedPathKind::SelfTypePendingC2,
+            canonical,
+        } = &value
+        {
+            c2_contextual_self_templates
+                .push(project_contextual_self_type(context, ty, *span, canonical));
+        }
+        types.push(value);
+    }
+    for ty in &inputs.c2_type_roots {
+        if let Ok(ResolvedSymbolicType::Pending {
+            span,
+            reason: UnresolvedPathKind::SelfTypePendingC2,
+            canonical,
+        }) = resolve_symbolic_type(context, ty)
+        {
+            let projection = project_contextual_self_type(context, ty, span, canonical.as_str());
+            if !c2_contextual_self_templates.contains(&projection) {
+                c2_contextual_self_templates.push(projection);
+            }
+        }
+    }
     Ok(ResolvedSymbolicShape {
         generic_parameters,
         hidden_lifetime_binders,
-        types: inputs
-            .types
-            .iter()
-            .map(|ty| resolve_symbolic_type(context, ty))
-            .collect::<Result<Vec<_>, _>>()?,
+        types,
         consts: inputs
             .consts
             .iter()
@@ -8009,7 +8552,55 @@ fn resolve_symbolic_inputs(
             .iter()
             .map(|effect| resolve_symbolic_effect(context, effect))
             .collect::<Result<Vec<_>, _>>()?,
+        c2_contextual_self_templates,
     })
+}
+
+fn project_contextual_self_type(
+    context: &SymbolicLoweringContext<'_, '_>,
+    ty: &crate::ast::AstType,
+    pending_span: Span,
+    debug_spelling: &str,
+) -> C2ContextualSelfTypeProjection {
+    let template_context = SymbolicLoweringContext {
+        contextual_self_template: true,
+        ..*context
+    };
+    let result = match lower_symbolic_type(&template_context, ty) {
+        Ok(template) => match u64::try_from(count_c2_self_markers(&template)) {
+            Ok(hole_count) if hole_count > 0 => Ok(C2ContextualSelfTypeTemplate {
+                root_span: symbolic_source_span(ty.span),
+                debug_spelling: debug_spelling.to_owned(),
+                template: Box::new(template),
+                hole_count,
+            }),
+            Ok(_) | Err(_) => Err(C2TypeTemplateBlocker::FrontendInvariant {
+                source_span: Some(symbolic_source_span(ty.span)),
+                code: "IDENTITY001".to_owned(),
+                message: "contextual-Self template relowering retained no representable hole"
+                    .to_owned(),
+            }),
+        },
+        Err(SymbolicLoweringError::Pending { reason, span }) => {
+            Err(C2TypeTemplateBlocker::AdditionalPending {
+                source_span: symbolic_source_span(span),
+                kind: pending_shape_kind(&reason),
+                debug_spelling: canonical_type(ty),
+            })
+        }
+        Err(SymbolicLoweringError::Frontend(error)) => {
+            Err(C2TypeTemplateBlocker::FrontendInvariant {
+                source_span: error.diagnostic.primary.span.map(symbolic_source_span),
+                code: error.diagnostic.code.to_owned(),
+                message: error.diagnostic.message.clone(),
+            })
+        }
+    };
+    C2ContextualSelfTypeProjection {
+        pending_span: symbolic_source_span(pending_span),
+        debug_spelling: debug_spelling.to_owned(),
+        result,
+    }
 }
 
 fn assert_declaration_shape_has_no_erased_local(
@@ -13852,5 +14443,184 @@ mod tests {
             assert_eq!(error.diagnostic.code, "NAME002", "{source}");
             assert!(error.diagnostic.primary.span.is_some(), "{source}");
         }
+    }
+
+    #[test]
+    fn contextual_self_template_preserves_nested_structure_and_binder_depths() {
+        let output = inline_library(concat!(
+            "pub struct Envelope<T> { value: T }\n",
+            "pub trait Nested<T> {\n",
+            "    fn project<'a>(&'a self, value: T) -> Envelope<(Self, &'a Self, T)>;\n",
+            "}\n",
+        ));
+        let method = output.hir.packages[0].targets[0]
+            .items
+            .iter()
+            .find(|item| item.name.as_deref() == Some("project"))
+            .unwrap();
+        let SymbolicDeclarationPayloadSkeleton::Callable(callable) =
+            &method.definition_shape.payload
+        else {
+            panic!("trait method must retain a callable definition shape");
+        };
+        let SymbolicTypeShapeSkeleton::Pending(pending) = &callable.result else {
+            panic!("C1 must not resolve trait-method contextual Self");
+        };
+        assert_eq!(pending.kind, PendingShapeKind::ContextualSelf);
+
+        let template = method
+            .symbolic_shape
+            .contextual_self_type_template(pending)
+            .unwrap();
+        assert_eq!(template.hole_count(), 2);
+        let HirItemSource::TraitMethod(source_method) = &method.source else {
+            panic!("project must retain its trait-method source");
+        };
+        assert_eq!(
+            template.root_span(),
+            symbolic_source_span(source_method.signature.result.as_ref().unwrap().span)
+        );
+
+        let instantiated = template
+            .instantiate_contextual_self(&SymbolicType::I32)
+            .unwrap();
+        let SymbolicType::NominalPath {
+            declaration,
+            arguments,
+        } = instantiated
+        else {
+            panic!("Envelope result must retain its nominal head");
+        };
+        assert_eq!(declaration.name, "Envelope");
+        let [GenericArgumentShape::Type(SymbolicType::Tuple(elements))] = arguments.as_slice()
+        else {
+            panic!("Envelope must retain one tuple type argument");
+        };
+        assert_eq!(
+            elements,
+            &[
+                SymbolicType::I32,
+                SymbolicType::Reference {
+                    mutability: Mutability::Shared,
+                    lifetime: SymbolicLifetime::Bound { depth: 0, index: 0 },
+                    pointee: Box::new(SymbolicType::I32),
+                },
+                SymbolicType::BoundType { depth: 1, index: 0 },
+            ]
+        );
+        assert!(!symbolic_type_contains_c2_self_marker(
+            &SymbolicType::NominalPath {
+                declaration,
+                arguments,
+            }
+        ));
+
+        let encoded = encode_alpha_symbolic_shape(&method.symbolic_shape).unwrap();
+        let mut without_noncanonical_sidecar = method.symbolic_shape.clone();
+        without_noncanonical_sidecar
+            .c2_contextual_self_templates
+            .clear();
+        assert_eq!(
+            encode_alpha_symbolic_shape(&without_noncanonical_sidecar).unwrap(),
+            encoded,
+            "the C2 template sidecar must not enter C1 golden bytes"
+        );
+    }
+
+    #[test]
+    fn contextual_self_template_lookup_and_instantiation_fail_closed() {
+        let pending = SymbolicPendingShape {
+            readiness: SymbolicShapeReadiness::PendingC2,
+            source_span: SymbolicSourceSpan {
+                file: 0,
+                start_byte: 1,
+                end_byte: 5,
+                start_line: 1,
+                start_column: 2,
+                end_line: 1,
+                end_column: 6,
+            },
+            kind: PendingShapeKind::ContextualSelf,
+            debug_spelling: "&Self".to_owned(),
+        };
+        assert_eq!(
+            ResolvedSymbolicShape::default().contextual_self_type_template(&pending),
+            Err(C2TypeTemplateLookupError::Missing)
+        );
+
+        let mut wrong_domain = pending.clone();
+        wrong_domain.kind = PendingShapeKind::GenericFormation;
+        assert_eq!(
+            ResolvedSymbolicShape::default().contextual_self_type_template(&wrong_domain),
+            Err(C2TypeTemplateLookupError::NotContextualSelf)
+        );
+
+        let output = inline_library("pub trait Borrow { fn borrow(&self) -> &Self; }\n");
+        let method = output.hir.packages[0].targets[0]
+            .items
+            .iter()
+            .find(|item| item.name.as_deref() == Some("borrow"))
+            .unwrap();
+        let SymbolicDeclarationPayloadSkeleton::Callable(callable) =
+            &method.definition_shape.payload
+        else {
+            unreachable!();
+        };
+        let SymbolicTypeShapeSkeleton::Pending(pending) = &callable.result else {
+            unreachable!();
+        };
+        let template = method
+            .symbolic_shape
+            .contextual_self_type_template(pending)
+            .unwrap();
+        assert_eq!(
+            template.instantiate_contextual_self(&c2_contextual_self_marker()),
+            Err(C2TypeTemplateInstantiationError::ReservedTemplateCoordinate)
+        );
+    }
+
+    #[test]
+    fn trait_impl_header_self_stays_pending_but_retains_its_nominal_template() {
+        let output = inline_library(concat!(
+            "pub trait Pair<T> { }\n",
+            "pub struct Wrapper;\n",
+            "impl Pair<(Self, Self)> for Wrapper { }\n",
+        ));
+        let implementation = output.hir.packages[0].targets[0]
+            .items
+            .iter()
+            .find(|item| item.kind == DeclarationKind::Impl)
+            .unwrap();
+        let SymbolicDefinitionOwnerSkeleton::TraitImpl {
+            trait_ref, target, ..
+        } = &implementation.owner_shape
+        else {
+            panic!("implementation must retain its trait owner header");
+        };
+        let SymbolicTypeShapeSkeleton::Pending(pending) = trait_ref else {
+            panic!("C1 must not resolve contextual Self in a trait-impl header");
+        };
+        let SymbolicTypeShapeSkeleton::Resolved { value: target, .. } = target else {
+            panic!("implementation target must already be C1-resolved");
+        };
+        let template = implementation
+            .symbolic_shape
+            .contextual_self_type_template(pending)
+            .unwrap();
+        assert_eq!(template.hole_count(), 2);
+        let instantiated = template.instantiate_contextual_self(target).unwrap();
+        let SymbolicType::NominalPath {
+            declaration,
+            arguments,
+        } = instantiated
+        else {
+            panic!("trait header must retain its nominal trait head");
+        };
+        assert_eq!(declaration.name, "Pair");
+        let [GenericArgumentShape::Type(SymbolicType::Tuple(elements))] = arguments.as_slice()
+        else {
+            panic!("Pair must retain its tuple type argument");
+        };
+        assert_eq!(elements, &[target.clone(), target.clone()]);
     }
 }

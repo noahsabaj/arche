@@ -9,6 +9,7 @@
 //! virtual definition/type/variant/constructible-record/trait/method/prelude
 //! row, and the complete symbolic `panic` body that C5 must lower and verify.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::str::FromStr as _;
 use std::sync::{Arc, OnceLock};
@@ -131,6 +132,631 @@ pub enum UserImplPolicy {
     AllowedAndValidated = 1,
     CompilerDerivedOnly = 2,
     Forbidden = 3,
+}
+
+/// Semantic identity of a compiler-known trait.
+///
+/// Unlike [`VirtualDefinitionId`], this identity is independent of the C1
+/// release projection's row order and is therefore suitable for C2 semantic
+/// decisions.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CompilerTraitKind {
+    Add,
+    BitAnd,
+    BitNot,
+    BitOr,
+    BitXor,
+    Clone,
+    Copy,
+    Div,
+    Drop,
+    EcsKey,
+    EcsValue,
+    Eq,
+    Fn,
+    FnMut,
+    FnOnce,
+    From,
+    IntoIterator,
+    Iterator,
+    LogicalNot,
+    Mul,
+    Neg,
+    Ord,
+    Rem,
+    Send,
+    ShiftLeft,
+    ShiftRight,
+    Sub,
+    Sync,
+    TryFrom,
+    Unpin,
+    UnwindPayload,
+}
+
+/// Semantic identity of an embedded nominal type. These values, rather than
+/// virtual row ordinals, are the C2 identity bridge for compiler-owned
+/// nominals.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CompilerNominalKind {
+    AllocError,
+    App,
+    Arc,
+    ArcWeak,
+    AtomicRmw,
+    Box,
+    Caps,
+    ChannelClosed,
+    Commands,
+    GeneratorState,
+    IoError,
+    Map,
+    MapIter,
+    MaybeUninit,
+    OpenOptions,
+    Option,
+    Ordering,
+    Pin,
+    ProcessError,
+    ProcessOutput,
+    ProcessSpec,
+    Query,
+    Rc,
+    RcWeak,
+    Result,
+    SocketAddress,
+    String,
+    ThreadError,
+    Vec,
+}
+
+/// A coordinate in the compiler trait's explicit type-generic list. The raw
+/// coordinate has no public constructor; coordinates are obtained only from a
+/// verified typed authority.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CompilerTraitGenericParameter(u8);
+
+impl CompilerTraitGenericParameter {
+    pub const fn index(self) -> u8 {
+        self.0
+    }
+}
+
+/// The required equality between implicit `Self` and the compiler trait's
+/// semantic operands.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerTraitSelfRelation {
+    OperatedType,
+    CallableType,
+    Target(CompilerTraitGenericParameter),
+    LeftHandSide(CompilerTraitGenericParameter),
+    Input(CompilerTraitGenericParameter),
+    Source(CompilerTraitGenericParameter),
+    Iterator(CompilerTraitGenericParameter),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerTraitReceiverMode {
+    None,
+    Value,
+    Shared,
+    Mutable,
+}
+
+/// Semantic identity of the single method supplied by a compiler-known trait.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CompilerTraitMethodKind {
+    Add,
+    BitAnd,
+    BitNot,
+    BitOr,
+    BitXor,
+    Clone,
+    Div,
+    Drop,
+    Eq,
+    FnCall,
+    FnMutCall,
+    FnOnceCall,
+    From,
+    IntoIterator,
+    IteratorNext,
+    LogicalNot,
+    Mul,
+    Neg,
+    OrdCompare,
+    Rem,
+    ShiftLeft,
+    ShiftRight,
+    Sub,
+    TryFrom,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerPrimitiveTypePattern {
+    Never,
+    Unit,
+    Bool,
+    Char,
+    Entity,
+    F32,
+    F64,
+    I8,
+    I16,
+    I32,
+    I64,
+    Isize,
+    Str,
+    U8,
+    U16,
+    U32,
+    U64,
+    Usize,
+}
+
+/// A type pattern in a compiler-trait callable. All nominal and generic
+/// references are typed; no consumer needs to interpret the C1 signature
+/// string.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompilerTraitTypePattern {
+    SelfType,
+    ExplicitGeneric(CompilerTraitGenericParameter),
+    SharedReference(Box<CompilerTraitTypePattern>),
+    MutableReference(Box<CompilerTraitTypePattern>),
+    Primitive(CompilerPrimitiveTypePattern),
+    Nominal {
+        kind: CompilerNominalKind,
+        arguments: Box<[CompilerTraitTypePattern]>,
+    },
+}
+
+/// Complete callable shape required by the compiler-known trait method.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompilerTraitCallablePattern {
+    Fixed {
+        parameters: Box<[CompilerTraitTypePattern]>,
+        result: CompilerTraitTypePattern,
+    },
+    /// `Fn*::call` adopts the parameter/result/effect shape encoded by its
+    /// `Signature` generic argument exactly.
+    ExactSignatureAndEffects {
+        signature: CompilerTraitGenericParameter,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerTraitEffectPattern {
+    Empty,
+    ExactSignature,
+}
+
+/// Coordinate in one intrinsic nominal method's declared generic list.
+/// Coordinates are obtained only from the verified typed authority.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CompilerMethodGenericParameter(u8);
+
+impl CompilerMethodGenericParameter {
+    pub const fn index(self) -> u8 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerMethodGenericParameterKind {
+    Type,
+    Lifetime,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerMethodGenericBoundPattern {
+    CompilerTrait(CompilerTraitKind),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompilerMethodGenericParameterAuthority {
+    coordinate: CompilerMethodGenericParameter,
+    source_name: String,
+    kind: CompilerMethodGenericParameterKind,
+    bounds: Box<[CompilerMethodGenericBoundPattern]>,
+}
+
+impl CompilerMethodGenericParameterAuthority {
+    pub const fn coordinate(&self) -> CompilerMethodGenericParameter {
+        self.coordinate
+    }
+
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    pub const fn kind(&self) -> CompilerMethodGenericParameterKind {
+        self.kind
+    }
+
+    pub fn bounds(&self) -> &[CompilerMethodGenericBoundPattern] {
+        &self.bounds
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerMethodLifetimePattern {
+    Elided,
+    Generic(CompilerMethodGenericParameter),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompilerMethodGenericArgumentPattern {
+    Type(CompilerMethodTypePattern),
+    Lifetime(CompilerMethodGenericParameter),
+}
+
+/// Closed type-pattern algebra for intrinsic methods owned by embedded
+/// nominals. Definition leaves are verified C1 bridge IDs, never invented
+/// stable semantic identities.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompilerMethodTypePattern {
+    Generic(CompilerMethodGenericParameter),
+    Definition {
+        definition: VirtualDefinitionId,
+        arguments: Box<[CompilerMethodGenericArgumentPattern]>,
+    },
+    SharedReference {
+        lifetime: CompilerMethodLifetimePattern,
+        referent: Box<CompilerMethodTypePattern>,
+    },
+    MutableReference {
+        lifetime: CompilerMethodLifetimePattern,
+        referent: Box<CompilerMethodTypePattern>,
+    },
+    Slice(Box<CompilerMethodTypePattern>),
+    Tuple(Box<[CompilerMethodTypePattern]>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerNominalMethodReceiverMode {
+    None,
+    Value,
+    Shared,
+    Mutable,
+}
+
+/// Coordinate in the compile-time selector list following `;` in an
+/// intrinsic signature.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CompilerMethodSelector(u8);
+
+impl CompilerMethodSelector {
+    pub const fn index(self) -> u8 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CompilerMethodSelectorKind {
+    DefinitionId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompilerMethodSelectorAuthority {
+    coordinate: CompilerMethodSelector,
+    source_name: String,
+    kind: CompilerMethodSelectorKind,
+}
+
+impl CompilerMethodSelectorAuthority {
+    pub const fn coordinate(&self) -> CompilerMethodSelector {
+        self.coordinate
+    }
+
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    pub const fn kind(&self) -> CompilerMethodSelectorKind {
+        self.kind
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CompilerNominalMethodEffectPattern {
+    Drop(CompilerMethodTypePattern),
+    Selector(CompilerMethodSelector),
+}
+
+/// Verified typed authority for one non-trait method owned by a compiler-known
+/// embedded nominal.
+#[derive(Debug, Eq, PartialEq)]
+pub struct CompilerNominalMethodAuthority {
+    owner: CompilerNominalKind,
+    c1_method: VirtualMethodId,
+    source_name: String,
+    stable_name: String,
+    lowering: VirtualMethodLowering,
+    is_unsafe: bool,
+    generics: Box<[CompilerMethodGenericParameterAuthority]>,
+    receiver: CompilerNominalMethodReceiverMode,
+    receiver_type: Option<CompilerMethodTypePattern>,
+    parameters: Box<[CompilerMethodTypePattern]>,
+    selectors: Box<[CompilerMethodSelectorAuthority]>,
+    result: CompilerMethodTypePattern,
+    requires: Box<[CompilerNominalMethodEffectPattern]>,
+    throws: Box<[CompilerNominalMethodEffectPattern]>,
+}
+
+impl CompilerNominalMethodAuthority {
+    pub const fn owner(&self) -> CompilerNominalKind {
+        self.owner
+    }
+
+    pub const fn c1_method(&self) -> VirtualMethodId {
+        self.c1_method
+    }
+
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    pub fn stable_name(&self) -> &str {
+        &self.stable_name
+    }
+
+    pub const fn lowering(&self) -> VirtualMethodLowering {
+        self.lowering
+    }
+
+    pub const fn is_unsafe(&self) -> bool {
+        self.is_unsafe
+    }
+
+    pub fn generics(&self) -> &[CompilerMethodGenericParameterAuthority] {
+        &self.generics
+    }
+
+    pub const fn receiver(&self) -> CompilerNominalMethodReceiverMode {
+        self.receiver
+    }
+
+    /// Complete source-level receiver type. This includes the outer reference
+    /// for borrowed receivers and the owner instantiation for value receivers.
+    pub const fn receiver_type(&self) -> Option<&CompilerMethodTypePattern> {
+        self.receiver_type.as_ref()
+    }
+
+    /// Runtime parameters after the receiver, if any, has been removed.
+    pub fn parameters(&self) -> &[CompilerMethodTypePattern] {
+        &self.parameters
+    }
+
+    pub fn selectors(&self) -> &[CompilerMethodSelectorAuthority] {
+        &self.selectors
+    }
+
+    pub const fn result(&self) -> &CompilerMethodTypePattern {
+        &self.result
+    }
+
+    pub fn requires(&self) -> &[CompilerNominalMethodEffectPattern] {
+        &self.requires
+    }
+
+    pub fn throws(&self) -> &[CompilerNominalMethodEffectPattern] {
+        &self.throws
+    }
+}
+
+/// Verified typed authority for one embedded nominal. `definition` is exposed
+/// only as a bridge back to C1 HIR; [`CompilerNominalKind`] is its semantic
+/// identity.
+#[derive(Debug)]
+pub struct CompilerNominalAuthority {
+    kind: CompilerNominalKind,
+    definition: VirtualDefinitionId,
+    flavor: VirtualTypeFlavor,
+    declaration_kind: VirtualDeclarationKind,
+}
+
+impl CompilerNominalAuthority {
+    pub const fn kind(&self) -> CompilerNominalKind {
+        self.kind
+    }
+
+    pub const fn c1_definition(&self) -> VirtualDefinitionId {
+        self.definition
+    }
+
+    pub const fn flavor(&self) -> VirtualTypeFlavor {
+        self.flavor
+    }
+
+    pub const fn declaration_kind(&self) -> VirtualDeclarationKind {
+        self.declaration_kind
+    }
+}
+
+/// Verified typed authority for one compiler-trait method.
+#[derive(Debug)]
+pub struct CompilerTraitMethodAuthority {
+    kind: CompilerTraitMethodKind,
+    c1_method: VirtualMethodId,
+    source_name: String,
+    receiver: CompilerTraitReceiverMode,
+    callable: CompilerTraitCallablePattern,
+    effects: CompilerTraitEffectPattern,
+}
+
+impl CompilerTraitMethodAuthority {
+    pub const fn kind(&self) -> CompilerTraitMethodKind {
+        self.kind
+    }
+
+    pub const fn c1_method(&self) -> VirtualMethodId {
+        self.c1_method
+    }
+
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    pub const fn receiver(&self) -> CompilerTraitReceiverMode {
+        self.receiver
+    }
+
+    pub const fn callable(&self) -> &CompilerTraitCallablePattern {
+        &self.callable
+    }
+
+    pub const fn effects(&self) -> CompilerTraitEffectPattern {
+        self.effects
+    }
+}
+
+/// Verified typed authority for one compiler-known trait.
+#[derive(Debug)]
+pub struct CompilerTraitAuthority {
+    kind: CompilerTraitKind,
+    c1_definition: VirtualDefinitionId,
+    explicit_generic_arity: u8,
+    designated_self: CompilerTraitSelfRelation,
+    user_impl_policy: UserImplPolicy,
+    method: Option<CompilerTraitMethodAuthority>,
+}
+
+impl CompilerTraitAuthority {
+    pub const fn kind(&self) -> CompilerTraitKind {
+        self.kind
+    }
+
+    pub const fn c1_definition(&self) -> VirtualDefinitionId {
+        self.c1_definition
+    }
+
+    pub const fn explicit_generic_arity(&self) -> u8 {
+        self.explicit_generic_arity
+    }
+
+    pub const fn designated_self(&self) -> CompilerTraitSelfRelation {
+        self.designated_self
+    }
+
+    pub const fn user_impl_policy(&self) -> UserImplPolicy {
+        self.user_impl_policy
+    }
+
+    pub const fn method(&self) -> Option<&CompilerTraitMethodAuthority> {
+        self.method.as_ref()
+    }
+}
+
+/// C2-only typed projection derived and checked at the branded Embedded Core
+/// construction boundary. It deliberately does not participate in the frozen
+/// C1 canonical byte stream.
+#[derive(Debug)]
+pub struct EmbeddedCoreC2TypedProjection {
+    compiler_traits: Box<[CompilerTraitAuthority]>,
+    primitive_definitions: Box<[(VirtualDefinitionId, CompilerPrimitiveTypePattern)]>,
+    nominals: Box<[CompilerNominalAuthority]>,
+    nominal_methods: Box<[CompilerNominalMethodAuthority]>,
+    _seal: private::TypedSeal,
+}
+
+impl EmbeddedCoreC2TypedProjection {
+    pub fn compiler_traits(&self) -> &[CompilerTraitAuthority] {
+        &self.compiler_traits
+    }
+
+    pub fn nominals(&self) -> &[CompilerNominalAuthority] {
+        &self.nominals
+    }
+
+    pub fn nominal_methods(&self) -> &[CompilerNominalMethodAuthority] {
+        &self.nominal_methods
+    }
+
+    pub fn compiler_trait(&self, kind: CompilerTraitKind) -> &CompilerTraitAuthority {
+        self.compiler_traits
+            .iter()
+            .find(|row| row.kind == kind)
+            .expect("verified typed Core contains every compiler trait")
+    }
+
+    pub fn compiler_trait_for_c1_definition(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<&CompilerTraitAuthority> {
+        self.compiler_traits
+            .iter()
+            .find(|row| row.c1_definition == definition)
+    }
+
+    /// Returns the verified primitive semantic kind for one C1 definition
+    /// bridge ID. Consumers never interpret the C1 row name or ordinal.
+    pub fn primitive_for_c1_definition(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<CompilerPrimitiveTypePattern> {
+        self.primitive_definitions
+            .iter()
+            .find_map(|&(candidate, primitive)| (candidate == definition).then_some(primitive))
+    }
+
+    pub fn compiler_trait_method(
+        &self,
+        kind: CompilerTraitMethodKind,
+    ) -> Option<&CompilerTraitMethodAuthority> {
+        self.compiler_traits
+            .iter()
+            .filter_map(|row| row.method.as_ref())
+            .find(|method| method.kind == kind)
+    }
+
+    pub fn compiler_trait_method_for_c1_method(
+        &self,
+        method: VirtualMethodId,
+    ) -> Option<&CompilerTraitMethodAuthority> {
+        self.compiler_traits
+            .iter()
+            .filter_map(|row| row.method.as_ref())
+            .find(|row| row.c1_method == method)
+    }
+
+    pub fn nominal(&self, kind: CompilerNominalKind) -> &CompilerNominalAuthority {
+        self.nominals
+            .iter()
+            .find(|row| row.kind == kind)
+            .expect("verified typed Core contains every embedded nominal")
+    }
+
+    pub fn nominal_for_c1_definition(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<&CompilerNominalAuthority> {
+        self.nominals
+            .iter()
+            .find(|row| row.definition == definition)
+    }
+
+    pub fn nominal_method_for_c1_method(
+        &self,
+        method: VirtualMethodId,
+    ) -> Option<&CompilerNominalMethodAuthority> {
+        self.nominal_methods
+            .binary_search_by_key(&method, |row| row.c1_method)
+            .ok()
+            .map(|index| &self.nominal_methods[index])
+    }
+
+    pub fn nominal_method(
+        &self,
+        owner: CompilerNominalKind,
+        source_name: &str,
+    ) -> Option<&CompilerNominalMethodAuthority> {
+        let mut rows = self
+            .nominal_methods
+            .iter()
+            .filter(|row| row.owner == owner && row.source_name == source_name);
+        let row = rows.next()?;
+        rows.next().is_none().then_some(row)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -690,6 +1316,7 @@ impl EmbeddedCoreC1PackageProjection {
 #[derive(Debug)]
 pub struct VerifiedEmbeddedCoreAuthority {
     projection: EmbeddedCoreC1PackageProjection,
+    typed_c2: EmbeddedCoreC2TypedProjection,
     _seal: private::Seal,
 }
 
@@ -708,6 +1335,44 @@ impl VerifiedEmbeddedCoreAuthority {
 
     pub const fn projection(&self) -> &EmbeddedCoreC1PackageProjection {
         &self.projection
+    }
+
+    /// Returns the strictly validated C2 semantic view. Its trait and nominal
+    /// enums, not C1 virtual row ordinals, are semantic identities.
+    pub const fn typed_c2(&self) -> &EmbeddedCoreC2TypedProjection {
+        &self.typed_c2
+    }
+
+    pub fn compiler_trait(&self, kind: CompilerTraitKind) -> &CompilerTraitAuthority {
+        self.typed_c2.compiler_trait(kind)
+    }
+
+    /// Resolves a verified C1 definition bridge ID to its primitive semantic
+    /// kind without exposing C1 row-order or spelling as authority.
+    pub fn compiler_primitive_for_c1_definition(
+        &self,
+        definition: VirtualDefinitionId,
+    ) -> Option<CompilerPrimitiveTypePattern> {
+        self.typed_c2.primitive_for_c1_definition(definition)
+    }
+
+    pub fn compiler_nominal(&self, kind: CompilerNominalKind) -> &CompilerNominalAuthority {
+        self.typed_c2.nominal(kind)
+    }
+
+    pub fn compiler_nominal_method_for_c1_method(
+        &self,
+        method: VirtualMethodId,
+    ) -> Option<&CompilerNominalMethodAuthority> {
+        self.typed_c2.nominal_method_for_c1_method(method)
+    }
+
+    pub fn compiler_nominal_method(
+        &self,
+        owner: CompilerNominalKind,
+        source_name: &str,
+    ) -> Option<&CompilerNominalMethodAuthority> {
+        self.typed_c2.nominal_method(owner, source_name)
     }
 
     pub fn lookup_prelude(
@@ -821,6 +1486,12 @@ pub enum EmbeddedCoreVerificationError {
     NonCanonicalOrder(&'static str),
     DuplicateRow(&'static str),
     InvalidReference(&'static str),
+    InvalidTypedTraitAuthority,
+    InvalidTypedMethodAuthority,
+    InvalidTypedPrimitiveAuthority,
+    InvalidTypedNominalAuthority,
+    InvalidTypedNominalMethodAuthority,
+    InvalidTypedSourceAgreement,
     InvalidSpan,
     InvalidPanicBody,
 }
@@ -855,6 +1526,22 @@ impl fmt::Display for EmbeddedCoreVerificationError {
                     "embedded-core {rows} row has an invalid reference"
                 )
             }
+            Self::InvalidTypedTraitAuthority => {
+                formatter.write_str("embedded-core typed compiler-trait authority is inconsistent")
+            }
+            Self::InvalidTypedMethodAuthority => formatter
+                .write_str("embedded-core typed compiler-trait method authority is inconsistent"),
+            Self::InvalidTypedPrimitiveAuthority => {
+                formatter.write_str("embedded-core typed primitive authority is inconsistent")
+            }
+            Self::InvalidTypedNominalAuthority => {
+                formatter.write_str("embedded-core typed nominal authority is inconsistent")
+            }
+            Self::InvalidTypedNominalMethodAuthority => {
+                formatter.write_str("embedded-core typed nominal method authority is inconsistent")
+            }
+            Self::InvalidTypedSourceAgreement => formatter
+                .write_str("embedded-core typed authority disagrees with its synthetic source"),
             Self::InvalidSpan => formatter.write_str("embedded-core source span is invalid"),
             Self::InvalidPanicBody => {
                 formatter.write_str("embedded-core panic symbolic body is invalid")
@@ -877,8 +1564,11 @@ pub fn verified_embedded_core_authority(
         .get_or_init(|| {
             let projection = build_release_projection()?;
             verify_projection(&projection)?;
+            let typed_c2 = build_typed_c2_projection(&projection)?;
+            verify_typed_c2_projection(&projection, &typed_c2)?;
             Ok(Arc::new(VerifiedEmbeddedCoreAuthority {
                 projection,
+                typed_c2,
                 _seal: private::Seal,
             }))
         })
@@ -895,6 +1585,26 @@ struct DefinitionSpec {
     flavor: Option<VirtualTypeFlavor>,
     trait_policy: Option<UserImplPolicy>,
     prelude: bool,
+}
+
+#[derive(Clone, Copy)]
+struct CompilerTraitMethodSpec {
+    kind: CompilerTraitMethodKind,
+    source_name: &'static str,
+    stable_name: &'static str,
+    signature: &'static str,
+    receiver: CompilerTraitReceiverMode,
+}
+
+#[derive(Clone, Copy)]
+struct CompilerTraitSpec {
+    kind: CompilerTraitKind,
+    name: &'static str,
+    shape: &'static str,
+    generic_names: &'static [&'static str],
+    designated_self: CompilerTraitSelfRelation,
+    user_impl_policy: UserImplPolicy,
+    method: Option<CompilerTraitMethodSpec>,
 }
 
 #[derive(Clone, Copy)]
@@ -1480,6 +2190,1484 @@ fn find_definition_id(
         .map(|row| row.id)
 }
 
+fn build_typed_c2_projection(
+    projection: &EmbeddedCoreC1PackageProjection,
+) -> Result<EmbeddedCoreC2TypedProjection, EmbeddedCoreVerificationError> {
+    let compiler_traits = COMPILER_TRAITS
+        .iter()
+        .map(|spec| build_typed_compiler_trait(projection, spec))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_boxed_slice();
+    let primitive_definitions = PRIMITIVE_TYPES
+        .iter()
+        .map(|spec| {
+            let definition =
+                find_definition_id(&projection.definitions, spec.name, VirtualNamespace::Type)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority)?;
+            let row = projection
+                .definitions
+                .get(usize::from(definition.0))
+                .ok_or(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority)?;
+            if row.kind != VirtualDefinitionKind::PrimitiveType
+                || row.declaration_kind != VirtualDeclarationKind::Primitive
+            {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority);
+            }
+            Ok((definition, spec.kind))
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_boxed_slice();
+    let nominals = NOMINAL_TYPES
+        .iter()
+        .map(|&(kind, name, shape, flavor, declaration_kind)| {
+            let definition =
+                find_definition_id(&projection.definitions, name, VirtualNamespace::Type)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority)?;
+            let definition_row = projection
+                .definitions
+                .get(usize::from(definition.0))
+                .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority)?;
+            let type_row = projection
+                .types
+                .iter()
+                .find(|row| row.definition == definition)
+                .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority)?;
+            if definition_row.name != name
+                || definition_row.semantic_shape != shape
+                || definition_row.kind != VirtualDefinitionKind::NominalType
+                || definition_row.declaration_kind != declaration_kind
+                || type_row.flavor != flavor
+            {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority);
+            }
+            Ok(CompilerNominalAuthority {
+                kind,
+                definition,
+                flavor,
+                declaration_kind,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_boxed_slice();
+    let nominal_methods = build_typed_nominal_methods(projection)?;
+    Ok(EmbeddedCoreC2TypedProjection {
+        compiler_traits,
+        primitive_definitions,
+        nominals,
+        nominal_methods,
+        _seal: private::TypedSeal,
+    })
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ParsedNominalMethodSignature {
+    head_before_generics: String,
+    head_after_generics: String,
+    receiver_in_head: bool,
+    is_unsafe: bool,
+    generics: Box<[CompilerMethodGenericParameterAuthority]>,
+    receiver: CompilerNominalMethodReceiverMode,
+    receiver_type: Option<CompilerMethodTypePattern>,
+    parameters: Box<[CompilerMethodTypePattern]>,
+    selectors: Box<[CompilerMethodSelectorAuthority]>,
+    result: CompilerMethodTypePattern,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NominalMethodEmptyEffectSyntax {
+    Omitted,
+    Braced,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct ParsedNominalMethodEffects {
+    patterns: Box<[CompilerNominalMethodEffectPattern]>,
+    empty_syntax: NominalMethodEmptyEffectSyntax,
+}
+
+fn build_typed_nominal_methods(
+    projection: &EmbeddedCoreC1PackageProjection,
+) -> Result<Box<[CompilerNominalMethodAuthority]>, EmbeddedCoreVerificationError> {
+    let mut authorities = Vec::new();
+    let mut seen_methods = BTreeSet::new();
+    let mut seen_names = BTreeSet::new();
+
+    for spec in METHOD_SPECS {
+        let Some(owner_name) = spec.owner else {
+            continue;
+        };
+        let Some(owner_kind) = compiler_nominal_kind_for_name(owner_name) else {
+            continue;
+        };
+        if !is_intrinsic_nominal_method_owner(owner_kind) {
+            continue;
+        }
+
+        let owner_definition =
+            find_definition_id(&projection.definitions, owner_name, VirtualNamespace::Type)
+                .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+        let owner_row = projection
+            .definitions
+            .get(usize::from(owner_definition.0))
+            .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+        if owner_row.kind != VirtualDefinitionKind::NominalType {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+
+        let mut matching_rows = projection
+            .methods
+            .iter()
+            .filter(|row| row.stable_name == spec.stable_name);
+        let row = matching_rows
+            .next()
+            .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+        if matching_rows.next().is_some()
+            || row.owner != Some(owner_definition)
+            || row.source_name != spec.source_name
+            || row.stable_name != spec.stable_name
+            || row.signature != spec.signature
+            || row.requires != spec.requires
+            || row.throws != spec.throws
+            || row.lowering != spec.lowering
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+        if !source_has_method_line(projection, row) {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedSourceAgreement);
+        }
+        if !seen_methods.insert(row.id) || !seen_names.insert((owner_kind, row.source_name.clone()))
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+
+        let parsed = parse_nominal_method_signature(
+            projection,
+            owner_name,
+            owner_definition,
+            spec.source_name,
+            spec.signature,
+        )?;
+        let requires = parse_nominal_method_effects(
+            projection,
+            spec.requires,
+            b'R',
+            &parsed.generics,
+            &parsed.selectors,
+        )?;
+        let throws = parse_nominal_method_effects(
+            projection,
+            spec.throws,
+            b'T',
+            &parsed.generics,
+            &parsed.selectors,
+        )?;
+        if render_nominal_method_signature(projection, &parsed)? != spec.signature
+            || render_nominal_method_effects(
+                projection,
+                &requires,
+                b'R',
+                &parsed.generics,
+                &parsed.selectors,
+            )? != spec.requires
+            || render_nominal_method_effects(
+                projection,
+                &throws,
+                b'T',
+                &parsed.generics,
+                &parsed.selectors,
+            )? != spec.throws
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+
+        authorities.push(CompilerNominalMethodAuthority {
+            owner: owner_kind,
+            c1_method: row.id,
+            source_name: row.source_name.clone(),
+            stable_name: row.stable_name.clone(),
+            lowering: row.lowering,
+            is_unsafe: parsed.is_unsafe,
+            generics: parsed.generics,
+            receiver: parsed.receiver,
+            receiver_type: parsed.receiver_type,
+            parameters: parsed.parameters,
+            selectors: parsed.selectors,
+            result: parsed.result,
+            requires: requires.patterns,
+            throws: throws.patterns,
+        });
+    }
+
+    for row in &projection.methods {
+        let Some(owner) = row.owner else {
+            continue;
+        };
+        let Some(definition) = projection.definitions.get(usize::from(owner.0)) else {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        };
+        let Some(kind) = compiler_nominal_kind_for_name(&definition.name) else {
+            continue;
+        };
+        if is_intrinsic_nominal_method_owner(kind) && !seen_methods.contains(&row.id) {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+    }
+
+    authorities.sort_by_key(|row| row.c1_method);
+    Ok(authorities.into_boxed_slice())
+}
+
+fn compiler_nominal_kind_for_name(name: &str) -> Option<CompilerNominalKind> {
+    NOMINAL_TYPES
+        .iter()
+        .find(|(_, nominal_name, _, _, _)| *nominal_name == name)
+        .map(|(kind, _, _, _, _)| *kind)
+}
+
+fn is_intrinsic_nominal_method_owner(kind: CompilerNominalKind) -> bool {
+    // `Caps` is the affine capability projection, whose compiler operation is
+    // selected through capability authority rather than nominal method calls.
+    kind != CompilerNominalKind::Caps
+}
+
+fn parse_nominal_method_signature(
+    projection: &EmbeddedCoreC1PackageProjection,
+    owner_name: &str,
+    owner_definition: VirtualDefinitionId,
+    source_name: &str,
+    signature: &str,
+) -> Result<ParsedNominalMethodSignature, EmbeddedCoreVerificationError> {
+    let (is_unsafe, signature) = match signature.strip_prefix("unsafe ") {
+        Some(signature) => (true, signature),
+        None => (false, signature),
+    };
+    let open = signature
+        .find('(')
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+    let close = matching_signature_parenthesis(signature, open)?;
+    let result_text = signature
+        .get(close + 1..)
+        .and_then(|suffix| suffix.strip_prefix(" -> "))
+        .filter(|result| !result.is_empty())
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+    let head = &signature[..open];
+    let parameters_text = &signature[open + 1..close];
+    let (head_before_generics, generics_text, head_after_generics) =
+        split_nominal_method_head(head)?;
+    let generics = parse_nominal_method_generics(generics_text)?;
+
+    let sections = split_nominal_top_level(parameters_text, "; ")?;
+    if sections.len() > 2 {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+    let mut parameters = split_nominal_top_level(sections.first().copied().unwrap_or(""), ", ")?
+        .into_iter()
+        .map(|value| parse_nominal_method_type(projection, value, &generics))
+        .collect::<Result<Vec<_>, _>>()?;
+    let selectors = match sections.get(1) {
+        Some(value) if !value.is_empty() => parse_nominal_method_selectors(value)?,
+        Some(_) => return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority),
+        None => Vec::new(),
+    };
+    let result = parse_nominal_method_type(projection, result_text, &generics)?;
+
+    let mut receiver_in_head = false;
+    let mut receiver = CompilerNominalMethodReceiverMode::None;
+    let mut receiver_type = None;
+    if !head_after_generics.is_empty() {
+        let expected_suffix = format!(".{source_name}");
+        if head_before_generics != owner_name
+            || head_after_generics != expected_suffix
+            || generics.is_empty()
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+        let arguments = generics
+            .iter()
+            .map(nominal_method_generic_as_argument)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        receiver_in_head = true;
+        receiver = CompilerNominalMethodReceiverMode::Value;
+        receiver_type = Some(CompilerMethodTypePattern::Definition {
+            definition: owner_definition,
+            arguments,
+        });
+    } else if let Some(mode) = parameters
+        .first()
+        .and_then(|parameter| nominal_receiver_mode(parameter, owner_definition))
+    {
+        receiver = mode;
+        receiver_type = Some(parameters.remove(0));
+    }
+
+    Ok(ParsedNominalMethodSignature {
+        head_before_generics: head_before_generics.to_owned(),
+        head_after_generics: head_after_generics.to_owned(),
+        receiver_in_head,
+        is_unsafe,
+        generics: generics.into_boxed_slice(),
+        receiver,
+        receiver_type,
+        parameters: parameters.into_boxed_slice(),
+        selectors: selectors.into_boxed_slice(),
+        result,
+    })
+}
+
+fn matching_signature_parenthesis(
+    signature: &str,
+    open: usize,
+) -> Result<usize, EmbeddedCoreVerificationError> {
+    let mut depth = 0_u32;
+    for (offset, byte) in signature[open..].bytes().enumerate() {
+        match byte {
+            b'(' => {
+                depth = depth
+                    .checked_add(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            }
+            b')' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+                if depth == 0 {
+                    return Ok(open + offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)
+}
+
+fn split_nominal_method_head(
+    head: &str,
+) -> Result<(&str, Option<&str>, &str), EmbeddedCoreVerificationError> {
+    if head.is_empty()
+        || !head
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-<>+'-,".contains(&byte))
+    {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+    let Some(open) = head.find('<') else {
+        if head.contains('>') {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+        return Ok((head, None, ""));
+    };
+    let mut depth = 0_u32;
+    let mut close = None;
+    for (offset, byte) in head[open..].bytes().enumerate() {
+        match byte {
+            b'<' => {
+                depth = depth
+                    .checked_add(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            }
+            b'>' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+                if depth == 0 {
+                    close = Some(open + offset);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let close = close.ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+    let before = &head[..open];
+    let generics = &head[open + 1..close];
+    let after = &head[close + 1..];
+    if before.is_empty()
+        || generics.is_empty()
+        || after.contains(['<', '>'])
+        || (!after.is_empty() && !after.starts_with('.'))
+    {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+    Ok((before, Some(generics), after))
+}
+
+fn parse_nominal_method_generics(
+    generics: Option<&str>,
+) -> Result<Vec<CompilerMethodGenericParameterAuthority>, EmbeddedCoreVerificationError> {
+    let Some(generics) = generics else {
+        return Ok(Vec::new());
+    };
+    let mut names = BTreeSet::new();
+    split_nominal_top_level(generics, ",")?
+        .into_iter()
+        .enumerate()
+        .map(|(index, declaration)| {
+            let coordinate = CompilerMethodGenericParameter(u8::try_from(index).map_err(|_| {
+                EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority
+            })?);
+            let (source_name, kind, bounds) = if declaration.starts_with('\'') {
+                if !valid_lifetime_name(declaration) {
+                    return Err(
+                        EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority,
+                    );
+                }
+                (
+                    declaration,
+                    CompilerMethodGenericParameterKind::Lifetime,
+                    Vec::new(),
+                )
+            } else {
+                let mut pieces = declaration.split(':');
+                let source_name = pieces.next().unwrap_or_default();
+                let bounds_text = pieces.next();
+                if pieces.next().is_some() || !valid_identifier(source_name) {
+                    return Err(
+                        EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority,
+                    );
+                }
+                let mut seen_bounds = BTreeSet::new();
+                let bounds = match bounds_text {
+                    Some("") => {
+                        return Err(
+                            EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority,
+                        )
+                    }
+                    Some(bounds) => bounds
+                        .split('+')
+                        .map(|bound| {
+                            let kind = compiler_trait_kind_for_name(bound).ok_or(
+                                EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority,
+                            )?;
+                            if !seen_bounds.insert(kind) {
+                                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+                            }
+                            Ok(CompilerMethodGenericBoundPattern::CompilerTrait(kind))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                    None => Vec::new(),
+                };
+                (
+                    source_name,
+                    CompilerMethodGenericParameterKind::Type,
+                    bounds,
+                )
+            };
+            if !names.insert(source_name.to_owned()) {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+            }
+            Ok(CompilerMethodGenericParameterAuthority {
+                coordinate,
+                source_name: source_name.to_owned(),
+                kind,
+                bounds: bounds.into_boxed_slice(),
+            })
+        })
+        .collect()
+}
+
+fn compiler_trait_kind_for_name(name: &str) -> Option<CompilerTraitKind> {
+    COMPILER_TRAITS
+        .iter()
+        .find(|spec| spec.name == name)
+        .map(|spec| spec.kind)
+}
+
+fn compiler_trait_name_for_kind(kind: CompilerTraitKind) -> Option<&'static str> {
+    COMPILER_TRAITS
+        .iter()
+        .find(|spec| spec.kind == kind)
+        .map(|spec| spec.name)
+}
+
+fn valid_identifier(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    matches!(bytes.next(), Some(byte) if byte.is_ascii_alphabetic() || byte == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn valid_lifetime_name(value: &str) -> bool {
+    value.strip_prefix('\'').is_some_and(valid_identifier)
+}
+
+fn nominal_method_generic_as_argument(
+    generic: &CompilerMethodGenericParameterAuthority,
+) -> CompilerMethodGenericArgumentPattern {
+    match generic.kind {
+        CompilerMethodGenericParameterKind::Type => CompilerMethodGenericArgumentPattern::Type(
+            CompilerMethodTypePattern::Generic(generic.coordinate),
+        ),
+        CompilerMethodGenericParameterKind::Lifetime => {
+            CompilerMethodGenericArgumentPattern::Lifetime(generic.coordinate)
+        }
+    }
+}
+
+fn nominal_receiver_mode(
+    pattern: &CompilerMethodTypePattern,
+    owner: VirtualDefinitionId,
+) -> Option<CompilerNominalMethodReceiverMode> {
+    match pattern {
+        CompilerMethodTypePattern::Definition { definition, .. } if *definition == owner => {
+            Some(CompilerNominalMethodReceiverMode::Value)
+        }
+        CompilerMethodTypePattern::SharedReference { referent, .. } if matches!(referent.as_ref(), CompilerMethodTypePattern::Definition { definition, .. } if *definition == owner) => {
+            Some(CompilerNominalMethodReceiverMode::Shared)
+        }
+        CompilerMethodTypePattern::MutableReference { referent, .. } if matches!(referent.as_ref(), CompilerMethodTypePattern::Definition { definition, .. } if *definition == owner) => {
+            Some(CompilerNominalMethodReceiverMode::Mutable)
+        }
+        _ => None,
+    }
+}
+
+fn split_nominal_top_level<'a>(
+    value: &'a str,
+    delimiter: &str,
+) -> Result<Vec<&'a str>, EmbeddedCoreVerificationError> {
+    if delimiter.is_empty() {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let bytes = value.as_bytes();
+    let delimiter = delimiter.as_bytes();
+    let mut angle_depth = 0_u32;
+    let mut parenthesis_depth = 0_u32;
+    let mut bracket_depth = 0_u32;
+    let mut start = 0_usize;
+    let mut index = 0_usize;
+    let mut values = Vec::new();
+    while index < bytes.len() {
+        if angle_depth == 0
+            && parenthesis_depth == 0
+            && bracket_depth == 0
+            && bytes[index..].starts_with(delimiter)
+        {
+            if start == index {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+            }
+            values.push(&value[start..index]);
+            index += delimiter.len();
+            start = index;
+            continue;
+        }
+        match bytes[index] {
+            b'<' => {
+                angle_depth = angle_depth
+                    .checked_add(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            }
+            b'>' => {
+                angle_depth = angle_depth
+                    .checked_sub(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            }
+            b'(' => {
+                parenthesis_depth = parenthesis_depth
+                    .checked_add(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            }
+            b')' => {
+                parenthesis_depth = parenthesis_depth
+                    .checked_sub(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            }
+            b'[' => {
+                bracket_depth = bracket_depth
+                    .checked_add(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            }
+            b']' => {
+                bracket_depth = bracket_depth
+                    .checked_sub(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    if angle_depth != 0 || parenthesis_depth != 0 || bracket_depth != 0 || start == value.len() {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+    values.push(&value[start..]);
+    Ok(values)
+}
+
+fn parse_nominal_method_selectors(
+    selectors: &str,
+) -> Result<Vec<CompilerMethodSelectorAuthority>, EmbeddedCoreVerificationError> {
+    let mut names = BTreeSet::new();
+    split_nominal_top_level(selectors, ", ")?
+        .into_iter()
+        .enumerate()
+        .map(|(index, selector)| {
+            let (source_name, kind) = selector
+                .split_once(':')
+                .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            if !valid_identifier(source_name)
+                || kind != "DefinitionId"
+                || selector.matches(':').count() != 1
+                || !names.insert(source_name.to_owned())
+            {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+            }
+            Ok(CompilerMethodSelectorAuthority {
+                coordinate: CompilerMethodSelector(u8::try_from(index).map_err(|_| {
+                    EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority
+                })?),
+                source_name: source_name.to_owned(),
+                kind: CompilerMethodSelectorKind::DefinitionId,
+            })
+        })
+        .collect()
+}
+
+fn parse_nominal_method_type(
+    projection: &EmbeddedCoreC1PackageProjection,
+    value: &str,
+    generics: &[CompilerMethodGenericParameterAuthority],
+) -> Result<CompilerMethodTypePattern, EmbeddedCoreVerificationError> {
+    if value.is_empty() || value.trim() != value {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+    if let Some(reference) = value.strip_prefix('&') {
+        let (lifetime, reference) = if reference.starts_with('\'') {
+            let separator = reference
+                .find(' ')
+                .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            let lifetime_name = &reference[..separator];
+            let generic = nominal_method_generic_by_name(generics, lifetime_name)
+                .filter(|generic| generic.kind == CompilerMethodGenericParameterKind::Lifetime)
+                .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            (
+                CompilerMethodLifetimePattern::Generic(generic.coordinate),
+                &reference[separator + 1..],
+            )
+        } else {
+            (CompilerMethodLifetimePattern::Elided, reference)
+        };
+        let (mutable, referent) = match reference.strip_prefix("mut ") {
+            Some(referent) => (true, referent),
+            None => (false, reference),
+        };
+        if referent.is_empty() {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+        let referent = Box::new(parse_nominal_method_type(projection, referent, generics)?);
+        return Ok(if mutable {
+            CompilerMethodTypePattern::MutableReference { lifetime, referent }
+        } else {
+            CompilerMethodTypePattern::SharedReference { lifetime, referent }
+        });
+    }
+    if value == "()" {
+        return nominal_method_definition_type(projection, value, Box::new([]));
+    }
+    if let Some(inner) = value
+        .strip_prefix('[')
+        .and_then(|inner| inner.strip_suffix(']'))
+    {
+        if inner.is_empty() {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+        return Ok(CompilerMethodTypePattern::Slice(Box::new(
+            parse_nominal_method_type(projection, inner, generics)?,
+        )));
+    }
+    if let Some(inner) = value
+        .strip_prefix('(')
+        .and_then(|inner| inner.strip_suffix(')'))
+    {
+        if inner.is_empty() {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+        let elements = split_nominal_top_level(inner, ",")?
+            .into_iter()
+            .map(|element| parse_nominal_method_type(projection, element, generics))
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(CompilerMethodTypePattern::Tuple(
+            elements.into_boxed_slice(),
+        ));
+    }
+    if let Some(generic) = nominal_method_generic_by_name(generics, value) {
+        if generic.kind != CompilerMethodGenericParameterKind::Type {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+        return Ok(CompilerMethodTypePattern::Generic(generic.coordinate));
+    }
+    if value.starts_with('\'') {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+
+    if let Some(open) = value.find('<') {
+        let name = &value[..open];
+        let arguments = value
+            .get(open + 1..)
+            .and_then(|arguments| arguments.strip_suffix('>'))
+            .filter(|arguments| !arguments.is_empty())
+            .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+        if name.is_empty() || name.contains('>') {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+        let arguments = split_nominal_top_level(arguments, ",")?
+            .into_iter()
+            .map(|argument| {
+                if argument.starts_with('\'') {
+                    let generic = nominal_method_generic_by_name(generics, argument)
+                        .filter(|generic| {
+                            generic.kind == CompilerMethodGenericParameterKind::Lifetime
+                        })
+                        .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+                    Ok(CompilerMethodGenericArgumentPattern::Lifetime(
+                        generic.coordinate,
+                    ))
+                } else {
+                    Ok(CompilerMethodGenericArgumentPattern::Type(
+                        parse_nominal_method_type(projection, argument, generics)?,
+                    ))
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return nominal_method_definition_type(projection, name, arguments.into_boxed_slice());
+    }
+    if value.contains('>') {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+    nominal_method_definition_type(projection, value, Box::new([]))
+}
+
+fn nominal_method_generic_by_name<'a>(
+    generics: &'a [CompilerMethodGenericParameterAuthority],
+    name: &str,
+) -> Option<&'a CompilerMethodGenericParameterAuthority> {
+    let mut matches = generics
+        .iter()
+        .filter(|generic| generic.source_name == name);
+    let generic = matches.next()?;
+    matches.next().is_none().then_some(generic)
+}
+
+fn nominal_method_definition_type(
+    projection: &EmbeddedCoreC1PackageProjection,
+    name: &str,
+    arguments: Box<[CompilerMethodGenericArgumentPattern]>,
+) -> Result<CompilerMethodTypePattern, EmbeddedCoreVerificationError> {
+    let definition = find_definition_id(&projection.definitions, name, VirtualNamespace::Type)
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+    Ok(CompilerMethodTypePattern::Definition {
+        definition,
+        arguments,
+    })
+}
+
+fn parse_nominal_method_effects(
+    projection: &EmbeddedCoreC1PackageProjection,
+    value: &str,
+    field: u8,
+    generics: &[CompilerMethodGenericParameterAuthority],
+    selectors: &[CompilerMethodSelectorAuthority],
+) -> Result<ParsedNominalMethodEffects, EmbeddedCoreVerificationError> {
+    if value.is_empty() {
+        return Ok(ParsedNominalMethodEffects {
+            patterns: Box::new([]),
+            empty_syntax: NominalMethodEmptyEffectSyntax::Omitted,
+        });
+    }
+    if value == "{}" {
+        return Ok(ParsedNominalMethodEffects {
+            patterns: Box::new([]),
+            empty_syntax: NominalMethodEmptyEffectSyntax::Braced,
+        });
+    }
+    let prefix = match field {
+        b'R' => "R{",
+        b'T' => "T{",
+        _ => return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority),
+    };
+    let inner = value
+        .strip_prefix(prefix)
+        .and_then(|value| value.strip_suffix('}'))
+        .filter(|value| !value.is_empty())
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+    let mut seen = BTreeSet::new();
+    let effects = split_nominal_top_level(inner, ",")?
+        .into_iter()
+        .map(|effect| {
+            if !seen.insert(effect.to_owned()) {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+            }
+            if let Some(inner) = effect
+                .strip_prefix("Drop(")
+                .and_then(|effect| effect.strip_suffix(')'))
+            {
+                if inner.is_empty() {
+                    return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+                }
+                return Ok(CompilerNominalMethodEffectPattern::Drop(
+                    parse_nominal_method_type(projection, inner, generics)?,
+                ));
+            }
+            let selector = selectors
+                .iter()
+                .filter(|selector| selector.source_name == effect)
+                .collect::<Vec<_>>();
+            if selector.len() != 1 {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+            }
+            Ok(CompilerNominalMethodEffectPattern::Selector(
+                selector[0].coordinate,
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ParsedNominalMethodEffects {
+        patterns: effects.into_boxed_slice(),
+        empty_syntax: NominalMethodEmptyEffectSyntax::Omitted,
+    })
+}
+
+fn render_nominal_method_signature(
+    projection: &EmbeddedCoreC1PackageProjection,
+    parsed: &ParsedNominalMethodSignature,
+) -> Result<String, EmbeddedCoreVerificationError> {
+    let mut signature = String::new();
+    if parsed.is_unsafe {
+        signature.push_str("unsafe ");
+    }
+    signature.push_str(&parsed.head_before_generics);
+    if !parsed.generics.is_empty() {
+        signature.push('<');
+        for (index, generic) in parsed.generics.iter().enumerate() {
+            if index != 0 {
+                signature.push(',');
+            }
+            if usize::from(generic.coordinate.0) != index
+                || !match generic.kind {
+                    CompilerMethodGenericParameterKind::Type => {
+                        valid_identifier(&generic.source_name)
+                    }
+                    CompilerMethodGenericParameterKind::Lifetime => {
+                        valid_lifetime_name(&generic.source_name) && generic.bounds.is_empty()
+                    }
+                }
+            {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+            }
+            signature.push_str(&generic.source_name);
+            if !generic.bounds.is_empty() {
+                signature.push(':');
+                for (bound_index, bound) in generic.bounds.iter().enumerate() {
+                    if bound_index != 0 {
+                        signature.push('+');
+                    }
+                    let CompilerMethodGenericBoundPattern::CompilerTrait(kind) = bound;
+                    signature.push_str(compiler_trait_name_for_kind(*kind).ok_or(
+                        EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority,
+                    )?);
+                }
+            }
+        }
+        signature.push('>');
+    }
+    signature.push_str(&parsed.head_after_generics);
+    signature.push('(');
+    let mut parameter_count = 0_usize;
+    if !parsed.receiver_in_head {
+        if let Some(receiver) = &parsed.receiver_type {
+            signature.push_str(&render_nominal_method_type(
+                projection,
+                receiver,
+                &parsed.generics,
+            )?);
+            parameter_count += 1;
+        }
+    }
+    for parameter in &parsed.parameters {
+        if parameter_count != 0 {
+            signature.push_str(", ");
+        }
+        signature.push_str(&render_nominal_method_type(
+            projection,
+            parameter,
+            &parsed.generics,
+        )?);
+        parameter_count += 1;
+    }
+    if !parsed.selectors.is_empty() {
+        signature.push_str("; ");
+        for (index, selector) in parsed.selectors.iter().enumerate() {
+            if usize::from(selector.coordinate.0) != index
+                || !valid_identifier(&selector.source_name)
+            {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+            }
+            if index != 0 {
+                signature.push_str(", ");
+            }
+            signature.push_str(&selector.source_name);
+            signature.push(':');
+            signature.push_str(match selector.kind {
+                CompilerMethodSelectorKind::DefinitionId => "DefinitionId",
+            });
+        }
+    }
+    signature.push_str(") -> ");
+    signature.push_str(&render_nominal_method_type(
+        projection,
+        &parsed.result,
+        &parsed.generics,
+    )?);
+    Ok(signature)
+}
+
+fn render_nominal_method_type(
+    projection: &EmbeddedCoreC1PackageProjection,
+    pattern: &CompilerMethodTypePattern,
+    generics: &[CompilerMethodGenericParameterAuthority],
+) -> Result<String, EmbeddedCoreVerificationError> {
+    match pattern {
+        CompilerMethodTypePattern::Generic(coordinate) => {
+            let generic = nominal_method_generic_at(generics, *coordinate)?;
+            if generic.kind != CompilerMethodGenericParameterKind::Type {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+            }
+            Ok(generic.source_name.clone())
+        }
+        CompilerMethodTypePattern::Definition {
+            definition,
+            arguments,
+        } => {
+            let row = projection
+                .definitions
+                .get(usize::from(definition.0))
+                .filter(|row| row.namespace == VirtualNamespace::Type)
+                .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+            let mut rendered = row.name.clone();
+            if !arguments.is_empty() {
+                rendered.push('<');
+                for (index, argument) in arguments.iter().enumerate() {
+                    if index != 0 {
+                        rendered.push(',');
+                    }
+                    match argument {
+                        CompilerMethodGenericArgumentPattern::Type(pattern) => rendered
+                            .push_str(&render_nominal_method_type(projection, pattern, generics)?),
+                        CompilerMethodGenericArgumentPattern::Lifetime(coordinate) => {
+                            let generic = nominal_method_generic_at(generics, *coordinate)?;
+                            if generic.kind != CompilerMethodGenericParameterKind::Lifetime {
+                                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+                            }
+                            rendered.push_str(&generic.source_name);
+                        }
+                    }
+                }
+                rendered.push('>');
+            }
+            Ok(rendered)
+        }
+        CompilerMethodTypePattern::SharedReference { lifetime, referent } => {
+            render_nominal_method_reference(projection, false, *lifetime, referent, generics)
+        }
+        CompilerMethodTypePattern::MutableReference { lifetime, referent } => {
+            render_nominal_method_reference(projection, true, *lifetime, referent, generics)
+        }
+        CompilerMethodTypePattern::Slice(element) => Ok(format!(
+            "[{}]",
+            render_nominal_method_type(projection, element, generics)?
+        )),
+        CompilerMethodTypePattern::Tuple(elements) => {
+            if elements.is_empty() {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+            }
+            let elements = elements
+                .iter()
+                .map(|element| render_nominal_method_type(projection, element, generics))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(format!("({})", elements.join(",")))
+        }
+    }
+}
+
+fn render_nominal_method_reference(
+    projection: &EmbeddedCoreC1PackageProjection,
+    mutable: bool,
+    lifetime: CompilerMethodLifetimePattern,
+    referent: &CompilerMethodTypePattern,
+    generics: &[CompilerMethodGenericParameterAuthority],
+) -> Result<String, EmbeddedCoreVerificationError> {
+    let mut rendered = String::from("&");
+    if let CompilerMethodLifetimePattern::Generic(coordinate) = lifetime {
+        let generic = nominal_method_generic_at(generics, coordinate)?;
+        if generic.kind != CompilerMethodGenericParameterKind::Lifetime {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+        }
+        rendered.push_str(&generic.source_name);
+        rendered.push(' ');
+    }
+    if mutable {
+        rendered.push_str("mut ");
+    }
+    rendered.push_str(&render_nominal_method_type(projection, referent, generics)?);
+    Ok(rendered)
+}
+
+fn nominal_method_generic_at(
+    generics: &[CompilerMethodGenericParameterAuthority],
+    coordinate: CompilerMethodGenericParameter,
+) -> Result<&CompilerMethodGenericParameterAuthority, EmbeddedCoreVerificationError> {
+    let generic = generics
+        .get(usize::from(coordinate.0))
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+    if generic.coordinate != coordinate {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+    Ok(generic)
+}
+
+fn render_nominal_method_effects(
+    projection: &EmbeddedCoreC1PackageProjection,
+    effects: &ParsedNominalMethodEffects,
+    field: u8,
+    generics: &[CompilerMethodGenericParameterAuthority],
+    selectors: &[CompilerMethodSelectorAuthority],
+) -> Result<String, EmbeddedCoreVerificationError> {
+    if effects.patterns.is_empty() {
+        return Ok(match effects.empty_syntax {
+            NominalMethodEmptyEffectSyntax::Omitted => String::new(),
+            NominalMethodEmptyEffectSyntax::Braced => String::from("{}"),
+        });
+    }
+    let mut rendered = match field {
+        b'R' => String::from("R{"),
+        b'T' => String::from("T{"),
+        _ => return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority),
+    };
+    for (index, effect) in effects.patterns.iter().enumerate() {
+        if index != 0 {
+            rendered.push(',');
+        }
+        match effect {
+            CompilerNominalMethodEffectPattern::Drop(pattern) => {
+                rendered.push_str("Drop(");
+                rendered.push_str(&render_nominal_method_type(projection, pattern, generics)?);
+                rendered.push(')');
+            }
+            CompilerNominalMethodEffectPattern::Selector(coordinate) => {
+                let selector = selectors
+                    .get(usize::from(coordinate.0))
+                    .filter(|selector| selector.coordinate == *coordinate)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)?;
+                rendered.push_str(&selector.source_name);
+            }
+        }
+    }
+    rendered.push('}');
+    Ok(rendered)
+}
+
+fn build_typed_compiler_trait(
+    projection: &EmbeddedCoreC1PackageProjection,
+    spec: &CompilerTraitSpec,
+) -> Result<CompilerTraitAuthority, EmbeddedCoreVerificationError> {
+    let definition = find_definition_id(&projection.definitions, spec.name, VirtualNamespace::Type)
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?;
+    let definition_row = projection
+        .definitions
+        .get(usize::from(definition.0))
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?;
+    let trait_row = projection
+        .traits
+        .iter()
+        .find(|row| row.definition == definition)
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?;
+    if definition_row.kind != VirtualDefinitionKind::Trait
+        || definition_row.declaration_kind != VirtualDeclarationKind::Trait
+        || definition_row.name != spec.name
+        || definition_row.semantic_shape != spec.shape
+        || trait_row.user_impl_policy != spec.user_impl_policy
+    {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority);
+    }
+    let explicit_generic_arity = u8::try_from(spec.generic_names.len())
+        .map_err(|_| EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?;
+    verify_self_relation_coordinate(spec.designated_self, explicit_generic_arity)?;
+    let method = match spec.method {
+        Some(method_spec) => {
+            if trait_row.methods.len() != 1 {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority);
+            }
+            let row = projection
+                .methods
+                .get(usize::from(trait_row.methods[0].0))
+                .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+            if row.owner != Some(definition)
+                || row.source_name != method_spec.source_name
+                || row.stable_name != method_spec.stable_name
+                || row.signature != method_spec.signature
+                || row.requires != "{}"
+                || row.throws != "{}"
+                || row.lowering != VirtualMethodLowering::TraitDispatch
+            {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority);
+            }
+            let (callable, effects) = parse_trait_callable(spec, &method_spec)?;
+            Some(CompilerTraitMethodAuthority {
+                kind: method_spec.kind,
+                c1_method: row.id,
+                source_name: row.source_name.clone(),
+                receiver: method_spec.receiver,
+                callable,
+                effects,
+            })
+        }
+        None => {
+            if !trait_row.methods.is_empty() {
+                return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority);
+            }
+            None
+        }
+    };
+    Ok(CompilerTraitAuthority {
+        kind: spec.kind,
+        c1_definition: definition,
+        explicit_generic_arity,
+        designated_self: spec.designated_self,
+        user_impl_policy: spec.user_impl_policy,
+        method,
+    })
+}
+
+fn verify_self_relation_coordinate(
+    relation: CompilerTraitSelfRelation,
+    arity: u8,
+) -> Result<(), EmbeddedCoreVerificationError> {
+    let coordinate = match relation {
+        CompilerTraitSelfRelation::OperatedType | CompilerTraitSelfRelation::CallableType => {
+            return Ok(())
+        }
+        CompilerTraitSelfRelation::Target(parameter)
+        | CompilerTraitSelfRelation::LeftHandSide(parameter)
+        | CompilerTraitSelfRelation::Input(parameter)
+        | CompilerTraitSelfRelation::Source(parameter)
+        | CompilerTraitSelfRelation::Iterator(parameter) => parameter,
+    };
+    if coordinate.0 >= arity {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority);
+    }
+    Ok(())
+}
+
+fn parse_trait_callable(
+    trait_spec: &CompilerTraitSpec,
+    method_spec: &CompilerTraitMethodSpec,
+) -> Result<(CompilerTraitCallablePattern, CompilerTraitEffectPattern), EmbeddedCoreVerificationError>
+{
+    if method_spec.signature == "callable exact signature/effects" {
+        if trait_spec.generic_names != ["Signature"] {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority);
+        }
+        return Ok((
+            CompilerTraitCallablePattern::ExactSignatureAndEffects {
+                signature: CompilerTraitGenericParameter(0),
+            },
+            CompilerTraitEffectPattern::ExactSignature,
+        ));
+    }
+    let signature = method_spec
+        .signature
+        .strip_prefix("fn(")
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+    let (parameters, result) = signature
+        .split_once(")->")
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+    let mut parameters = split_top_level(parameters)?
+        .into_iter()
+        .map(|value| parse_trait_type_pattern(value, trait_spec.generic_names))
+        .collect::<Result<Vec<_>, _>>()?;
+    let result = parse_trait_type_pattern(result, trait_spec.generic_names)?;
+    if method_spec.receiver != CompilerTraitReceiverMode::None {
+        let expected_base = designated_self_pattern(trait_spec.designated_self);
+        let expected = match method_spec.receiver {
+            CompilerTraitReceiverMode::None => unreachable!(),
+            CompilerTraitReceiverMode::Value => expected_base,
+            CompilerTraitReceiverMode::Shared => {
+                CompilerTraitTypePattern::SharedReference(Box::new(expected_base))
+            }
+            CompilerTraitReceiverMode::Mutable => {
+                CompilerTraitTypePattern::MutableReference(Box::new(expected_base))
+            }
+        };
+        if parameters.first() != Some(&expected) {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority);
+        }
+        parameters.remove(0);
+    }
+    Ok((
+        CompilerTraitCallablePattern::Fixed {
+            parameters: parameters.into_boxed_slice(),
+            result,
+        },
+        CompilerTraitEffectPattern::Empty,
+    ))
+}
+
+fn designated_self_pattern(relation: CompilerTraitSelfRelation) -> CompilerTraitTypePattern {
+    match relation {
+        CompilerTraitSelfRelation::OperatedType | CompilerTraitSelfRelation::CallableType => {
+            CompilerTraitTypePattern::SelfType
+        }
+        CompilerTraitSelfRelation::Target(parameter)
+        | CompilerTraitSelfRelation::LeftHandSide(parameter)
+        | CompilerTraitSelfRelation::Input(parameter)
+        | CompilerTraitSelfRelation::Source(parameter)
+        | CompilerTraitSelfRelation::Iterator(parameter) => {
+            CompilerTraitTypePattern::ExplicitGeneric(parameter)
+        }
+    }
+}
+
+fn split_top_level(value: &str) -> Result<Vec<&str>, EmbeddedCoreVerificationError> {
+    if value.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut depth = 0_u32;
+    let mut start = 0_usize;
+    let mut values = Vec::new();
+    for (index, byte) in value.bytes().enumerate() {
+        match byte {
+            b'<' => {
+                depth = depth
+                    .checked_add(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+            }
+            b'>' => {
+                depth = depth
+                    .checked_sub(1)
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+            }
+            b',' if depth == 0 => {
+                if start == index {
+                    return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority);
+                }
+                values.push(&value[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if depth != 0 || start == value.len() {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority);
+    }
+    values.push(&value[start..]);
+    Ok(values)
+}
+
+fn parse_trait_type_pattern(
+    value: &str,
+    generic_names: &[&str],
+) -> Result<CompilerTraitTypePattern, EmbeddedCoreVerificationError> {
+    if let Some(inner) = value.strip_prefix("&mut ") {
+        return Ok(CompilerTraitTypePattern::MutableReference(Box::new(
+            parse_trait_type_pattern(inner, generic_names)?,
+        )));
+    }
+    if let Some(inner) = value.strip_prefix('&') {
+        return Ok(CompilerTraitTypePattern::SharedReference(Box::new(
+            parse_trait_type_pattern(inner, generic_names)?,
+        )));
+    }
+    if value == "Self" {
+        return Ok(CompilerTraitTypePattern::SelfType);
+    }
+    if let Some(index) = generic_names.iter().position(|name| *name == value) {
+        return Ok(CompilerTraitTypePattern::ExplicitGeneric(
+            CompilerTraitGenericParameter(
+                u8::try_from(index)
+                    .map_err(|_| EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?,
+            ),
+        ));
+    }
+    match value {
+        "bool" => {
+            return Ok(CompilerTraitTypePattern::Primitive(
+                CompilerPrimitiveTypePattern::Bool,
+            ))
+        }
+        "i32" => {
+            return Ok(CompilerTraitTypePattern::Primitive(
+                CompilerPrimitiveTypePattern::I32,
+            ))
+        }
+        "()" => {
+            return Ok(CompilerTraitTypePattern::Primitive(
+                CompilerPrimitiveTypePattern::Unit,
+            ))
+        }
+        _ => {}
+    }
+    let (name, arguments) = value
+        .split_once('<')
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+    let arguments = arguments
+        .strip_suffix('>')
+        .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+    let kind = match name {
+        "Option" => CompilerNominalKind::Option,
+        "Result" => CompilerNominalKind::Result,
+        _ => return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority),
+    };
+    let arguments = split_top_level(arguments)?
+        .into_iter()
+        .map(|argument| parse_trait_type_pattern(argument, generic_names))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(CompilerTraitTypePattern::Nominal {
+        kind,
+        arguments: arguments.into_boxed_slice(),
+    })
+}
+
+fn verify_typed_c2_projection(
+    projection: &EmbeddedCoreC1PackageProjection,
+    typed: &EmbeddedCoreC2TypedProjection,
+) -> Result<(), EmbeddedCoreVerificationError> {
+    if typed.compiler_traits.len() != COMPILER_TRAITS.len() {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority);
+    }
+    if typed.primitive_definitions.len() != PRIMITIVE_TYPES.len() {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority);
+    }
+    if typed.nominals.len() != NOMINAL_TYPES.len() {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority);
+    }
+    let expected_nominal_methods = build_typed_nominal_methods(projection)?;
+    if typed.nominal_methods.as_ref() != expected_nominal_methods.as_ref() {
+        return Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority);
+    }
+
+    let mut seen_primitives = BTreeSet::new();
+    for (spec, &(definition, primitive)) in PRIMITIVE_TYPES.iter().zip(&typed.primitive_definitions)
+    {
+        if primitive != spec.kind || !seen_primitives.insert(definition) {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority);
+        }
+        let row = projection
+            .definitions
+            .get(usize::from(definition.0))
+            .ok_or(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority)?;
+        if row.name != spec.name
+            || row.semantic_shape != spec.shape
+            || row.kind != VirtualDefinitionKind::PrimitiveType
+            || row.declaration_kind != VirtualDeclarationKind::Primitive
+            || !source_has_definition_line(projection, row)
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority);
+        }
+    }
+
+    for (spec, authority) in COMPILER_TRAITS.iter().zip(&typed.compiler_traits) {
+        if authority.kind != spec.kind
+            || authority.explicit_generic_arity
+                != u8::try_from(spec.generic_names.len())
+                    .map_err(|_| EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?
+            || authority.designated_self != spec.designated_self
+            || authority.user_impl_policy != spec.user_impl_policy
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority);
+        }
+        let definition = projection
+            .definitions
+            .get(usize::from(authority.c1_definition.0))
+            .ok_or(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)?;
+        if definition.name != spec.name
+            || definition.semantic_shape != spec.shape
+            || !source_has_definition_line(projection, definition)
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedSourceAgreement);
+        }
+        match (spec.method, authority.method.as_ref()) {
+            (Some(method_spec), Some(method)) => {
+                let row = projection
+                    .methods
+                    .get(usize::from(method.c1_method.0))
+                    .ok_or(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority)?;
+                let (expected_callable, expected_effects) =
+                    parse_trait_callable(spec, &method_spec)?;
+                if method.kind != method_spec.kind
+                    || method.source_name != method_spec.source_name
+                    || method.receiver != method_spec.receiver
+                    || method.callable != expected_callable
+                    || method.effects != expected_effects
+                    || row.owner != Some(authority.c1_definition)
+                    || row.source_name != method_spec.source_name
+                    || row.stable_name != method_spec.stable_name
+                    || row.signature != method_spec.signature
+                    || !source_has_method_line(projection, row)
+                {
+                    return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority);
+                }
+            }
+            (None, None) => {}
+            _ => return Err(EmbeddedCoreVerificationError::InvalidTypedMethodAuthority),
+        }
+    }
+
+    for (&(kind, name, shape, flavor, declaration_kind), authority) in
+        NOMINAL_TYPES.iter().zip(&typed.nominals)
+    {
+        let definition = projection
+            .definitions
+            .get(usize::from(authority.definition.0))
+            .ok_or(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority)?;
+        if authority.kind != kind
+            || authority.flavor != flavor
+            || authority.declaration_kind != declaration_kind
+            || definition.name != name
+            || definition.semantic_shape != shape
+            || !source_has_definition_line(projection, definition)
+        {
+            return Err(EmbeddedCoreVerificationError::InvalidTypedNominalAuthority);
+        }
+    }
+    Ok(())
+}
+
+fn source_has_definition_line(
+    projection: &EmbeddedCoreC1PackageProjection,
+    row: &VirtualDefinitionRow,
+) -> bool {
+    let line = format!(
+        "definition\t{}\t{}\t{}\t{}\t{}",
+        row.id.0,
+        namespace_name(row.namespace),
+        definition_kind_name(row.kind),
+        row.name,
+        row.semantic_shape
+    );
+    source_has_exact_line(projection.source.bytes(), line.as_bytes())
+}
+
+fn source_has_method_line(
+    projection: &EmbeddedCoreC1PackageProjection,
+    row: &VirtualMethodRow,
+) -> bool {
+    let owner = row
+        .owner
+        .and_then(|owner| projection.definitions.get(usize::from(owner.0)))
+        .map_or("<compiler>", |definition| definition.name.as_str());
+    let line = format!(
+        "method\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        row.id.0, owner, row.source_name, row.stable_name, row.signature, row.requires, row.throws
+    );
+    source_has_exact_line(projection.source.bytes(), line.as_bytes())
+}
+
+fn source_has_exact_line(source: &[u8], expected: &[u8]) -> bool {
+    source
+        .split(|byte| *byte == b'\n')
+        .any(|line| line == expected)
+}
+
 fn namespace_name(namespace: VirtualNamespace) -> &'static str {
     match namespace {
         VirtualNamespace::Type => "type",
@@ -1501,19 +3689,19 @@ fn definition_kind_name(kind: VirtualDefinitionKind) -> &'static str {
 fn definition_specs() -> Vec<DefinitionSpec> {
     let mut rows = Vec::new();
 
-    for &(name, shape) in PRIMITIVE_TYPES {
+    for spec in PRIMITIVE_TYPES {
         rows.push(DefinitionSpec {
-            name,
+            name: spec.name,
             namespace: VirtualNamespace::Type,
             kind: VirtualDefinitionKind::PrimitiveType,
             declaration_kind: VirtualDeclarationKind::Primitive,
-            shape,
+            shape: spec.shape,
             flavor: Some(VirtualTypeFlavor::Primitive),
             trait_policy: None,
             prelude: true,
         });
     }
-    for &(name, shape, flavor, declaration_kind) in NOMINAL_TYPES {
+    for &(_, name, shape, flavor, declaration_kind) in NOMINAL_TYPES {
         rows.push(DefinitionSpec {
             name,
             namespace: VirtualNamespace::Type,
@@ -1549,15 +3737,15 @@ fn definition_specs() -> Vec<DefinitionSpec> {
             prelude: true,
         });
     }
-    for &(name, shape, policy) in TRAITS {
+    for spec in COMPILER_TRAITS {
         rows.push(DefinitionSpec {
-            name,
+            name: spec.name,
             namespace: VirtualNamespace::Type,
             kind: VirtualDefinitionKind::Trait,
             declaration_kind: VirtualDeclarationKind::Trait,
-            shape,
+            shape: spec.shape,
             flavor: None,
-            trait_policy: Some(policy),
+            trait_policy: Some(spec.user_impl_policy),
             prelude: true,
         });
     }
@@ -1577,197 +3765,311 @@ fn definition_specs() -> Vec<DefinitionSpec> {
     rows
 }
 
-const PRIMITIVE_TYPES: &[(&str, &str)] = &[
-    ("!", "never; uninhabited"),
-    ("()", "unit; zero fields"),
-    ("bool", "scalar bool; width=1"),
-    ("char", "scalar Unicode; width=4"),
-    ("entity", "scalar entity; width=8"),
-    ("f32", "scalar IEEE754 binary32"),
-    ("f64", "scalar IEEE754 binary64"),
-    ("i16", "scalar signed; width=2"),
-    ("i32", "scalar signed; width=4"),
-    ("i64", "scalar signed; width=8"),
-    ("i8", "scalar signed; width=1"),
-    ("isize", "scalar signed; width=8"),
-    ("str", "dynamically sized UTF-8 string slice"),
-    ("u16", "scalar unsigned; width=2"),
-    ("u32", "scalar unsigned; width=4"),
-    ("u64", "scalar unsigned; width=8"),
-    ("u8", "scalar unsigned; width=1"),
-    ("usize", "scalar unsigned; width=8"),
+#[derive(Clone, Copy)]
+struct PrimitiveTypeSpec {
+    kind: CompilerPrimitiveTypePattern,
+    name: &'static str,
+    shape: &'static str,
+}
+
+const PRIMITIVE_TYPES: &[PrimitiveTypeSpec] = &[
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Never,
+        name: "!",
+        shape: "never; uninhabited",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Unit,
+        name: "()",
+        shape: "unit; zero fields",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Bool,
+        name: "bool",
+        shape: "scalar bool; width=1",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Char,
+        name: "char",
+        shape: "scalar Unicode; width=4",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Entity,
+        name: "entity",
+        shape: "scalar entity; width=8",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::F32,
+        name: "f32",
+        shape: "scalar IEEE754 binary32",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::F64,
+        name: "f64",
+        shape: "scalar IEEE754 binary64",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::I16,
+        name: "i16",
+        shape: "scalar signed; width=2",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::I32,
+        name: "i32",
+        shape: "scalar signed; width=4",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::I64,
+        name: "i64",
+        shape: "scalar signed; width=8",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::I8,
+        name: "i8",
+        shape: "scalar signed; width=1",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Isize,
+        name: "isize",
+        shape: "scalar signed; width=8",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Str,
+        name: "str",
+        shape: "dynamically sized UTF-8 string slice",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::U16,
+        name: "u16",
+        shape: "scalar unsigned; width=2",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::U32,
+        name: "u32",
+        shape: "scalar unsigned; width=4",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::U64,
+        name: "u64",
+        shape: "scalar unsigned; width=8",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::U8,
+        name: "u8",
+        shape: "scalar unsigned; width=1",
+    },
+    PrimitiveTypeSpec {
+        kind: CompilerPrimitiveTypePattern::Usize,
+        name: "usize",
+        shape: "scalar unsigned; width=8",
+    },
 ];
 
-const NOMINAL_TYPES: &[(&str, &str, VirtualTypeFlavor, VirtualDeclarationKind)] = &[
+const NOMINAL_TYPES: &[(
+    CompilerNominalKind,
+    &str,
+    &str,
+    VirtualTypeFlavor,
+    VirtualDeclarationKind,
+)] = &[
     (
+        CompilerNominalKind::AllocError,
         "AllocError",
         "pub enum AllocError { OutOfMemory }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Enum,
     ),
     (
+        CompilerNominalKind::App,
         "App",
         "sealed compiler-owned App<W>; !Send + !Sync",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::Arc,
         "Arc",
         "owned atomic shared allocation Arc<T>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::ArcWeak,
         "ArcWeak",
         "nonowning atomic weak allocation ArcWeak<T>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::AtomicRmw,
         "AtomicRmw",
         "pub enum AtomicRmw { Add, Sub, And, Or, Xor, Exchange, Min, Max }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Enum,
     ),
     (
+        CompilerNominalKind::Box,
         "Box",
         "unique owned allocation Box<T>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::Caps,
         "Caps",
         "sealed affine capability projection Caps<C...>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::ChannelClosed,
         "ChannelClosed",
         "pub enum ChannelClosed { Unit }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Enum,
     ),
     (
+        CompilerNominalKind::Commands,
         "Commands",
         "sealed command buffer handle Commands<W>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::GeneratorState,
         "GeneratorState",
         "pub enum GeneratorState<Y,R> { Yielded(Y), Complete(R) }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Enum,
     ),
     (
+        CompilerNominalKind::IoError,
         "IoError",
         "pub struct IoError { pub code:i32, pub message:String }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::Map,
         "Map",
         "owned ordered Map<K:Eq+Ord,V>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::MapIter,
         "MapIter",
         "shared-borrow iterator MapIter<'a,K,V>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::MaybeUninit,
         "MaybeUninit",
         "compiler-checked maybe-initialized storage MaybeUninit<T>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::OpenOptions,
         "OpenOptions",
         "pub struct OpenOptions { pub read:bool, pub write:bool, pub append:bool, pub truncate:bool, pub create:bool, pub create_new:bool }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::Option,
         "Option",
         "pub enum Option<T> { None, Some(T) }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Enum,
     ),
     (
+        CompilerNominalKind::Ordering,
         "Ordering",
         "pub enum Ordering { Relaxed, Acquire, Release, AcqRel, SeqCst }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Enum,
     ),
     (
+        CompilerNominalKind::Pin,
         "Pin",
         "pinning invariant wrapper Pin<P>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::ProcessError,
         "ProcessError",
         "pub struct ProcessError { pub code:i32, pub message:String }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::ProcessOutput,
         "ProcessOutput",
         "pub struct ProcessOutput { pub status:i32, pub stdout:Vec<u8>, pub stderr:Vec<u8> }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::ProcessSpec,
         "ProcessSpec",
         "pub struct ProcessSpec { pub program:String, pub arguments:Vec<String>, pub environment:Map<String,String>, pub current_directory:Option<String>, pub stdin:Vec<u8> }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::Query,
         "Query",
         "sealed query marker Query<Q>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::Rc,
         "Rc",
         "owned non-atomic shared allocation Rc<T>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::RcWeak,
         "RcWeak",
         "nonowning weak allocation RcWeak<T>",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::Result,
         "Result",
         "pub enum Result<T,E> { Ok(T), Err(E) }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Enum,
     ),
     (
+        CompilerNominalKind::SocketAddress,
         "SocketAddress",
         "pub enum SocketAddress { V4 { octets:[u8;4], port:u16 }, V6 { octets:[u8;16], port:u16, flow_info:u32, scope_id:u32 } }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Enum,
     ),
     (
+        CompilerNominalKind::String,
         "String",
         "owned UTF-8 String",
         VirtualTypeFlavor::Managed,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::ThreadError,
         "ThreadError",
         "pub struct ThreadError { pub code:i32, pub message:String }",
         VirtualTypeFlavor::Transparent,
         VirtualDeclarationKind::Struct,
     ),
     (
+        CompilerNominalKind::Vec,
         "Vec",
         "owned contiguous Vec<T>",
         VirtualTypeFlavor::Managed,
@@ -1820,162 +4122,302 @@ const SEMANTIC_TYPES: &[(&str, u8, &str)] = &[(
     "sealed semantic type tag 30 JoinHandle<T,E...>; result T; canonical variadic throws E; no nominal DefinitionId",
 )];
 
-const TRAITS: &[(&str, &str, UserImplPolicy)] = &[
-    (
-        "Add",
-        "trait Add<Lhs,Rhs,Output> { fn add(Lhs,Rhs)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "BitAnd",
-        "trait BitAnd<Lhs,Rhs,Output> { fn bit_and(Lhs,Rhs)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "BitNot",
-        "trait BitNot<Input,Output> { fn bit_not(Input)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "BitOr",
-        "trait BitOr<Lhs,Rhs,Output> { fn bit_or(Lhs,Rhs)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "BitXor",
-        "trait BitXor<Lhs,Rhs,Output> { fn bit_xor(Lhs,Rhs)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Clone",
-        "trait Clone { fn clone(&Self)->Self requires {} throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Copy",
-        "trait Copy { structural; no method; no Drop }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Div",
-        "trait Div<Lhs,Rhs,Output> { fn div(Lhs,Rhs)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Drop",
-        "trait Drop { fn drop(&mut Self)->() throws {}; one impl maximum }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "EcsKey",
-        "sealed structural EcsKey evidence; no method",
-        UserImplPolicy::Forbidden,
-    ),
-    (
-        "EcsValue",
-        "sealed structural EcsValue evidence; no method",
-        UserImplPolicy::Forbidden,
-    ),
-    (
-        "Eq",
-        "trait Eq<Lhs,Rhs> { fn eq(&Lhs,&Rhs)->bool requires {} throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Fn",
-        "compiler-derived trait Fn<Signature> { fn call with exact signature/effects }",
-        UserImplPolicy::CompilerDerivedOnly,
-    ),
-    (
-        "FnMut",
-        "compiler-derived trait FnMut<Signature> { fn call with exact signature/effects }",
-        UserImplPolicy::CompilerDerivedOnly,
-    ),
-    (
-        "FnOnce",
-        "compiler-derived trait FnOnce<Signature> { fn call with exact signature/effects }",
-        UserImplPolicy::CompilerDerivedOnly,
-    ),
-    (
-        "From",
-        "trait From<Source,Target> { fn from(Source)->Target requires {} throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "IntoIterator",
-        "trait IntoIterator<Source,Iter> { fn into_iter(Source)->Iter requires {} throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Iterator",
-        "trait Iterator<Iter,Item> { fn next(&mut Iter)->Option<Item> requires {} throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "LogicalNot",
-        "trait LogicalNot<Input,Output> { fn logical_not(Input)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Mul",
-        "trait Mul<Lhs,Rhs,Output> { fn mul(Lhs,Rhs)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Neg",
-        "trait Neg<Input,Output> { fn neg(Input)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Ord",
-        "trait Ord<Lhs,Rhs> { fn compare(&Lhs,&Rhs)->i32 requires {} throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Rem",
-        "trait Rem<Lhs,Rhs,Output> { fn rem(Lhs,Rhs)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Send",
-        "compiler-derived structural Send judgment; no method",
-        UserImplPolicy::CompilerDerivedOnly,
-    ),
-    (
-        "ShiftLeft",
-        "trait ShiftLeft<Lhs,Rhs,Output> { fn shift_left(Lhs,Rhs)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "ShiftRight",
-        "trait ShiftRight<Lhs,Rhs,Output> { fn shift_right(Lhs,Rhs)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Sub",
-        "trait Sub<Lhs,Rhs,Output> { fn sub(Lhs,Rhs)->Output throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Sync",
-        "compiler-derived structural Sync judgment; no method",
-        UserImplPolicy::CompilerDerivedOnly,
-    ),
-    (
-        "TryFrom",
-        "trait TryFrom<Source,Target,Error> { fn try_from(Source)->Result<Target,Error> requires {} throws {} }",
-        UserImplPolicy::AllowedAndValidated,
-    ),
-    (
-        "Unpin",
-        "compiler-derived structural Unpin judgment; no method",
-        UserImplPolicy::CompilerDerivedOnly,
-    ),
-    (
-        "UnwindPayload",
-        "sealed owned sized static unwind-payload judgment; no method",
-        UserImplPolicy::Forbidden,
-    ),
+const fn compiler_trait_method(
+    kind: CompilerTraitMethodKind,
+    source_name: &'static str,
+    stable_name: &'static str,
+    signature: &'static str,
+    receiver: CompilerTraitReceiverMode,
+) -> Option<CompilerTraitMethodSpec> {
+    Some(CompilerTraitMethodSpec {
+        kind,
+        source_name,
+        stable_name,
+        signature,
+        receiver,
+    })
+}
+
+const COMPILER_TRAITS: &[CompilerTraitSpec] = &[
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Add,
+        name: "Add",
+        shape: "trait Add<Lhs,Rhs,Output> { fn add(Lhs,Rhs)->Output throws {} }",
+        generic_names: &["Lhs", "Rhs", "Output"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::Add, "add", "trait.add.add", "fn(Lhs,Rhs)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::BitAnd,
+        name: "BitAnd",
+        shape: "trait BitAnd<Lhs,Rhs,Output> { fn bit_and(Lhs,Rhs)->Output throws {} }",
+        generic_names: &["Lhs", "Rhs", "Output"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::BitAnd, "bit_and", "trait.bit-and.bit-and", "fn(Lhs,Rhs)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::BitNot,
+        name: "BitNot",
+        shape: "trait BitNot<Input,Output> { fn bit_not(Input)->Output throws {} }",
+        generic_names: &["Input", "Output"],
+        designated_self: CompilerTraitSelfRelation::Input(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::BitNot, "bit_not", "trait.bit-not.bit-not", "fn(Input)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::BitOr,
+        name: "BitOr",
+        shape: "trait BitOr<Lhs,Rhs,Output> { fn bit_or(Lhs,Rhs)->Output throws {} }",
+        generic_names: &["Lhs", "Rhs", "Output"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::BitOr, "bit_or", "trait.bit-or.bit-or", "fn(Lhs,Rhs)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::BitXor,
+        name: "BitXor",
+        shape: "trait BitXor<Lhs,Rhs,Output> { fn bit_xor(Lhs,Rhs)->Output throws {} }",
+        generic_names: &["Lhs", "Rhs", "Output"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::BitXor, "bit_xor", "trait.bit-xor.bit-xor", "fn(Lhs,Rhs)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Clone,
+        name: "Clone",
+        shape: "trait Clone { fn clone(&Self)->Self requires {} throws {} }",
+        generic_names: &[],
+        designated_self: CompilerTraitSelfRelation::OperatedType,
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::Clone, "clone", "trait.clone.clone", "fn(&Self)->Self", CompilerTraitReceiverMode::Shared),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Copy,
+        name: "Copy",
+        shape: "trait Copy { structural; no method; no Drop }",
+        generic_names: &[],
+        designated_self: CompilerTraitSelfRelation::OperatedType,
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: None,
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Div,
+        name: "Div",
+        shape: "trait Div<Lhs,Rhs,Output> { fn div(Lhs,Rhs)->Output throws {} }",
+        generic_names: &["Lhs", "Rhs", "Output"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::Div, "div", "trait.div.div", "fn(Lhs,Rhs)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Drop,
+        name: "Drop",
+        shape: "trait Drop { fn drop(&mut Self)->() throws {}; one impl maximum }",
+        generic_names: &[],
+        designated_self: CompilerTraitSelfRelation::OperatedType,
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::Drop, "drop", "trait.drop.drop", "fn(&mut Self)->()", CompilerTraitReceiverMode::Mutable),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::EcsKey,
+        name: "EcsKey",
+        shape: "sealed structural EcsKey evidence; no method",
+        generic_names: &[],
+        designated_self: CompilerTraitSelfRelation::OperatedType,
+        user_impl_policy: UserImplPolicy::Forbidden,
+        method: None,
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::EcsValue,
+        name: "EcsValue",
+        shape: "sealed structural EcsValue evidence; no method",
+        generic_names: &[],
+        designated_self: CompilerTraitSelfRelation::OperatedType,
+        user_impl_policy: UserImplPolicy::Forbidden,
+        method: None,
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Eq,
+        name: "Eq",
+        shape: "trait Eq<Lhs,Rhs> { fn eq(&Lhs,&Rhs)->bool requires {} throws {} }",
+        generic_names: &["Lhs", "Rhs"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::Eq, "eq", "trait.eq.eq", "fn(&Lhs,&Rhs)->bool", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Fn,
+        name: "Fn",
+        shape: "compiler-derived trait Fn<Signature> { fn call with exact signature/effects }",
+        generic_names: &["Signature"],
+        designated_self: CompilerTraitSelfRelation::CallableType,
+        user_impl_policy: UserImplPolicy::CompilerDerivedOnly,
+        method: compiler_trait_method(CompilerTraitMethodKind::FnCall, "call", "trait.fn.call", "callable exact signature/effects", CompilerTraitReceiverMode::Shared),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::FnMut,
+        name: "FnMut",
+        shape: "compiler-derived trait FnMut<Signature> { fn call with exact signature/effects }",
+        generic_names: &["Signature"],
+        designated_self: CompilerTraitSelfRelation::CallableType,
+        user_impl_policy: UserImplPolicy::CompilerDerivedOnly,
+        method: compiler_trait_method(CompilerTraitMethodKind::FnMutCall, "call", "trait.fn-mut.call", "callable exact signature/effects", CompilerTraitReceiverMode::Mutable),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::FnOnce,
+        name: "FnOnce",
+        shape: "compiler-derived trait FnOnce<Signature> { fn call with exact signature/effects }",
+        generic_names: &["Signature"],
+        designated_self: CompilerTraitSelfRelation::CallableType,
+        user_impl_policy: UserImplPolicy::CompilerDerivedOnly,
+        method: compiler_trait_method(CompilerTraitMethodKind::FnOnceCall, "call", "trait.fn-once.call", "callable exact signature/effects", CompilerTraitReceiverMode::Value),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::From,
+        name: "From",
+        shape: "trait From<Source,Target> { fn from(Source)->Target requires {} throws {} }",
+        generic_names: &["Source", "Target"],
+        designated_self: CompilerTraitSelfRelation::Target(CompilerTraitGenericParameter(1)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::From, "from", "trait.from.from", "fn(Source)->Target", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::IntoIterator,
+        name: "IntoIterator",
+        shape: "trait IntoIterator<Source,Iter> { fn into_iter(Source)->Iter requires {} throws {} }",
+        generic_names: &["Source", "Iter"],
+        designated_self: CompilerTraitSelfRelation::Source(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::IntoIterator, "into_iter", "trait.into-iterator.into-iter", "fn(Source)->Iter", CompilerTraitReceiverMode::Value),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Iterator,
+        name: "Iterator",
+        shape: "trait Iterator<Iter,Item> { fn next(&mut Iter)->Option<Item> requires {} throws {} }",
+        generic_names: &["Iter", "Item"],
+        designated_self: CompilerTraitSelfRelation::Iterator(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::IteratorNext, "next", "trait.iterator.next", "fn(&mut Iter)->Option<Item>", CompilerTraitReceiverMode::Mutable),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::LogicalNot,
+        name: "LogicalNot",
+        shape: "trait LogicalNot<Input,Output> { fn logical_not(Input)->Output throws {} }",
+        generic_names: &["Input", "Output"],
+        designated_self: CompilerTraitSelfRelation::Input(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::LogicalNot, "logical_not", "trait.logical-not.logical-not", "fn(Input)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Mul,
+        name: "Mul",
+        shape: "trait Mul<Lhs,Rhs,Output> { fn mul(Lhs,Rhs)->Output throws {} }",
+        generic_names: &["Lhs", "Rhs", "Output"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::Mul, "mul", "trait.mul.mul", "fn(Lhs,Rhs)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Neg,
+        name: "Neg",
+        shape: "trait Neg<Input,Output> { fn neg(Input)->Output throws {} }",
+        generic_names: &["Input", "Output"],
+        designated_self: CompilerTraitSelfRelation::Input(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::Neg, "neg", "trait.neg.neg", "fn(Input)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Ord,
+        name: "Ord",
+        shape: "trait Ord<Lhs,Rhs> { fn compare(&Lhs,&Rhs)->i32 requires {} throws {} }",
+        generic_names: &["Lhs", "Rhs"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::OrdCompare, "compare", "trait.ord.compare", "fn(&Lhs,&Rhs)->i32", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Rem,
+        name: "Rem",
+        shape: "trait Rem<Lhs,Rhs,Output> { fn rem(Lhs,Rhs)->Output throws {} }",
+        generic_names: &["Lhs", "Rhs", "Output"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::Rem, "rem", "trait.rem.rem", "fn(Lhs,Rhs)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Send,
+        name: "Send",
+        shape: "compiler-derived structural Send judgment; no method",
+        generic_names: &[],
+        designated_self: CompilerTraitSelfRelation::OperatedType,
+        user_impl_policy: UserImplPolicy::CompilerDerivedOnly,
+        method: None,
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::ShiftLeft,
+        name: "ShiftLeft",
+        shape: "trait ShiftLeft<Lhs,Rhs,Output> { fn shift_left(Lhs,Rhs)->Output throws {} }",
+        generic_names: &["Lhs", "Rhs", "Output"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::ShiftLeft, "shift_left", "trait.shift-left.shift-left", "fn(Lhs,Rhs)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::ShiftRight,
+        name: "ShiftRight",
+        shape: "trait ShiftRight<Lhs,Rhs,Output> { fn shift_right(Lhs,Rhs)->Output throws {} }",
+        generic_names: &["Lhs", "Rhs", "Output"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::ShiftRight, "shift_right", "trait.shift-right.shift-right", "fn(Lhs,Rhs)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Sub,
+        name: "Sub",
+        shape: "trait Sub<Lhs,Rhs,Output> { fn sub(Lhs,Rhs)->Output throws {} }",
+        generic_names: &["Lhs", "Rhs", "Output"],
+        designated_self: CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::Sub, "sub", "trait.sub.sub", "fn(Lhs,Rhs)->Output", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Sync,
+        name: "Sync",
+        shape: "compiler-derived structural Sync judgment; no method",
+        generic_names: &[],
+        designated_self: CompilerTraitSelfRelation::OperatedType,
+        user_impl_policy: UserImplPolicy::CompilerDerivedOnly,
+        method: None,
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::TryFrom,
+        name: "TryFrom",
+        shape: "trait TryFrom<Source,Target,Error> { fn try_from(Source)->Result<Target,Error> requires {} throws {} }",
+        generic_names: &["Source", "Target", "Error"],
+        designated_self: CompilerTraitSelfRelation::Target(CompilerTraitGenericParameter(1)),
+        user_impl_policy: UserImplPolicy::AllowedAndValidated,
+        method: compiler_trait_method(CompilerTraitMethodKind::TryFrom, "try_from", "trait.try-from.try-from", "fn(Source)->Result<Target,Error>", CompilerTraitReceiverMode::None),
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::Unpin,
+        name: "Unpin",
+        shape: "compiler-derived structural Unpin judgment; no method",
+        generic_names: &[],
+        designated_self: CompilerTraitSelfRelation::OperatedType,
+        user_impl_policy: UserImplPolicy::CompilerDerivedOnly,
+        method: None,
+    },
+    CompilerTraitSpec {
+        kind: CompilerTraitKind::UnwindPayload,
+        name: "UnwindPayload",
+        shape: "sealed owned sized static unwind-payload judgment; no method",
+        generic_names: &[],
+        designated_self: CompilerTraitSelfRelation::OperatedType,
+        user_impl_policy: UserImplPolicy::Forbidden,
+        method: None,
+    },
 ];
 
 const FUNCTIONS: &[(&str, &str)] = &[
@@ -1992,23 +4434,6 @@ const FUNCTIONS: &[(&str, &str)] = &[
         "safe fn panic<T:UnwindPayload>(T) requires {} throws {} -> !; compiler-owned body",
     ),
 ];
-
-const fn trait_method(
-    owner: &'static str,
-    source_name: &'static str,
-    stable_name: &'static str,
-    signature: &'static str,
-) -> MethodSpec {
-    MethodSpec {
-        owner: Some(owner),
-        source_name,
-        stable_name,
-        signature,
-        requires: "{}",
-        throws: "{}",
-        lowering: VirtualMethodLowering::TraitDispatch,
-    }
-}
 
 #[expect(
     clippy::too_many_arguments,
@@ -2054,102 +4479,27 @@ const fn compiler_method(
 }
 
 fn method_specs() -> Vec<MethodSpec> {
-    METHOD_SPECS.to_vec()
+    COMPILER_TRAITS
+        .iter()
+        .filter_map(|trait_spec| {
+            trait_spec.method.map(|method| MethodSpec {
+                owner: Some(trait_spec.name),
+                source_name: method.source_name,
+                stable_name: method.stable_name,
+                signature: method.signature,
+                requires: "{}",
+                throws: "{}",
+                lowering: VirtualMethodLowering::TraitDispatch,
+            })
+        })
+        .chain(METHOD_SPECS.iter().copied())
+        .collect()
 }
 
 const H: IntrinsicCtfeSupport = IntrinsicCtfeSupport::Hermetic;
 const N: IntrinsicCtfeSupport = IntrinsicCtfeSupport::NotExecutable;
 
 const METHOD_SPECS: &[MethodSpec] = &[
-    trait_method("Add", "add", "trait.add.add", "fn(Lhs,Rhs)->Output"),
-    trait_method(
-        "BitAnd",
-        "bit_and",
-        "trait.bit-and.bit-and",
-        "fn(Lhs,Rhs)->Output",
-    ),
-    trait_method(
-        "BitNot",
-        "bit_not",
-        "trait.bit-not.bit-not",
-        "fn(Input)->Output",
-    ),
-    trait_method(
-        "BitOr",
-        "bit_or",
-        "trait.bit-or.bit-or",
-        "fn(Lhs,Rhs)->Output",
-    ),
-    trait_method(
-        "BitXor",
-        "bit_xor",
-        "trait.bit-xor.bit-xor",
-        "fn(Lhs,Rhs)->Output",
-    ),
-    trait_method("Clone", "clone", "trait.clone.clone", "fn(&Self)->Self"),
-    trait_method("Div", "div", "trait.div.div", "fn(Lhs,Rhs)->Output"),
-    trait_method("Drop", "drop", "trait.drop.drop", "fn(&mut Self)->()"),
-    trait_method("Eq", "eq", "trait.eq.eq", "fn(&Lhs,&Rhs)->bool"),
-    trait_method(
-        "Fn",
-        "call",
-        "trait.fn.call",
-        "callable exact signature/effects",
-    ),
-    trait_method(
-        "FnMut",
-        "call",
-        "trait.fn-mut.call",
-        "callable exact signature/effects",
-    ),
-    trait_method(
-        "FnOnce",
-        "call",
-        "trait.fn-once.call",
-        "callable exact signature/effects",
-    ),
-    trait_method("From", "from", "trait.from.from", "fn(Source)->Target"),
-    trait_method(
-        "IntoIterator",
-        "into_iter",
-        "trait.into-iterator.into-iter",
-        "fn(Source)->Iter",
-    ),
-    trait_method(
-        "Iterator",
-        "next",
-        "trait.iterator.next",
-        "fn(&mut Iter)->Option<Item>",
-    ),
-    trait_method(
-        "LogicalNot",
-        "logical_not",
-        "trait.logical-not.logical-not",
-        "fn(Input)->Output",
-    ),
-    trait_method("Mul", "mul", "trait.mul.mul", "fn(Lhs,Rhs)->Output"),
-    trait_method("Neg", "neg", "trait.neg.neg", "fn(Input)->Output"),
-    trait_method("Ord", "compare", "trait.ord.compare", "fn(&Lhs,&Rhs)->i32"),
-    trait_method("Rem", "rem", "trait.rem.rem", "fn(Lhs,Rhs)->Output"),
-    trait_method(
-        "ShiftLeft",
-        "shift_left",
-        "trait.shift-left.shift-left",
-        "fn(Lhs,Rhs)->Output",
-    ),
-    trait_method(
-        "ShiftRight",
-        "shift_right",
-        "trait.shift-right.shift-right",
-        "fn(Lhs,Rhs)->Output",
-    ),
-    trait_method("Sub", "sub", "trait.sub.sub", "fn(Lhs,Rhs)->Output"),
-    trait_method(
-        "TryFrom",
-        "try_from",
-        "trait.try-from.try-from",
-        "fn(Source)->Result<Target,Error>",
-    ),
     intrinsic_method(
         "String",
         "new",
@@ -3796,6 +6146,9 @@ fn verify_named_span(
 mod private {
     #[derive(Debug)]
     pub(super) struct Seal;
+
+    #[derive(Debug)]
+    pub(super) struct TypedSeal;
 }
 
 #[cfg(test)]
@@ -3858,6 +6211,457 @@ mod tests {
         assert_eq!(first.interface_digest(), &RELEASE_INTERFACE_DIGEST);
         assert_eq!(first.projection().source().file_id(), FileId(u64::MAX));
         assert!(!first.projection().source().is_empty());
+    }
+
+    fn release_with_typed_projection() -> (
+        EmbeddedCoreC1PackageProjection,
+        EmbeddedCoreC2TypedProjection,
+    ) {
+        let projection = build_release_projection().unwrap();
+        verify_projection(&projection).unwrap();
+        let typed = build_typed_c2_projection(&projection).unwrap();
+        verify_typed_c2_projection(&projection, &typed).unwrap();
+        (projection, typed)
+    }
+
+    fn trait_definition(
+        projection: &EmbeddedCoreC1PackageProjection,
+        kind: CompilerTraitKind,
+    ) -> VirtualDefinitionId {
+        let spec = COMPILER_TRAITS
+            .iter()
+            .find(|spec| spec.kind == kind)
+            .unwrap();
+        find_definition_id(&projection.definitions, spec.name, VirtualNamespace::Type).unwrap()
+    }
+
+    #[test]
+    fn typed_c2_authority_has_semantic_trait_nominal_and_callable_identities() {
+        let authority = verified_embedded_core_authority().unwrap();
+        let typed = authority.typed_c2();
+        assert_eq!(typed.compiler_traits().len(), 31);
+        assert_eq!(typed.primitive_definitions.len(), PRIMITIVE_TYPES.len());
+        assert_eq!(typed.nominals().len(), 29);
+
+        let unit = find_definition_id(
+            authority.projection().definitions(),
+            "()",
+            VirtualNamespace::Type,
+        )
+        .unwrap();
+        assert_eq!(
+            typed.primitive_for_c1_definition(unit),
+            Some(CompilerPrimitiveTypePattern::Unit)
+        );
+        assert_eq!(
+            authority.compiler_primitive_for_c1_definition(unit),
+            Some(CompilerPrimitiveTypePattern::Unit)
+        );
+
+        let clone = typed.compiler_trait(CompilerTraitKind::Clone);
+        assert_eq!(clone.explicit_generic_arity(), 0);
+        assert_eq!(
+            clone.designated_self(),
+            CompilerTraitSelfRelation::OperatedType
+        );
+        assert_eq!(
+            clone.user_impl_policy(),
+            UserImplPolicy::AllowedAndValidated
+        );
+        let clone_method = clone.method().unwrap();
+        assert_eq!(clone_method.kind(), CompilerTraitMethodKind::Clone);
+        assert_eq!(clone_method.receiver(), CompilerTraitReceiverMode::Shared);
+        assert_eq!(
+            clone_method.callable(),
+            &CompilerTraitCallablePattern::Fixed {
+                parameters: Box::new([]),
+                result: CompilerTraitTypePattern::SelfType,
+            }
+        );
+
+        let eq = typed.compiler_trait(CompilerTraitKind::Eq);
+        assert_eq!(eq.explicit_generic_arity(), 2);
+        assert_eq!(
+            eq.designated_self(),
+            CompilerTraitSelfRelation::LeftHandSide(CompilerTraitGenericParameter(0))
+        );
+        let eq_method = eq.method().unwrap();
+        assert_eq!(eq_method.receiver(), CompilerTraitReceiverMode::None);
+        assert_eq!(
+            eq_method.callable(),
+            &CompilerTraitCallablePattern::Fixed {
+                parameters:
+                    vec![
+                        CompilerTraitTypePattern::SharedReference(Box::new(
+                            CompilerTraitTypePattern::ExplicitGeneric(
+                                CompilerTraitGenericParameter(0),
+                            ),
+                        )),
+                        CompilerTraitTypePattern::SharedReference(Box::new(
+                            CompilerTraitTypePattern::ExplicitGeneric(
+                                CompilerTraitGenericParameter(1),
+                            ),
+                        )),
+                    ]
+                    .into_boxed_slice(),
+                result: CompilerTraitTypePattern::Primitive(CompilerPrimitiveTypePattern::Bool),
+            }
+        );
+
+        let iterator = typed.compiler_trait(CompilerTraitKind::Iterator);
+        assert_eq!(iterator.explicit_generic_arity(), 2);
+        assert_eq!(
+            iterator.designated_self(),
+            CompilerTraitSelfRelation::Iterator(CompilerTraitGenericParameter(0))
+        );
+        let next = iterator.method().unwrap();
+        assert_eq!(next.receiver(), CompilerTraitReceiverMode::Mutable);
+        assert_eq!(
+            typed
+                .compiler_trait_method(CompilerTraitMethodKind::IteratorNext)
+                .map(CompilerTraitMethodAuthority::c1_method),
+            Some(next.c1_method())
+        );
+        assert_eq!(
+            typed
+                .compiler_trait_method_for_c1_method(next.c1_method())
+                .map(CompilerTraitMethodAuthority::kind),
+            Some(CompilerTraitMethodKind::IteratorNext)
+        );
+        assert_eq!(
+            next.callable(),
+            &CompilerTraitCallablePattern::Fixed {
+                parameters: Box::new([]),
+                result: CompilerTraitTypePattern::Nominal {
+                    kind: CompilerNominalKind::Option,
+                    arguments: Box::new([CompilerTraitTypePattern::ExplicitGeneric(
+                        CompilerTraitGenericParameter(1),
+                    )]),
+                },
+            }
+        );
+
+        let callable = typed.compiler_trait(CompilerTraitKind::FnOnce);
+        assert_eq!(callable.explicit_generic_arity(), 1);
+        assert_eq!(
+            callable.designated_self(),
+            CompilerTraitSelfRelation::CallableType
+        );
+        let call = callable.method().unwrap();
+        assert_eq!(call.receiver(), CompilerTraitReceiverMode::Value);
+        assert_eq!(call.effects(), CompilerTraitEffectPattern::ExactSignature);
+        assert_eq!(
+            call.callable(),
+            &CompilerTraitCallablePattern::ExactSignatureAndEffects {
+                signature: CompilerTraitGenericParameter(0),
+            }
+        );
+
+        let option = authority.compiler_nominal(CompilerNominalKind::Option);
+        assert_eq!(option.declaration_kind(), VirtualDeclarationKind::Enum);
+        assert_eq!(
+            typed
+                .nominal_for_c1_definition(option.c1_definition())
+                .map(CompilerNominalAuthority::kind),
+            Some(CompilerNominalKind::Option)
+        );
+        assert_eq!(
+            typed
+                .compiler_trait_for_c1_definition(clone.c1_definition())
+                .map(CompilerTraitAuthority::kind),
+            Some(CompilerTraitKind::Clone)
+        );
+    }
+
+    #[test]
+    fn typed_nominal_methods_are_complete_typed_and_lookupable() {
+        let authority = verified_embedded_core_authority().unwrap();
+        let typed = authority.typed_c2();
+        assert_eq!(typed.nominal_methods().len(), 51);
+        assert!(typed
+            .nominal_methods()
+            .windows(2)
+            .all(|rows| rows[0].c1_method() < rows[1].c1_method()));
+
+        let map = find_definition_id(
+            &authority.projection().definitions,
+            "Map",
+            VirtualNamespace::Type,
+        )
+        .unwrap();
+        let option = find_definition_id(
+            &authority.projection().definitions,
+            "Option",
+            VirtualNamespace::Type,
+        )
+        .unwrap();
+        let insert = authority
+            .compiler_nominal_method(CompilerNominalKind::Map, "insert")
+            .unwrap();
+        assert_eq!(insert.owner(), CompilerNominalKind::Map);
+        assert_eq!(
+            insert.receiver(),
+            CompilerNominalMethodReceiverMode::Mutable
+        );
+        assert_eq!(insert.generics().len(), 2);
+        assert_eq!(insert.generics()[0].source_name(), "K");
+        assert_eq!(
+            insert.generics()[0].bounds(),
+            [
+                CompilerMethodGenericBoundPattern::CompilerTrait(CompilerTraitKind::Eq),
+                CompilerMethodGenericBoundPattern::CompilerTrait(CompilerTraitKind::Ord),
+            ]
+        );
+        assert_eq!(
+            insert.receiver_type(),
+            Some(&CompilerMethodTypePattern::MutableReference {
+                lifetime: CompilerMethodLifetimePattern::Elided,
+                referent: Box::new(CompilerMethodTypePattern::Definition {
+                    definition: map,
+                    arguments: Box::new([
+                        CompilerMethodGenericArgumentPattern::Type(
+                            CompilerMethodTypePattern::Generic(CompilerMethodGenericParameter(0),),
+                        ),
+                        CompilerMethodGenericArgumentPattern::Type(
+                            CompilerMethodTypePattern::Generic(CompilerMethodGenericParameter(1),),
+                        ),
+                    ]),
+                }),
+            })
+        );
+        assert_eq!(
+            insert.parameters(),
+            [
+                CompilerMethodTypePattern::Generic(CompilerMethodGenericParameter(0)),
+                CompilerMethodTypePattern::Generic(CompilerMethodGenericParameter(1)),
+            ]
+        );
+        assert_eq!(
+            insert.result(),
+            &CompilerMethodTypePattern::Definition {
+                definition: option,
+                arguments: Box::new([CompilerMethodGenericArgumentPattern::Type(
+                    CompilerMethodTypePattern::Generic(CompilerMethodGenericParameter(1)),
+                )]),
+            }
+        );
+        assert_eq!(
+            insert.requires(),
+            [CompilerNominalMethodEffectPattern::Drop(
+                CompilerMethodTypePattern::Generic(CompilerMethodGenericParameter(0)),
+            )]
+        );
+        assert!(insert.throws().is_empty());
+        assert_eq!(
+            authority
+                .compiler_nominal_method_for_c1_method(insert.c1_method())
+                .map(CompilerNominalMethodAuthority::stable_name),
+            Some("map.insert")
+        );
+
+        let app = authority
+            .compiler_nominal_method(CompilerNominalKind::App, "run")
+            .unwrap();
+        assert_eq!(app.receiver(), CompilerNominalMethodReceiverMode::Mutable);
+        assert_eq!(app.parameters().len(), 1);
+        assert_eq!(app.selectors().len(), 1);
+        assert_eq!(app.selectors()[0].source_name(), "schedule");
+        assert_eq!(
+            app.selectors()[0].kind(),
+            CompilerMethodSelectorKind::DefinitionId
+        );
+        assert_eq!(
+            app.requires(),
+            [CompilerNominalMethodEffectPattern::Selector(
+                CompilerMethodSelector(0),
+            )]
+        );
+        assert_eq!(app.requires(), app.throws());
+
+        let maybe_uninit = find_definition_id(
+            &authority.projection().definitions,
+            "MaybeUninit",
+            VirtualNamespace::Type,
+        )
+        .unwrap();
+        let assume_init = authority
+            .compiler_nominal_method(CompilerNominalKind::MaybeUninit, "assume_init")
+            .unwrap();
+        assert!(assume_init.is_unsafe());
+        assert_eq!(
+            assume_init.lowering(),
+            VirtualMethodLowering::CompilerOperation(CompilerOperation::MaybeUninitAssumeInit)
+        );
+        assert_eq!(
+            assume_init.receiver(),
+            CompilerNominalMethodReceiverMode::Value
+        );
+        assert_eq!(
+            assume_init.receiver_type(),
+            Some(&CompilerMethodTypePattern::Definition {
+                definition: maybe_uninit,
+                arguments: Box::new([CompilerMethodGenericArgumentPattern::Type(
+                    CompilerMethodTypePattern::Generic(CompilerMethodGenericParameter(0)),
+                )]),
+            })
+        );
+        assert!(assume_init.parameters().is_empty());
+        assert!(authority
+            .compiler_nominal_method(CompilerNominalKind::Caps, "take")
+            .is_none());
+    }
+
+    #[test]
+    fn typed_nominal_method_mutations_and_noncanonical_grammar_fail_closed() {
+        let (mut projection, _) = release_with_typed_projection();
+        let insert = projection
+            .methods
+            .iter_mut()
+            .find(|row| row.stable_name == "map.insert")
+            .unwrap();
+        insert.signature.push(' ');
+        assert_eq!(
+            build_typed_c2_projection(&projection).unwrap_err(),
+            EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority
+        );
+
+        let (projection, mut typed) = release_with_typed_projection();
+        let remove = typed
+            .nominal_methods
+            .iter_mut()
+            .find(|row| row.stable_name == "map.remove")
+            .unwrap();
+        remove.source_name = "insert".to_owned();
+        assert!(typed
+            .nominal_method(CompilerNominalKind::Map, "insert")
+            .is_none());
+        assert_eq!(
+            verify_typed_c2_projection(&projection, &typed),
+            Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)
+        );
+
+        let map =
+            find_definition_id(&projection.definitions, "Map", VirtualNamespace::Type).unwrap();
+        assert_eq!(
+            parse_nominal_method_signature(
+                &projection,
+                "Map",
+                map,
+                "new",
+                "map.new<K:Unknown,V>() -> Map<K,V>",
+            ),
+            Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)
+        );
+        assert_eq!(
+            parse_nominal_method_signature(
+                &projection,
+                "Map",
+                map,
+                "new",
+                "map.new<K,V>() -> Map<K,V> trailing",
+            ),
+            Err(EmbeddedCoreVerificationError::InvalidTypedNominalMethodAuthority)
+        );
+
+        let (mut projection, typed) = release_with_typed_projection();
+        let offset = projection
+            .source
+            .bytes()
+            .windows(b"map.insert".len())
+            .position(|window| window == b"map.insert")
+            .unwrap();
+        Arc::make_mut(&mut projection.source.bytes)[offset] = b'M';
+        assert_eq!(
+            verify_typed_c2_projection(&projection, &typed),
+            Err(EmbeddedCoreVerificationError::InvalidTypedSourceAgreement)
+        );
+    }
+
+    #[test]
+    fn typed_c2_trait_string_and_designated_self_mismatches_fail_closed() {
+        let (mut projection, _) = release_with_typed_projection();
+        let clone = trait_definition(&projection, CompilerTraitKind::Clone);
+        projection.definitions[usize::from(clone.0)].semantic_shape =
+            "trait Clone { forged }".to_owned();
+        assert_eq!(
+            build_typed_c2_projection(&projection).unwrap_err(),
+            EmbeddedCoreVerificationError::InvalidTypedTraitAuthority
+        );
+
+        let (projection, mut typed) = release_with_typed_projection();
+        let from = typed
+            .compiler_traits
+            .iter_mut()
+            .find(|row| row.kind == CompilerTraitKind::From)
+            .unwrap();
+        from.designated_self = CompilerTraitSelfRelation::Source(CompilerTraitGenericParameter(0));
+        assert_eq!(
+            verify_typed_c2_projection(&projection, &typed),
+            Err(EmbeddedCoreVerificationError::InvalidTypedTraitAuthority)
+        );
+    }
+
+    #[test]
+    fn typed_c2_method_owner_and_callable_mismatches_fail_closed() {
+        let (mut projection, _) = release_with_typed_projection();
+        let clone = trait_definition(&projection, CompilerTraitKind::Clone);
+        let clone_method = projection
+            .methods
+            .iter_mut()
+            .find(|row| row.owner == Some(clone))
+            .unwrap();
+        clone_method.owner = None;
+        assert_eq!(
+            build_typed_c2_projection(&projection).unwrap_err(),
+            EmbeddedCoreVerificationError::InvalidTypedMethodAuthority
+        );
+
+        let (mut projection, _) = release_with_typed_projection();
+        let iterator = trait_definition(&projection, CompilerTraitKind::Iterator);
+        let next = projection
+            .methods
+            .iter_mut()
+            .find(|row| row.owner == Some(iterator))
+            .unwrap();
+        next.signature = "fn(Iter)->Option<Item>".to_owned();
+        assert_eq!(
+            build_typed_c2_projection(&projection).unwrap_err(),
+            EmbeddedCoreVerificationError::InvalidTypedMethodAuthority
+        );
+    }
+
+    #[test]
+    fn typed_c2_nominal_and_synthetic_source_mismatches_fail_closed() {
+        let (projection, mut typed) = release_with_typed_projection();
+        typed.primitive_definitions[0].1 = CompilerPrimitiveTypePattern::Unit;
+        assert_eq!(
+            verify_typed_c2_projection(&projection, &typed).unwrap_err(),
+            EmbeddedCoreVerificationError::InvalidTypedPrimitiveAuthority
+        );
+
+        let (mut projection, _) = release_with_typed_projection();
+        let option =
+            find_definition_id(&projection.definitions, "Option", VirtualNamespace::Type).unwrap();
+        projection.definitions[usize::from(option.0)].declaration_kind =
+            VirtualDeclarationKind::Struct;
+        assert_eq!(
+            build_typed_c2_projection(&projection).unwrap_err(),
+            EmbeddedCoreVerificationError::InvalidTypedNominalAuthority
+        );
+
+        let (mut projection, typed) = release_with_typed_projection();
+        let needle = b"trait Clone { fn clone";
+        let offset = projection
+            .source
+            .bytes()
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .unwrap();
+        Arc::make_mut(&mut projection.source.bytes)[offset] = b'T';
+        assert_eq!(
+            verify_typed_c2_projection(&projection, &typed),
+            Err(EmbeddedCoreVerificationError::InvalidTypedSourceAgreement)
+        );
     }
 
     #[test]

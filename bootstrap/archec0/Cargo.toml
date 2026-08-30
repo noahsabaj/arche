@@ -18,6 +18,7 @@ members = [
     "crates/arche-foundation",
     "crates/arche-frontend",
     "crates/arche-package",
+    "crates/arche-semantics",
 ]
 default-members = ["."]
 resolver = "2"

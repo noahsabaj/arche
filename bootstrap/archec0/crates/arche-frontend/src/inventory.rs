@@ -1083,7 +1083,15 @@ fn module_bytes(module: &ModuleRef) -> Result<Vec<u8>, ShapeEncodingError> {
     Ok(output)
 }
 
-fn definition_key_bytes(key: &SemanticDefinitionKey) -> Result<Vec<u8>, ShapeEncodingError> {
+/// Encodes the complete C1 definition key for deterministic traversal inside
+/// one semantic-checking session.
+///
+/// These bytes retain session-local spans and symbolic owner readiness. They
+/// are deliberately not a stable definition identity, an interface identity,
+/// or an authority that may be persisted across compiler sessions.
+pub fn encode_semantic_definition_key_session(
+    key: &SemanticDefinitionKey,
+) -> Result<Vec<u8>, ShapeEncodingError> {
     let mut output = module_bytes(&key.module)?;
     bytes(
         &mut output,
@@ -1094,6 +1102,10 @@ fn definition_key_bytes(key: &SemanticDefinitionKey) -> Result<Vec<u8>, ShapeEnc
     string(&mut output, &key.name, "definition name")?;
     span(&mut output, key.span);
     Ok(output)
+}
+
+fn definition_key_bytes(key: &SemanticDefinitionKey) -> Result<Vec<u8>, ShapeEncodingError> {
+    encode_semantic_definition_key_session(key)
 }
 
 fn body_key_bytes(key: &SemanticBodyKey) -> Result<Vec<u8>, ShapeEncodingError> {
@@ -1611,7 +1623,7 @@ mod tests {
             let workspace = load_workspace(&ManifestRequest::discover_from(&root)).unwrap();
             let graph = resolve(&workspace, &RegistrySnapshot::empty()).unwrap();
             let output = check_workspace_c1(&workspace, &graph, &[]).unwrap();
-            let bytes = encode_inventory_c1(&output.inventory).unwrap();
+            let bytes = encode_inventory_c1(output.inventory()).unwrap();
             assert!(bytes.starts_with(b"ARCHE-C1-INVENTORY\0\x01\0\0\0"));
             lengths.push(bytes.len());
             combined.extend_from_slice(&u64::try_from(bytes.len()).unwrap().to_le_bytes());
