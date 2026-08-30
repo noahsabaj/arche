@@ -60,8 +60,8 @@ use crate::pattern::{
     RecordType, ReferenceMutability, TypedPattern, TypedPatternKind,
 };
 use crate::typing::{
-    check_typed_expression, BinaryTypeOperator, CheckedExpression, TypeCheckError,
-    TypeCheckErrorKind, TypedExpressionInput, TypingContext, UnaryTypeOperator,
+    check_typed_expression, BinaryTypeOperator, CheckedExpression, CheckedExpressionKind,
+    TypeCheckError, TypeCheckErrorKind, TypedExpressionInput, TypingContext, UnaryTypeOperator,
 };
 use crate::{
     classify_coercion, BinderFrame, BinderStack, LifetimeOutlives, TraitFrameSubstitution,
@@ -4395,13 +4395,13 @@ impl BodyChecker<'_, '_, '_> {
             };
             selected.push((item.id, (*method.shape).clone(), impl_arguments));
         }
+        if pending_candidates {
+            // A pending candidate could change zero/unique/ambiguous
+            // viability; the contract selects nothing until it resolves.
+            return None;
+        }
         match selected.len() {
-            0 => {
-                if pending_candidates {
-                    return None;
-                }
-                None
-            }
+            0 => None,
             1 => {
                 let (impl_item, method_shape, impl_arguments) =
                     selected.pop().expect("one selection row");
@@ -4499,6 +4499,11 @@ impl BodyChecker<'_, '_, '_> {
             SymbolicCallableParameterMode::ReceiverShared
             | SymbolicCallableParameterMode::ReceiverMutable => {
                 let SymbolicType::Reference { pointee, .. } = &expected_receiver else {
+                    self.gap(
+                        span,
+                        BodyCheckIncompletenessKind::MissingMethodSelection,
+                        "borrowed-receiver impl method resolved to a non-reference receiver type",
+                    );
                     return None;
                 };
                 let actual = receiver.ty();
@@ -4519,7 +4524,17 @@ impl BodyChecker<'_, '_, '_> {
                 borrowable || reborrowable
             }
             SymbolicCallableParameterMode::ReceiverValue => receiver.ty() == &expected_receiver,
-            SymbolicCallableParameterMode::Value => return None,
+            SymbolicCallableParameterMode::Value => {
+                for argument in arguments {
+                    self.check_expression(argument, None);
+                }
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingMethodSelection,
+                    "receiverless method reached postfix receiver selection",
+                );
+                return None;
+            }
         };
         if !receiver_ok {
             for argument in arguments {
@@ -4659,15 +4674,14 @@ impl BodyChecker<'_, '_, '_> {
                 let _ = trait_arguments;
             }
         }
+        if pending_predicates {
+            // A pending predicate could still supply this method and change
+            // zero/unique/ambiguous viability; select nothing until it
+            // resolves.
+            return None;
+        }
         match matches.len() {
-            0 => {
-                if pending_predicates {
-                    // A pending predicate could still supply this method;
-                    // stay with the caller's fail-closed gap.
-                    return None;
-                }
-                None
-            }
+            0 => None,
             1 => {
                 let (predicate, method_shape, trait_formals, trait_path) =
                     matches.pop().expect("one selection row");
@@ -4799,6 +4813,11 @@ impl BodyChecker<'_, '_, '_> {
         let receiver_ok = match receiver_parameter.mode {
             SymbolicCallableParameterMode::ReceiverShared => {
                 let SymbolicType::Reference { pointee, .. } = &expected_receiver else {
+                    self.gap(
+                        span,
+                        BodyCheckIncompletenessKind::MissingMethodSelection,
+                        "shared-receiver trait method resolved to a non-reference receiver type",
+                    );
                     return None;
                 };
                 let actual = receiver.ty();
@@ -4812,8 +4831,14 @@ impl BodyChecker<'_, '_, '_> {
             SymbolicCallableParameterMode::ReceiverValue => receiver.ty() == &expected_receiver,
             SymbolicCallableParameterMode::ReceiverMutable
             | SymbolicCallableParameterMode::Value => {
-                // Mutable-receiver bound methods need place-mutability
-                // authority; keep the caller's gap.
+                for argument in arguments {
+                    self.check_expression(argument, None);
+                }
+                self.gap(
+                    span,
+                    BodyCheckIncompletenessKind::MissingMethodSelection,
+                    "mutable-receiver and value-mode bound trait methods need place-mutability authority",
+                );
                 return None;
             }
         };
@@ -6127,25 +6152,27 @@ impl BodyChecker<'_, '_, '_> {
                         }
                     }
                     if let Some(else_block) = else_block {
-                        // The `else` block must diverge. A block whose value
-                        // types as the never type diverges; so does one whose
-                        // final statement is a return, throw, break, or
-                        // continue even when block typing reports unit.
+                        // The `else` block must diverge: its checked value
+                        // types as never, or a statement or nested block
+                        // position inside it does.
                         let value = self.lower_block(else_block, None);
-                        let diverges = match value.as_ref().and_then(|value| match &value.input {
-                            TypedExpressionInput::Known(ty) => Some(ty),
-                            _ => None,
-                        }) {
-                            Some(SymbolicType::Never) => true,
-                            _ => block_ends_diverging(else_block),
-                        };
-                        if !diverges {
-                            self.source_error(
-                                else_block.span,
-                                "TYPE002",
-                                "`let ... else` block must diverge",
-                            );
-                            complete = false;
+                        let checked = value
+                            .as_ref()
+                            .and_then(|value| self.materialize(value, None, else_block.span));
+                        match &checked {
+                            Some(checked) => {
+                                if !checked_expression_diverges(checked) {
+                                    self.source_error(
+                                        else_block.span,
+                                        "TYPE002",
+                                        "`let ... else` block must diverge",
+                                    );
+                                    complete = false;
+                                }
+                            }
+                            None => {
+                                complete = false;
+                            }
                         }
                     }
                     if let Some(lowered) = lowered {
@@ -8070,29 +8097,28 @@ fn erase_method_frame_lifetimes(ty: SymbolicType) -> SymbolicType {
 
 /// Syntactic divergence: the block's final statement is an expression whose
 /// control never falls through.
-fn block_ends_diverging(block: &arche_frontend::ast::AstBlock) -> bool {
-    use arche_frontend::ast::AstExpressionKind;
-    let diverging_expression = |expression: &AstExpression| {
-        matches!(
-            expression.kind,
-            AstExpressionKind::Return(_)
-                | AstExpressionKind::Throw(_)
-                | AstExpressionKind::Break(_)
-                | AstExpressionKind::Continue
-        )
-    };
-    if let Some(tail) = &block.tail {
-        return diverging_expression(tail);
+/// True when evaluating this checked expression can never complete normally:
+/// it types as the never type, or a statement or block position inside it
+/// does. Only block structure needs recursion; every joining construct
+/// (if/match/loop) already reports never through its own checked type.
+fn checked_expression_diverges(expression: &CheckedExpression) -> bool {
+    if expression.ty() == &SymbolicType::Never {
+        return true;
     }
-    block
-        .statements
-        .last()
-        .is_some_and(|statement| match &statement.kind {
-            arche_frontend::ast::AstStatementKind::Expression { expression, .. } => {
-                diverging_expression(expression)
-            }
-            _ => false,
-        })
+    match expression.kind() {
+        CheckedExpressionKind::Block { statements, tail } => {
+            statements.iter().any(checked_expression_diverges)
+                || tail.as_deref().is_some_and(checked_expression_diverges)
+        }
+        CheckedExpressionKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } => else_branch.as_deref().is_some_and(|else_branch| {
+            checked_expression_diverges(then_branch) && checked_expression_diverges(else_branch)
+        }),
+        _ => false,
+    }
 }
 
 fn peel_references(mut ty: &SymbolicType) -> &SymbolicType {
@@ -8142,11 +8168,23 @@ fn types_match_with_erased_body_lifetime(left: &SymbolicType, right: &SymbolicTy
             left_length == right_length
                 && types_match_with_erased_body_lifetime(left_element, right_element)
         }
-        (SymbolicType::Slice(left), SymbolicType::Slice(right))
-        | (
-            SymbolicType::RawPointer { pointee: left, .. },
-            SymbolicType::RawPointer { pointee: right, .. },
-        ) => types_match_with_erased_body_lifetime(left, right) && left == right,
+        (SymbolicType::Slice(left), SymbolicType::Slice(right)) => {
+            types_match_with_erased_body_lifetime(left, right) && left == right
+        }
+        (
+            SymbolicType::RawPointer {
+                mutability: left_mutability,
+                pointee: left,
+            },
+            SymbolicType::RawPointer {
+                mutability: right_mutability,
+                pointee: right,
+            },
+        ) => {
+            left_mutability == right_mutability
+                && types_match_with_erased_body_lifetime(left, right)
+                && left == right
+        }
         _ => left == right,
     }
 }
@@ -9085,5 +9123,215 @@ mod tests {
         let diagnostics = format!("{:?}", failure.diagnostics());
         assert!(failure.diagnostics().is_some());
         assert!(diagnostics.contains("TYPE002"), "diagnostics={diagnostics}");
+    }
+
+    #[test]
+    fn diverging_let_else_blocks_are_accepted_semantically() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Choice2 {\n",
+            "    One(i32),\n",
+            "    Two,\n",
+            "}\n",
+            "pub fn by_panic(value: Choice2) -> i32 {\n",
+            "    let Choice2::One(inner) = value else { panic(\"no\") };\n",
+            "    inner\n",
+            "}\n",
+            "pub fn by_branching_returns(value: Choice2, flag: bool) -> i32 {\n",
+            "    let Choice2::One(inner) = value else {\n",
+            "        if flag {\n",
+            "            return 0i32;\n",
+            "        } else {\n",
+            "            return 1i32;\n",
+            "        }\n",
+            "    };\n",
+            "    inner\n",
+            "}\n",
+            "pub fn by_nested_block(value: Choice2) -> i32 {\n",
+            "    let Choice2::One(inner) = value else {\n",
+            "        {\n",
+            "            return 0i32;\n",
+            "        }\n",
+            "    };\n",
+            "    inner\n",
+            "}\n",
+            "pub fn by_loop(value: Choice2) -> i32 {\n",
+            "    let Choice2::One(inner) = value else {\n",
+            "        loop {\n",
+            "        }\n",
+            "    };\n",
+            "    inner\n",
+            "}\n",
+            "pub fn by_dead_tail_statement(value: Choice2) -> i32 {\n",
+            "    let Choice2::One(inner) = value else {\n",
+            "        return 0i32;\n",
+            "        let _unused = 1i32;\n",
+            "    };\n",
+            "    inner\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("diverging else blocks must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn non_diverging_let_else_blocks_stay_type002() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Choice2 {\n",
+            "    One(i32),\n",
+            "    Two,\n",
+            "}\n",
+            "pub fn broken(value: Choice2) -> i32 {\n",
+            "    let Choice2::One(inner) = value else {\n",
+            "        1i32;\n",
+            "    };\n",
+            "    inner\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(failure.diagnostics().is_some());
+        assert!(
+            diagnostics.contains("must diverge"),
+            "diagnostics={diagnostics}"
+        );
+    }
+
+    #[test]
+    fn pending_impl_candidates_force_the_selection_gap() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub trait Speak {\n",
+            "    fn speak(&self) -> i32;\n",
+            "}\n",
+            "pub struct Talker {\n",
+            "    pub n: i32,\n",
+            "}\n",
+            "impl Speak for Talker {\n",
+            "    fn speak(&self) -> i32 {\n",
+            "        self.n\n",
+            "    }\n",
+            "}\n",
+            "pub struct Holder<T> {\n",
+            "    pub value: T,\n",
+            "}\n",
+            "impl<T> Holder<T> {\n",
+            "    pub fn get(&self) -> i32 {\n",
+            "        1i32\n",
+            "    }\n",
+            "}\n",
+            "impl<T> Holder<T> where T: Speak {\n",
+            "    pub fn get(&self) -> char {\n",
+            "        'a'\n",
+            "    }\n",
+            "}\n",
+            "pub fn call(holder: &Holder<Talker>) -> char {\n",
+            "    holder.get()\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "unresolved viability must not select or reject: {:?}",
+            failure.diagnostics()
+        );
+        assert!(failure
+            .incompleteness()
+            .iter()
+            .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingMethodSelection));
+    }
+
+    #[test]
+    fn receiver_mode_mismatches_are_recorded_gaps_not_silent_rows() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct Counter {\n",
+            "    pub n: i32,\n",
+            "}\n",
+            "impl Counter {\n",
+            "    pub fn make(value: i32) -> Counter {\n",
+            "        Counter { n: value }\n",
+            "    }\n",
+            "}\n",
+            "pub fn through_receiver(c: &Counter) -> i32 {\n",
+            "    c.make(1i32).n\n",
+            "}\n",
+            "pub fn bound_mutable<T>(it: &mut T) -> i32 where T: Iterator<T, i32> {\n",
+            "    it.next();\n",
+            "    0i32\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "receiver-mode holes are gaps, not rejections: {:?}",
+            failure.diagnostics()
+        );
+        let gaps = failure
+            .incompleteness()
+            .iter()
+            .filter(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingMethodSelection)
+            .count();
+        assert!(gaps >= 2, "gaps={:?}", failure.incompleteness());
+    }
+
+    #[test]
+    fn raw_pointer_mutability_never_erases_between_body_types() {
+        let handoff = C2Handoff::begin(inline_frontend(
+            "pub fn cast(pointer: *mut i32) -> *const i32 { pointer }\n",
+        ))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_some(),
+            "a mut-to-const raw pointer conversion has no coercion authority: {:?}",
+            failure.incompleteness()
+        );
+
+        let handoff = C2Handoff::begin(inline_frontend(
+            "pub fn keep(pointer: *const i32) -> *const i32 { pointer }\n",
+        ))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("identity raw pointer must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
     }
 }
