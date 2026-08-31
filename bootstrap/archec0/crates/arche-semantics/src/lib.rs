@@ -13,6 +13,7 @@ mod declaration_check;
 mod declarations;
 mod diagnostic;
 mod formation;
+mod golden;
 mod literal;
 mod model;
 #[cfg(test)]
@@ -52,6 +53,7 @@ pub use formation::{
     generic_argument_kind, validate_generic_arguments, GenericFormationError,
     TraitFrameSubstitution,
 };
+pub use golden::{dump_trait_text, dump_type_text, GoldenEncodeError};
 pub use literal::{
     check_float_literal, check_integer_literal, FloatLiteralError, FloatType, IntegerLiteralError,
     TypedFloatLiteral, TypedIntegerLiteral,

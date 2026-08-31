@@ -511,6 +511,22 @@ pub struct OrdinaryImplCandidateSpec {
 }
 
 impl OrdinaryImplCandidateSpec {
+    pub const fn is_default(&self) -> bool {
+        self.is_default
+    }
+
+    pub fn generic_parameters(&self) -> &[GenericParameterKind] {
+        &self.generic_parameters
+    }
+
+    pub const fn head(&self) -> &TraitPredicate {
+        &self.head
+    }
+
+    pub const fn environment(&self) -> &TraitEnvironment {
+        &self.predicates
+    }
+
     pub fn new(
         is_default: bool,
         generic_parameters: Vec<GenericParameterKind>,

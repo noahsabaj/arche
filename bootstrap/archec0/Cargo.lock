@@ -54,6 +54,7 @@ dependencies = [
  "arche-package",
  "num-bigint",
  "num-traits",
+ "sha2",
 ]
 
 [[package]]
