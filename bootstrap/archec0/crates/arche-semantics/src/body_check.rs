@@ -11528,6 +11528,21 @@ mod tests {
                 panic!("generic-owner closure values must close: {failure:#?}")
             });
         assert!(bodies.all_authority_complete());
+        let locals = format!(
+            "{:?}",
+            bodies
+                .bodies()
+                .flat_map(C2BodyView::locals)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            locals.contains("Lifetime(Bound { depth: 0, index: 0 })")
+                && locals.contains("BoundType { depth: 0, index: 1 }")
+                && locals.contains("Bound { depth: 0, index: 2 }")
+                && locals.contains("expression_ordinal: 1")
+                && locals.contains("captures: []"),
+            "identity arguments must carry the owner's bound generics: {locals}"
+        );
     }
 
     #[test]
