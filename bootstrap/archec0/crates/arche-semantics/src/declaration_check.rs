@@ -5224,8 +5224,8 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} requires exactly {} explicit type arguments",
-                authority.kind(),
+                "compiler trait {} requires exactly {} explicit type arguments",
+                crate::golden::compiler_trait_kind_atom(authority.kind()),
                 authority.explicit_generic_arity()
             ),
             input.definition.key.span,
@@ -5253,8 +5253,8 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} designated-Self relation does not equal the impl target",
-                authority.kind()
+                "compiler trait {} designated-Self relation does not equal the impl target",
+                crate::golden::compiler_trait_kind_atom(authority.kind())
             ),
             input.definition.key.span,
             diagnostics,
@@ -5266,8 +5266,8 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} does not permit an ordinary user impl",
-                authority.kind()
+                "compiler trait {} does not permit an ordinary user impl",
+                crate::golden::compiler_trait_kind_atom(authority.kind())
             ),
             input.definition.key.span,
             diagnostics,
@@ -5289,10 +5289,18 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} requires exact method set {:?}, found {:?}",
-                authority.kind(),
-                expected_names,
+                "compiler trait {} requires exact method set [{}], found [{}]",
+                crate::golden::compiler_trait_kind_atom(authority.kind()),
+                expected_names
+                    .iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 actual_names
+                    .iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             input.definition.key.span,
             diagnostics,
@@ -5411,8 +5419,8 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} method receiver does not match its exact designated-Self mode",
-                authority.kind()
+                "compiler trait {} method receiver does not match its exact designated-Self mode",
+                crate::golden::compiler_trait_kind_atom(authority.kind())
             ),
             input.definition.key.span,
             diagnostics,
@@ -5443,8 +5451,8 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} method parameter/result signature does not match typed Embedded Core",
-                authority.kind()
+                "compiler trait {} method parameter/result signature does not match typed Embedded Core",
+                crate::golden::compiler_trait_kind_atom(authority.kind())
             ),
             input.definition.key.span,
             diagnostics,

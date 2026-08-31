@@ -273,7 +273,7 @@ fn type002_reference_address_cast_is_a_terminal_c2_rejection() {
         package: "fixtures/m27c2-negative-type002-reference-address-cast",
         phase: CompilationPhase::BodyCallOperatorPattern,
         code: "TYPE002",
-        message: "`as` supports only raw-pointer/address reconstruction, not Reference { mutability: Mutable, lifetime: Bound { depth: 0, index: 0 }, pointee: U8 } to Usize",
+        message: "`as` supports only raw-pointer/address reconstruction, not (reference mutable (bound-lifetime 0 0) u8) to usize",
         start_byte: 70,
         start_line: 3,
         start_column: 9,

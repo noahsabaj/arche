@@ -1574,6 +1574,55 @@ impl Printer {
     }
 }
 
+/// Infallible canonical spelling of a symbolic type for diagnostic text.
+pub(crate) fn spell_symbolic_type(ty: &SymbolicType) -> String {
+    let mut printer = Printer::new("");
+    printer
+        .symbolic_type(ty)
+        .expect("the symbolic type printer is total");
+    printer.output.split_off(1).trim_start().to_owned()
+}
+
+/// Canonical spelling of a compiler trait kind for diagnostic text.
+pub(crate) const fn compiler_trait_kind_atom(
+    kind: arche_frontend::embedded_core::CompilerTraitKind,
+) -> &'static str {
+    use arche_frontend::embedded_core::CompilerTraitKind as K;
+    match kind {
+        K::Add => "Add",
+        K::BitAnd => "BitAnd",
+        K::BitNot => "BitNot",
+        K::BitOr => "BitOr",
+        K::BitXor => "BitXor",
+        K::Clone => "Clone",
+        K::Copy => "Copy",
+        K::Div => "Div",
+        K::Drop => "Drop",
+        K::EcsKey => "EcsKey",
+        K::EcsValue => "EcsValue",
+        K::Eq => "Eq",
+        K::Fn => "Fn",
+        K::FnMut => "FnMut",
+        K::FnOnce => "FnOnce",
+        K::From => "From",
+        K::IntoIterator => "IntoIterator",
+        K::Iterator => "Iterator",
+        K::LogicalNot => "LogicalNot",
+        K::Mul => "Mul",
+        K::Neg => "Neg",
+        K::Ord => "Ord",
+        K::Rem => "Rem",
+        K::Send => "Send",
+        K::ShiftLeft => "ShiftLeft",
+        K::ShiftRight => "ShiftRight",
+        K::Sub => "Sub",
+        K::Sync => "Sync",
+        K::TryFrom => "TryFrom",
+        K::Unpin => "Unpin",
+        K::UnwindPayload => "UnwindPayload",
+    }
+}
+
 const fn reference_mutability_atom(mutability: ReferenceMutability) -> &'static str {
     match mutability {
         ReferenceMutability::Shared => "shared",

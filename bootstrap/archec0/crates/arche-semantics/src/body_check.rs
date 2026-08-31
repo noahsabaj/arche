@@ -6241,8 +6241,9 @@ impl BodyChecker<'_, '_, '_> {
                 span,
                 "TYPE002",
                 format!(
-                    "`as` supports only raw-pointer/address reconstruction, not {:?} to {target:?}",
-                    checked.ty()
+                    "`as` supports only raw-pointer/address reconstruction, not {} to {}",
+                    crate::golden::spell_symbolic_type(checked.ty()),
+                    crate::golden::spell_symbolic_type(&target)
                 ),
             );
             return None;
@@ -6422,8 +6423,9 @@ impl BodyChecker<'_, '_, '_> {
                         span,
                         "TYPE002",
                         format!(
-                            "{:?} declaration `{}` is not a value",
-                            entry.definition.key.kind, entry.definition.key.name
+                            "{} declaration `{}` is not a value",
+                            declaration_kind_atom(entry.definition.key.kind),
+                            entry.definition.key.name
                         ),
                     );
                     None
