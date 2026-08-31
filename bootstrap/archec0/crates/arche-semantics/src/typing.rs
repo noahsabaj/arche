@@ -110,13 +110,22 @@ impl TypeCheckError {
                 formatter.write_str("type inference attempted to construct an infinite type")
             }
             TypeCheckErrorKind::Mismatch { expected, actual } => {
-                write!(formatter, "expected {expected:?}, found {actual:?}")
+                write!(
+                    formatter,
+                    "expected {}, found {}",
+                    crate::golden::spell_symbolic_type(expected),
+                    crate::golden::spell_symbolic_type(actual)
+                )
             }
             TypeCheckErrorKind::ArrayExpressionTypeMismatch { .. } => {
                 formatter.write_str("array expression cannot satisfy the expected non-array type")
             }
             TypeCheckErrorKind::ExpectedBoolean { actual } => {
-                write!(formatter, "expected bool, found {actual:?}")
+                write!(
+                    formatter,
+                    "expected bool, found {}",
+                    crate::golden::spell_symbolic_type(actual)
+                )
             }
             TypeCheckErrorKind::BreakOutsideLoop => {
                 formatter.write_str("break used outside a loop")
@@ -125,10 +134,18 @@ impl TypeCheckError {
                 formatter.write_str("return used outside a callable")
             }
             TypeCheckErrorKind::IntegerLiteral(error) => {
-                write!(formatter, "invalid integer literal: {error:?}")
+                write!(
+                    formatter,
+                    "invalid integer literal: {}",
+                    spell_integer_literal_error(error)
+                )
             }
             TypeCheckErrorKind::FloatLiteral(error) => {
-                write!(formatter, "invalid float literal: {error:?}")
+                write!(
+                    formatter,
+                    "invalid float literal: {}",
+                    spell_float_literal_error(error)
+                )
             }
             TypeCheckErrorKind::UnsatisfiedPrimitiveOperator {
                 operator,
@@ -137,9 +154,91 @@ impl TypeCheckError {
                 result,
             } => write!(
                 formatter,
-                "no primitive {operator:?} selection for left={left:?}, right={right:?}, result={result:?}"
+                "no primitive {} selection for left={}, right={}, result={}",
+                spell_primitive_operator(*operator),
+                crate::golden::spell_symbolic_type(left),
+                right
+                    .as_ref()
+                    .map_or_else(|| "none".to_owned(), crate::golden::spell_symbolic_type),
+                crate::golden::spell_symbolic_type(result)
             ),
         }
+    }
+}
+
+fn spell_unary_operator(operator: UnaryTypeOperator) -> &'static str {
+    match operator {
+        UnaryTypeOperator::Negate => "negate",
+        UnaryTypeOperator::LogicalNot => "logical-not",
+        UnaryTypeOperator::BitNot => "bit-not",
+    }
+}
+
+fn spell_binary_operator(operator: BinaryTypeOperator) -> &'static str {
+    match operator {
+        BinaryTypeOperator::LogicalOr => "logical-or",
+        BinaryTypeOperator::LogicalAnd => "logical-and",
+        BinaryTypeOperator::BitOr => "bit-or",
+        BinaryTypeOperator::BitXor => "bit-xor",
+        BinaryTypeOperator::BitAnd => "bit-and",
+        BinaryTypeOperator::Equal => "equal",
+        BinaryTypeOperator::NotEqual => "not-equal",
+        BinaryTypeOperator::Less => "less",
+        BinaryTypeOperator::LessEqual => "less-equal",
+        BinaryTypeOperator::Greater => "greater",
+        BinaryTypeOperator::GreaterEqual => "greater-equal",
+        BinaryTypeOperator::ShiftLeft => "shift-left",
+        BinaryTypeOperator::ShiftRight => "shift-right",
+        BinaryTypeOperator::Add => "add",
+        BinaryTypeOperator::Subtract => "subtract",
+        BinaryTypeOperator::Multiply => "multiply",
+        BinaryTypeOperator::Divide => "divide",
+        BinaryTypeOperator::Remainder => "remainder",
+    }
+}
+
+fn spell_primitive_operator(operator: PrimitiveExpressionOperator) -> &'static str {
+    match operator {
+        PrimitiveExpressionOperator::Unary(operator) => spell_unary_operator(operator),
+        PrimitiveExpressionOperator::Binary(operator) => spell_binary_operator(operator),
+        PrimitiveExpressionOperator::AddAssignment => "add-assignment",
+    }
+}
+
+fn spell_integer_literal_error(error: &crate::literal::IntegerLiteralError) -> String {
+    use crate::literal::IntegerLiteralError as E;
+    let atom = crate::golden::integer_type_atom;
+    match error {
+        E::SuffixContextMismatch { suffix, context } => format!(
+            "the {} suffix conflicts with the {} context",
+            atom(*suffix),
+            atom(*context)
+        ),
+        E::MagnitudeTooLarge => "the literal magnitude exceeds every integer type".to_owned(),
+        E::PositiveOutOfRange(ty) => {
+            format!("the positive value is out of range for {}", atom(*ty))
+        }
+        E::NegativeUnsigned(ty) => format!("a negative value cannot inhabit {}", atom(*ty)),
+        E::NegativeOutOfRange(ty) => {
+            format!("the negative value is out of range for {}", atom(*ty))
+        }
+    }
+}
+
+fn spell_float_literal_error(error: &crate::literal::FloatLiteralError) -> String {
+    use crate::literal::{FloatLiteralError as E, FloatType};
+    let atom = |ty: FloatType| match ty {
+        FloatType::F32 => "f32",
+        FloatType::F64 => "f64",
+    };
+    match error {
+        E::SuffixContextMismatch { suffix, context } => format!(
+            "the {} suffix conflicts with the {} context",
+            atom(*suffix),
+            atom(*context)
+        ),
+        E::InvalidSpelling => "the float spelling is invalid".to_owned(),
+        E::FiniteOverflow(ty) => format!("the value overflows finite {}", atom(*ty)),
     }
 }
 
@@ -2683,11 +2782,11 @@ mod tests {
         let error = check(&logical_not_integer).unwrap_err();
         assert_eq!(
             error.message().to_string(),
-            "no primitive Unary(LogicalNot) selection for left=I32, right=None, result=I32"
+            "no primitive logical-not selection for left=i32, right=none, result=i32"
         );
         assert_eq!(
             error.to_string(),
-            "TRAIT002: no primitive Unary(LogicalNot) selection for left=I32, right=None, result=I32"
+            "TRAIT002: no primitive logical-not selection for left=i32, right=none, result=i32"
         );
 
         let typed_logical_not = TypedExpressionInput::Unary {
