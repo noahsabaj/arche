@@ -430,21 +430,23 @@ pub fn check_typed_expression(
     expected: Option<&SymbolicType>,
     context: &TypingContext,
 ) -> Result<CheckedExpression, TypeCheckError> {
-    check_typed_expression_in_loops(input, expected, context, 0)
+    check_typed_expression_in_loops(input, expected, context, 0).map(|(checked, _)| checked)
 }
 
 /// Checks one expression that sits inside `enclosing_loops` source loops whose
 /// owning `While`/`Loop` nodes are not part of `input`. Each enclosing loop is
 /// seeded as a frame so a `break` in the subtree binds honestly instead of
-/// reporting itself outside a loop; the seeded joins are advisory (the
-/// authoritative binding happens when the whole body is checked) and any frame
-/// left unbound settles to unit before the unresolved-variable sweep.
+/// reporting itself outside a loop. The returned vector gives, per enclosing
+/// loop (innermost last), how many breaks in the subtree constrained that
+/// seeded frame: those breaks never reach the enclosing loop's authoritative
+/// frame, so the caller must treat the loops they targeted as unsound to type
+/// and keep them incomplete.
 pub fn check_typed_expression_in_loops(
     input: &TypedExpressionInput,
     expected: Option<&SymbolicType>,
     context: &TypingContext,
     enclosing_loops: usize,
-) -> Result<CheckedExpression, TypeCheckError> {
+) -> Result<(CheckedExpression, Vec<usize>), TypeCheckError> {
     if let Some(return_type) = context.return_type() {
         validate_type(return_type, context.binders())?;
     }
@@ -462,10 +464,10 @@ pub fn check_typed_expression_in_loops(
     }
     let expected = expected.cloned().map(InferType::Symbolic);
     let raw = checker.infer(input, expected.as_ref())?;
-    checker.settle_enclosing_loop_frames()?;
+    let seeded_break_counts = checker.settle_enclosing_loop_frames()?;
     checker.default_numeric_variables()?;
     checker.reject_unresolved_variables()?;
-    checker.materialize(raw)
+    Ok((checker.materialize(raw)?, seeded_break_counts))
 }
 
 /// Uses the shared generic-formation and binder authorities at an adapter
@@ -1619,16 +1621,19 @@ impl<'a> TypeChecker<'a> {
         Ok(())
     }
 
-    /// Pops the seeded enclosing-loop frames, binding the join variable of
-    /// any frame no `break` touched to unit so the sweep below stays honest.
-    /// A frame some `break` constrained is left entirely alone (its break
-    /// count records that): even when its root binding is still `None`, a
-    /// break may have merged it with a numeric-class variable, and rebinding
-    /// it to unit would fabricate a class mismatch. Seeded joins are
-    /// advisory; the authoritative join binds when the whole body is
-    /// checked.
-    fn settle_enclosing_loop_frames(&mut self) -> Result<(), TypeCheckError> {
+    /// Pops the seeded enclosing-loop frames and reports how many breaks
+    /// constrained each (seed order, innermost last). A frame no break
+    /// touched has its join bound to unit so the sweep below stays honest; a
+    /// frame some break constrained is left entirely alone (even when its
+    /// root binding is still `None`, a break may have merged it with a
+    /// numeric-class variable, and rebinding it to unit would fabricate a
+    /// class mismatch). Seeded joins never reach the enclosing loop's
+    /// authoritative frame; the caller keeps loops with a nonzero count
+    /// incomplete.
+    fn settle_enclosing_loop_frames(&mut self) -> Result<Vec<usize>, TypeCheckError> {
+        let mut break_counts = Vec::with_capacity(self.loops.len());
         while let Some(frame) = self.loops.pop() {
+            break_counts.push(frame.break_count);
             let InferType::Variable(variable) = &frame.join_type else {
                 continue;
             };
@@ -1638,7 +1643,8 @@ impl<'a> TypeChecker<'a> {
                 self.unify(&frame.join_type, &InferType::Symbolic(SymbolicType::Unit))?;
             }
         }
-        Ok(())
+        break_counts.reverse();
+        Ok(break_counts)
     }
 
     fn reject_unresolved_variables(&self) -> Result<(), TypeCheckError> {

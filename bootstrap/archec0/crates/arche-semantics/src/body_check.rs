@@ -929,6 +929,18 @@ impl SourceLoopKind {
     }
 }
 
+/// One enclosing source loop during lowering. `swallowed` records that an
+/// isolated subtree materialization consumed a `break` targeting this loop:
+/// that break never reaches the loop's authoritative typing frame, so a
+/// `loop` with the flag set cannot be typed soundly and stays an honest gap.
+/// `while` and `for` are unit-typed regardless of exit paths, so the flag is
+/// harmless for them.
+#[derive(Clone, Copy, Debug)]
+struct SourceLoopFrame {
+    kind: SourceLoopKind,
+    swallowed: bool,
+}
+
 struct BodyChecker<'catalog, 'hir, 'locals> {
     catalog: &'catalog BodyCatalog<'hir>,
     scope: &'catalog BodyScope<'hir>,
@@ -945,7 +957,7 @@ struct BodyChecker<'catalog, 'hir, 'locals> {
     pending_c4: Vec<PendingC4Dependency>,
     diagnostics: Vec<SemanticDiagnostic>,
     gaps: Vec<BodyCheckIncompleteness>,
-    source_loops: Vec<SourceLoopKind>,
+    source_loops: Vec<SourceLoopFrame>,
     unsafe_depth: usize,
     generator_resume_type: Option<SymbolicType>,
     generator_yield_type: Option<SymbolicType>,
@@ -2269,7 +2281,12 @@ impl BodyChecker<'_, '_, '_> {
             &self.typing,
             self.source_loops.len(),
         ) {
-            Ok(checked) => {
+            Ok((checked, seeded_break_counts)) => {
+                for (index, count) in seeded_break_counts.iter().enumerate() {
+                    if *count > 0 {
+                        self.source_loops[index].swallowed = true;
+                    }
+                }
                 self.expressions.push(CheckedBodyExpression {
                     span,
                     expression: checked.clone(),
@@ -2381,7 +2398,16 @@ impl BodyChecker<'_, '_, '_> {
             AstExpressionKind::If(if_) => self.lower_if(expression.span, if_, expected),
             AstExpressionKind::While(while_) => self.lower_while(expression.span, while_, expected),
             AstExpressionKind::Loop(block) => {
-                let body = self.lower_loop_body(block, SourceLoopKind::Loop)?;
+                let (body, swallowed) = self.lower_loop_body(block, SourceLoopKind::Loop);
+                let body = body?;
+                if swallowed {
+                    self.gap(
+                        expression.span,
+                        BodyCheckIncompletenessKind::UnsupportedC2AdapterSurface,
+                        "the expression typing algebra does not retain the enclosing loop join for a break inside an isolated subtree",
+                    );
+                    return None;
+                }
                 Some(LoweredValue::ordinary(TypedExpressionInput::Loop {
                     body: Box::new(body.input),
                 }))
@@ -2425,7 +2451,10 @@ impl BodyChecker<'_, '_, '_> {
                 Some(LoweredValue::ordinary(TypedExpressionInput::Return(value)))
             }
             AstExpressionKind::Break(value) => {
-                let Some(&enclosing) = self.source_loops.last() else {
+                let Some(&SourceLoopFrame {
+                    kind: enclosing, ..
+                }) = self.source_loops.last()
+                else {
                     self.source_error(expression.span, "TYPE002", "break used outside a loop");
                     if let Some(value) = value {
                         self.walk_expression(value);
@@ -6479,7 +6508,8 @@ impl BodyChecker<'_, '_, '_> {
                         // manufacture missing-local gaps from a body whose
                         // binding cannot have a typed selection.
                     } else {
-                        let lowered_body = self.lower_loop_body(body, SourceLoopKind::For);
+                        let (lowered_body, _swallowed) =
+                            self.lower_loop_body(body, SourceLoopKind::For);
                         if lowered_body.is_none() {
                             complete = false;
                         }
@@ -6555,11 +6585,21 @@ impl BodyChecker<'_, '_, '_> {
         complete.then(|| LoweredValue::ordinary(TypedExpressionInput::Block { statements, tail }))
     }
 
-    fn lower_loop_body(&mut self, block: &AstBlock, kind: SourceLoopKind) -> Option<LoweredValue> {
-        self.source_loops.push(kind);
+    fn lower_loop_body(
+        &mut self,
+        block: &AstBlock,
+        kind: SourceLoopKind,
+    ) -> (Option<LoweredValue>, bool) {
+        self.source_loops.push(SourceLoopFrame {
+            kind,
+            swallowed: false,
+        });
         let lowered = self.lower_block(block, None);
-        self.source_loops.pop();
-        lowered
+        let frame = self
+            .source_loops
+            .pop()
+            .expect("source loop frame was pushed");
+        (lowered, frame.swallowed)
     }
 
     fn lower_if(
@@ -6627,7 +6667,7 @@ impl BodyChecker<'_, '_, '_> {
                 }
             }
         };
-        let body = self.lower_loop_body(&while_.body, SourceLoopKind::While);
+        let (body, _swallowed) = self.lower_loop_body(&while_.body, SourceLoopKind::While);
         let (Some(condition), Some(body)) = (condition, body) else {
             return None;
         };
@@ -10662,99 +10702,24 @@ mod tests {
     }
 
     #[test]
-    fn breaks_nested_in_materialized_subtrees_close() {
-        for body in [
-            concat!(
-                "pub fn probe(flag: bool) -> i32 {\n",
-                "    loop {\n",
-                "        match flag {\n",
-                "            true => break,\n",
-                "            false => {}\n",
-                "        }\n",
-                "    }\n",
-                "    0i32\n",
-                "}\n",
-            ),
-            concat!(
-                "pub enum Choice {\n",
-                "    One(i32),\n",
-                "    Two,\n",
-                "}\n",
-                "pub fn probe(value: Choice) -> i32 {\n",
-                "    loop {\n",
-                "        let Choice::One(number) = value else {\n",
-                "            break;\n",
-                "        };\n",
-                "        return number;\n",
-                "    }\n",
-                "    0i32\n",
-                "}\n",
-            ),
-            concat!(
-                "pub fn probe(flag: bool) -> i32 {\n",
-                "    let mut total = 0i32;\n",
-                "    loop {\n",
-                "        total = if flag { 1i32 } else { break };\n",
-                "    }\n",
-                "    total\n",
-                "}\n",
-            ),
-            concat!(
-                "pub fn probe(flag: bool) -> i32 {\n",
-                "    while flag {\n",
-                "        match flag {\n",
-                "            true => break,\n",
-                "            false => {}\n",
-                "        }\n",
-                "    }\n",
-                "    0i32\n",
-                "}\n",
-            ),
-            concat!(
-                "pub fn probe(flag: bool) -> i32 {\n",
-                "    loop {\n",
-                "        match flag {\n",
-                "            true => break 1i32,\n",
-                "            false => 0i32,\n",
-                "        };\n",
-                "    }\n",
-                "    0i32\n",
-                "}\n",
-            ),
-            concat!(
-                "pub fn probe(flag: bool) -> i32 {\n",
-                "    loop {\n",
-                "        match flag {\n",
-                "            true => break 1,\n",
-                "            false => {}\n",
-                "        }\n",
-                "    }\n",
-                "}\n",
-            ),
-            concat!(
-                "pub fn probe(flag: bool) -> f64 {\n",
-                "    loop {\n",
-                "        match flag {\n",
-                "            true => break 1.0,\n",
-                "            false => {}\n",
-                "        }\n",
-                "    }\n",
-                "}\n",
-            ),
-        ] {
-            let handoff = C2Handoff::begin(inline_frontend(body)).unwrap();
-            let declarations = DeclarationTable::build(&handoff).unwrap();
-            let checked_result = check_declarations_c2(&handoff, &declarations);
-            let checked = match &checked_result {
-                Ok(facts) => facts,
-                Err(failure) => failure.partial(),
-            };
-            let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
-                .unwrap_or_else(|failure| {
-                    panic!("nested break must close honestly; body={body}: {failure:#?}")
-                });
-            assert!(bodies.all_authority_complete(), "body={body}");
-        }
+    fn nested_bare_breaks_close_in_while_and_for_subtrees() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn probe(flag: bool) -> i32 {\n",
+            "    while flag {\n",
+            "        match flag {\n",
+            "            true => break,\n",
+            "            false => {}\n",
+            "        }\n",
+            "    }\n",
+            "    0i32\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked = check_declarations_c2(&handoff, &declarations).unwrap();
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, &checked)
+            .unwrap_or_else(|failure| panic!("nested while break must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
 
         let handoff = C2Handoff::begin(inline_frontend(concat!(
             "pub struct Src {\n",
@@ -10793,5 +10758,138 @@ mod tests {
         let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
             .unwrap_or_else(|failure| panic!("nested for break must close: {failure:#?}"));
         assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn nested_breaks_under_loop_stay_honest_gaps() {
+        for body in [
+            concat!(
+                "pub fn probe(flag: bool) -> i32 {\n",
+                "    loop {\n",
+                "        match flag {\n",
+                "            true => break,\n",
+                "            false => {}\n",
+                "        }\n",
+                "    }\n",
+                "    0i32\n",
+                "}\n",
+            ),
+            concat!(
+                "pub enum Choice {\n",
+                "    One(i32),\n",
+                "    Two,\n",
+                "}\n",
+                "pub fn probe(value: Choice) -> i32 {\n",
+                "    loop {\n",
+                "        let Choice::One(number) = value else {\n",
+                "            break;\n",
+                "        };\n",
+                "        return number;\n",
+                "    }\n",
+                "    0i32\n",
+                "}\n",
+            ),
+            concat!(
+                "pub fn probe(flag: bool) -> i32 {\n",
+                "    let mut total = 0i32;\n",
+                "    loop {\n",
+                "        total = if flag { 1i32 } else { break };\n",
+                "    }\n",
+                "    total\n",
+                "}\n",
+            ),
+            concat!(
+                "pub fn probe(flag: bool) -> i32 {\n",
+                "    loop {\n",
+                "        match flag {\n",
+                "            true => break 1i32,\n",
+                "            false => 0i32,\n",
+                "        };\n",
+                "    }\n",
+                "    0i32\n",
+                "}\n",
+            ),
+            concat!(
+                "pub fn probe(flag: bool) -> i32 {\n",
+                "    loop {\n",
+                "        match flag {\n",
+                "            true => break 1,\n",
+                "            false => {}\n",
+                "        }\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub fn probe(flag: bool) -> f64 {\n",
+                "    loop {\n",
+                "        match flag {\n",
+                "            true => break 1.0,\n",
+                "            false => {}\n",
+                "        }\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub fn probe(flag: bool) -> i32 {\n",
+                "    loop {\n",
+                "        match flag {\n",
+                "            true => break \"text\",\n",
+                "            false => {}\n",
+                "        }\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub fn probe(kind: i32) -> i32 {\n",
+                "    loop {\n",
+                "        match kind {\n",
+                "            0i32 => break 1i32,\n",
+                "            1i32 => break true,\n",
+                "            _ => {}\n",
+                "        }\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(body)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            let checked_result = check_declarations_c2(&handoff, &declarations);
+            let checked = match &checked_result {
+                Ok(facts) => facts,
+                Err(failure) => failure.partial(),
+            };
+            let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+            assert!(
+                failure.diagnostics().is_none(),
+                "a swallowed loop break must gap, not reject; body={body} diagnostics={:?}",
+                failure.diagnostics()
+            );
+            let incompleteness = format!("{:?}", failure.incompleteness());
+            assert!(
+                incompleteness.contains("does not retain the enclosing loop join"),
+                "body={body} incompleteness={incompleteness}"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_break_against_annotated_loop_still_rejects() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn probe() -> bool {\n",
+            "    loop {\n",
+            "        break 1i32;\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked = check_declarations_c2(&handoff, &declarations).unwrap();
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, &checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(
+            diagnostics.contains("TYPE002") && diagnostics.contains("expected Bool, found I32"),
+            "diagnostics={diagnostics} incompleteness={:?}",
+            failure.incompleteness()
+        );
     }
 }
