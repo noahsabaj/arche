@@ -451,11 +451,9 @@ pub fn check_declarations_c2(
     }
     let catalog = build_catalog(handoff, &inputs);
     let sizedness = check_workspace_sizedness(handoff, &inputs, catalog.embedded);
-    let impl_family = check_workspace_impl_family(&inputs);
-    let alias_cycles = {
-        let paths = declaration_path_index(handoff, &inputs);
-        check_workspace_alias_cycles(&inputs, &paths)
-    };
+    let paths = declaration_path_index(handoff, &inputs);
+    let impl_family = check_workspace_impl_family(&inputs, &paths);
+    let alias_cycles = { check_workspace_alias_cycles(&inputs, &paths) };
 
     check_trait_impl_visibility(&inputs, &mut diagnostics);
 
@@ -583,8 +581,13 @@ pub fn check_declarations_c2(
             }
         }
 
-        match map_key_judgment(&shape, catalog.embedded) {
-            MapKeyOutcome::Discharged => {}
+        let mut sealed_map_comparisons = 0_usize;
+        match map_key_judgment(&shape, catalog.embedded, &inputs, &paths) {
+            MapKeyOutcome::Discharged {
+                sealed_continuations,
+            } => {
+                sealed_map_comparisons = sealed_continuations;
+            }
             MapKeyOutcome::Blocked => {
                 let judgment = UnimplementedDeclarationJudgment::MapKeyComparison;
                 blockers.push(DeclarationCheckBlocker {
@@ -636,8 +639,13 @@ pub fn check_declarations_c2(
             continue;
         }
 
-        let (resolution, pending_c4) =
-            gate_state(input, &definition_audit, &owner_audit, &mut diagnostics);
+        let (resolution, pending_c4) = gate_state(
+            input,
+            &definition_audit,
+            &owner_audit,
+            sealed_map_comparisons,
+            &mut diagnostics,
+        );
         provisional.push(Some(CheckedDeclarationRow {
             session_item: input.declaration.session_item().clone(),
             package: input.declaration.package(),
@@ -669,9 +677,11 @@ pub fn check_declarations_c2(
                 index,
                 &row,
                 &inputs,
+                &paths,
                 &provisional,
                 &catalog,
                 &mut diagnostics,
+                &mut blockers,
             );
         }
         provisional[index] = Some(row);
@@ -1981,6 +1991,7 @@ fn gate_state(
     input: &InputRow<'_>,
     definition: &ShapeGateAudit,
     owner: &ShapeGateAudit,
+    sealed_map_comparisons: usize,
     diagnostics: &mut Vec<SemanticDiagnostic>,
 ) -> (C2Resolution, PendingC4Dependencies) {
     let ctfe = definition
@@ -2022,6 +2033,10 @@ fn gate_state(
     for (domain, count) in [
         (0_u8, definition.pending_c4_count()),
         (1_u8, owner.pending_c4_count()),
+        (
+            2_u8,
+            u64::try_from(sealed_map_comparisons).expect("sealed comparison count fits u64"),
+        ),
     ] {
         for ordinal in 0..count {
             let mut bytes = b"ARCHE-C2-PENDING-C4\0".to_vec();
@@ -2042,13 +2057,33 @@ fn gate_state(
     (resolution, PendingC4Dependencies::from_unsorted(pending))
 }
 
+/// Records that the ordinary-impl conformance judgment could not run for
+/// this row; the row stays honestly incomplete instead of silently checked.
+fn push_impl_family_blocker(input: &InputRow<'_>, blockers: &mut Vec<DeclarationCheckBlocker>) {
+    let judgment = UnimplementedDeclarationJudgment::ImplCoherenceOverlap;
+    blockers.push(DeclarationCheckBlocker {
+        package: package_scope(input),
+        target: input.target,
+        path: input.path.clone(),
+        span: input.definition.key.span,
+        item: input.definition.hir_item,
+        debug_spelling: format!("{judgment:?}"),
+        reason: DeclarationCheckBlockerReason::MissingDeclarationJudgment(judgment),
+    });
+}
+
+// Judgment plumbing fans out to both sink vectors; bundling them would hide
+// the data flow behind one more struct without removing a dependency.
+#[allow(clippy::too_many_arguments)]
 fn describe_impl(
     index: usize,
     row: &CheckedDeclarationRow,
     inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
     rows: &[Option<CheckedDeclarationRow>],
     catalog: &DeclarationCatalog<'_>,
     diagnostics: &mut Vec<SemanticDiagnostic>,
+    blockers: &mut Vec<DeclarationCheckBlocker>,
 ) -> Option<OrdinaryImplCandidateSpec> {
     let input = &inputs[index];
     let SymbolicDeclarationPayloadSkeleton::Impl {
@@ -2080,6 +2115,20 @@ fn describe_impl(
         return None;
     };
     let target = resolved_type(target)?;
+    let target = expand_alias_spelling(target, inputs, paths)?;
+    // Conformance and selection compare like with like: the impl's methods
+    // and trait arguments expand alias spellings exactly as the target does.
+    let Some(methods) = methods
+        .iter()
+        .map(|method| expand_method_skeleton(method, inputs, paths))
+        .collect::<Option<Vec<_>>>()
+    else {
+        // Conformance cannot run against unexpandable method shapes; record
+        // the skip as an honest fail-closed blocker instead of silence.
+        push_impl_family_blocker(input, blockers);
+        return None;
+    };
+    let methods = methods.as_slice();
     let Some((trait_path, arguments)) = nominal_trait_ref(trait_ref) else {
         push_diagnostic(
             input,
@@ -2091,6 +2140,11 @@ fn describe_impl(
         return None;
     };
 
+    let arguments = arguments
+        .iter()
+        .map(|argument| expand_argument(argument, inputs, paths))
+        .collect::<Option<Vec<_>>>()?;
+    let arguments = arguments.as_slice();
     let trait_key = if let Some(trait_row) = catalog.rows.get(trait_path) {
         if trait_row.declaration.kind() != DeclarationKind::Trait {
             push_diagnostic(
@@ -2119,11 +2173,17 @@ fn describe_impl(
             return None;
         };
         let trait_checked = rows.get(trait_index).and_then(Option::as_ref)?;
+        let Some(trait_shape) =
+            expand_shape_skeleton(&trait_checked.declaration_shape, inputs, paths)
+        else {
+            push_impl_family_blocker(input, blockers);
+            return None;
+        };
         if !validate_ordinary_trait_impl(
             input,
-            trait_checked,
+            &trait_shape,
             arguments,
-            target,
+            &target,
             methods,
             diagnostics,
         ) {
@@ -2149,7 +2209,7 @@ fn describe_impl(
             authority: compiler,
             impl_formals: &row.declaration_shape.generic_parameters,
             arguments,
-            target,
+            target: &target,
             methods,
             embedded: catalog.embedded,
         };
@@ -2181,12 +2241,15 @@ fn describe_impl(
             return None;
         }
     };
-    let predicates = semantic_environment(
-        input,
-        &row.declaration_shape.predicates,
-        catalog,
-        diagnostics,
-    )?;
+    let mut expanded_predicates = row
+        .declaration_shape
+        .predicates
+        .iter()
+        .map(|predicate| expand_predicate_skeleton(predicate, inputs, paths))
+        .collect::<Option<Vec<_>>>()?;
+    expanded_predicates.sort();
+    expanded_predicates.dedup();
+    let predicates = semantic_environment(input, &expanded_predicates, catalog, diagnostics)?;
     Some(OrdinaryImplCandidateSpec::new(
         *is_default,
         row.declaration_shape.generic_parameters.clone(),
@@ -2434,6 +2497,12 @@ fn check_workspace_alias_cycles(
                     }
                 }
             }
+            SymbolicType::JoinHandle { result, throws } => {
+                alias_mentions(result, paths, out, unknown);
+                for member in throws.members() {
+                    alias_mentions(member, paths, out, unknown);
+                }
+            }
             _ => {}
         }
     }
@@ -2525,6 +2594,7 @@ struct SizednessWalk<'a> {
     mentions: Vec<NominalMention>,
     bare_unsized: Vec<String>,
     unknown: bool,
+    field_name: String,
 }
 
 impl SizednessWalk<'_> {
@@ -2543,14 +2613,25 @@ impl SizednessWalk<'_> {
     }
 
     fn walk_field(&mut self, name: &str, ty: &SymbolicType) {
-        match ty {
-            SymbolicType::Slice(_) | SymbolicType::Str => {
+        self.field_name = name.to_owned();
+        self.walk(ty, false, false, &mut Vec::new(), DstParent::Stored);
+    }
+
+    /// Bare `str`/slice legality by immediate parent (design doc 618-619,
+    /// 831-839): legal only directly behind a reference or raw pointer;
+    /// behind an owning Box/Rc/Arc pointee the approval question stays a
+    /// fail-closed blocker; every other position stores the unsized type.
+    fn check_bare_dst(&mut self, parent: DstParent) {
+        match parent {
+            DstParent::Pointer => {}
+            DstParent::OwnerPointee => self.unknown = true,
+            DstParent::Stored | DstParent::SliceElement | DstParent::Argument => {
+                let name = &self.field_name;
                 self.bare_unsized.push(format!(
                     "field `{name}` stores the unsized slice/str type directly; every \
                      user-declared nominal is sized"
                 ));
             }
-            _ => self.walk(ty, false, false, &mut Vec::new()),
         }
     }
 
@@ -2560,10 +2641,12 @@ impl SizednessWalk<'_> {
         indirect: bool,
         via_argument: bool,
         alias_stack: &mut Vec<usize>,
+        parent: DstParent,
     ) {
         match ty {
+            SymbolicType::Str => self.check_bare_dst(parent),
             SymbolicType::Reference { pointee, .. } | SymbolicType::RawPointer { pointee, .. } => {
-                self.walk(pointee, true, via_argument, alias_stack);
+                self.walk(pointee, true, via_argument, alias_stack, DstParent::Pointer);
             }
             SymbolicType::FunctionPointer {
                 parameters,
@@ -2578,20 +2661,56 @@ impl SizednessWalk<'_> {
                     .chain(requires.members())
                     .chain(throws.members())
                 {
-                    self.walk(ty, true, via_argument, alias_stack);
+                    self.walk(ty, true, via_argument, alias_stack, DstParent::Argument);
                 }
             }
             SymbolicType::Tuple(fields) => {
                 for field in fields {
-                    self.walk(field, indirect, via_argument, alias_stack);
+                    self.walk(
+                        field,
+                        indirect,
+                        via_argument,
+                        alias_stack,
+                        DstParent::Stored,
+                    );
                 }
             }
             SymbolicType::Slice(element) => {
-                // A non-bare slice sits behind indirection by construction.
-                self.walk(element, true, via_argument, alias_stack);
+                self.check_bare_dst(parent);
+                self.walk(
+                    element,
+                    true,
+                    via_argument,
+                    alias_stack,
+                    DstParent::SliceElement,
+                );
             }
             SymbolicType::Array { element, .. } => {
-                self.walk(element, indirect, via_argument, alias_stack);
+                self.walk(
+                    element,
+                    indirect,
+                    via_argument,
+                    alias_stack,
+                    DstParent::Stored,
+                );
+            }
+            SymbolicType::JoinHandle { result, throws } => {
+                self.walk(
+                    result,
+                    true,
+                    via_argument,
+                    alias_stack,
+                    DstParent::OwnerPointee,
+                );
+                for member in throws.members() {
+                    self.walk(
+                        member,
+                        true,
+                        via_argument,
+                        alias_stack,
+                        DstParent::OwnerPointee,
+                    );
+                }
             }
             SymbolicType::NominalPath {
                 declaration,
@@ -2606,9 +2725,25 @@ impl SizednessWalk<'_> {
                             | CompilerNominalKind::Pin
                             | CompilerNominalKind::MaybeUninit
                     );
+                    let argument_parent = if matches!(
+                        kind,
+                        CompilerNominalKind::Box
+                            | CompilerNominalKind::Rc
+                            | CompilerNominalKind::Arc
+                    ) {
+                        DstParent::OwnerPointee
+                    } else {
+                        DstParent::Argument
+                    };
                     for argument in arguments {
                         if let GenericArgumentShape::Type(ty) = argument {
-                            self.walk(ty, indirect || embedded_indirect, via_argument, alias_stack);
+                            self.walk(
+                                ty,
+                                indirect || embedded_indirect,
+                                via_argument,
+                                alias_stack,
+                                argument_parent,
+                            );
                         }
                     }
                     return;
@@ -2638,30 +2773,72 @@ impl SizednessWalk<'_> {
                         self.unknown = true;
                         return;
                     };
-                    let Some(expanded) = substitute_identity_frame(value, arguments) else {
+                    let mut expanded_arguments = Vec::with_capacity(arguments.len());
+                    for argument in arguments {
+                        match argument {
+                            GenericArgumentShape::Type(ty) => {
+                                match expand_alias_spelling(ty, self.inputs, self.paths) {
+                                    Some(expanded) => expanded_arguments
+                                        .push(GenericArgumentShape::Type(expanded)),
+                                    None => {
+                                        self.unknown = true;
+                                        return;
+                                    }
+                                }
+                            }
+                            other => expanded_arguments.push(other.clone()),
+                        }
+                    }
+                    let Some(expanded) = substitute_identity_frame(value, &expanded_arguments)
+                    else {
                         self.unknown = true;
                         return;
                     };
                     alias_stack.push(target);
-                    self.walk(&expanded, indirect, via_argument, alias_stack);
+                    self.walk(&expanded, indirect, via_argument, alias_stack, parent);
                     alias_stack.pop();
                     return;
                 }
+                // Regularity keys on normalized substitutions: alias
+                // spellings in the arguments expand before the mention is
+                // recorded, or the row stays fail-closed.
+                let mut expanded_arguments = Vec::with_capacity(arguments.len());
+                for argument in arguments {
+                    match expand_argument(argument, self.inputs, self.paths) {
+                        Some(expanded) => expanded_arguments.push(expanded),
+                        None => {
+                            self.unknown = true;
+                            return;
+                        }
+                    }
+                }
                 self.mentions.push(NominalMention {
                     target,
-                    arguments: arguments.clone(),
+                    arguments: expanded_arguments,
                     indirect,
                     via_argument,
                 });
                 for argument in arguments {
                     if let GenericArgumentShape::Type(ty) = argument {
-                        self.walk(ty, indirect, true, alias_stack);
+                        self.walk(ty, indirect, true, alias_stack, DstParent::Argument);
                     }
                 }
             }
             _ => {}
         }
     }
+}
+
+/// The immediate structural parent of a type position, deciding bare-DST
+/// legality: only a reference/raw-pointer pointee may hold `str`/`[T]`
+/// directly, and an owning Box/Rc/Arc pointee stays an undecided blocker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DstParent {
+    Stored,
+    Pointer,
+    OwnerPointee,
+    SliceElement,
+    Argument,
 }
 
 /// Substitutes depth-zero bound coordinates with the supplied arguments; any
@@ -2684,7 +2861,7 @@ fn substitute_identity_frame(
             pointee,
         } => SymbolicType::Reference {
             mutability: *mutability,
-            lifetime: lifetime.clone(),
+            lifetime: substitute_lifetime_identity(lifetime, arguments)?,
             pointee: Box::new(substitute_identity_frame(pointee, arguments)?),
         },
         SymbolicType::RawPointer {
@@ -2699,7 +2876,7 @@ fn substitute_identity_frame(
         }
         SymbolicType::Array { element, length } => SymbolicType::Array {
             element: Box::new(substitute_identity_frame(element, arguments)?),
-            length: length.clone(),
+            length: substitute_const_identity(length, arguments)?,
         },
         SymbolicType::Tuple(fields) => SymbolicType::Tuple(
             fields
@@ -2719,12 +2896,77 @@ fn substitute_identity_frame(
                         GenericArgumentShape::Type(ty) => {
                             GenericArgumentShape::Type(substitute_identity_frame(ty, arguments)?)
                         }
-                        other => other.clone(),
+                        GenericArgumentShape::Lifetime(lifetime) => GenericArgumentShape::Lifetime(
+                            substitute_lifetime_identity(lifetime, arguments)?,
+                        ),
+                        GenericArgumentShape::IntegerConst(expression) => {
+                            GenericArgumentShape::IntegerConst(substitute_const_identity(
+                                expression, arguments,
+                            )?)
+                        }
                     })
                 })
                 .collect::<Option<Vec<_>>>()?,
         },
-        other => other.clone(),
+        SymbolicType::JoinHandle { result, throws } => {
+            let throws_members = throws
+                .members()
+                .iter()
+                .map(|member| substitute_identity_frame(member, arguments))
+                .collect::<Option<Vec<_>>>()?;
+            SymbolicType::JoinHandle {
+                result: Box::new(substitute_identity_frame(result, arguments)?),
+                throws: rebuild_effect_set(throws, throws_members)?,
+            }
+        }
+        SymbolicType::FunctionPointer {
+            unsafe_,
+            parameters,
+            result,
+            requires,
+            throws,
+        } => {
+            let parameters = parameters
+                .iter()
+                .map(|parameter| substitute_identity_frame(parameter, arguments))
+                .collect::<Option<Vec<_>>>()?;
+            let requires_members = requires
+                .members()
+                .iter()
+                .map(|member| substitute_identity_frame(member, arguments))
+                .collect::<Option<Vec<_>>>()?;
+            let throws_members = throws
+                .members()
+                .iter()
+                .map(|member| substitute_identity_frame(member, arguments))
+                .collect::<Option<Vec<_>>>()?;
+            SymbolicType::FunctionPointer {
+                unsafe_: *unsafe_,
+                parameters,
+                result: Box::new(substitute_identity_frame(result, arguments)?),
+                requires: rebuild_effect_set(requires, requires_members)?,
+                throws: rebuild_effect_set(throws, throws_members)?,
+            }
+        }
+        SymbolicType::I8
+        | SymbolicType::I16
+        | SymbolicType::I32
+        | SymbolicType::I64
+        | SymbolicType::U8
+        | SymbolicType::U16
+        | SymbolicType::U32
+        | SymbolicType::U64
+        | SymbolicType::Isize
+        | SymbolicType::Usize
+        | SymbolicType::F32
+        | SymbolicType::F64
+        | SymbolicType::Bool
+        | SymbolicType::Char
+        | SymbolicType::Entity
+        | SymbolicType::Unit
+        | SymbolicType::Never
+        | SymbolicType::Str => ty.clone(),
+        _ => return None,
     })
 }
 
@@ -2750,6 +2992,450 @@ fn is_identity_instantiation(
                 _ => false,
             }
         })
+}
+
+/// Rebuilds an effect set around rewritten members, preserving its readiness
+/// family; a PendingC2 set is not rebuildable at this layer.
+fn rebuild_effect_set(
+    set: &arche_frontend::SymbolicTypeEffectSet,
+    members: Vec<SymbolicType>,
+) -> Option<arche_frontend::SymbolicTypeEffectSet> {
+    match set.readiness() {
+        arche_frontend::SymbolicShapeReadiness::PendingC4 => {
+            Some(arche_frontend::SymbolicTypeEffectSet::pending_c4(members))
+        }
+        arche_frontend::SymbolicShapeReadiness::PendingC2 => None,
+        _ => Some(arche_frontend::SymbolicTypeEffectSet::resolved(members)),
+    }
+}
+
+/// Substitutes a depth-zero bound lifetime with the matching identity-frame
+/// argument.
+fn substitute_lifetime_identity(
+    lifetime: &SymbolicLifetime,
+    arguments: &[GenericArgumentShape],
+) -> Option<SymbolicLifetime> {
+    Some(match lifetime {
+        SymbolicLifetime::Bound { depth: 0, index } => {
+            match arguments.get(usize::try_from(*index).ok()?)? {
+                GenericArgumentShape::Lifetime(lifetime) => lifetime.clone(),
+                _ => return None,
+            }
+        }
+        SymbolicLifetime::Bound { .. } => return None,
+        other => other.clone(),
+    })
+}
+
+/// Substitutes depth-zero bound const coordinates with the matching
+/// identity-frame arguments, recursively through const operators.
+fn substitute_const_identity(
+    expression: &arche_frontend::SymbolicConstExpression,
+    arguments: &[GenericArgumentShape],
+) -> Option<arche_frontend::SymbolicConstExpression> {
+    use arche_frontend::SymbolicConstNode as Node;
+    let recurse = |inner: &arche_frontend::SymbolicConstExpression| {
+        substitute_const_identity(inner, arguments).map(Box::new)
+    };
+    let node = match &expression.node {
+        Node::Bound { depth: 0, index } => {
+            return match arguments.get(usize::try_from(*index).ok()?)? {
+                GenericArgumentShape::IntegerConst(expression) => Some(expression.clone()),
+                _ => None,
+            };
+        }
+        Node::Bound { .. } => return None,
+        Node::IntegerLiteral(bytes) => Node::IntegerLiteral(bytes.clone()),
+        Node::ConstDefinitionPath(path) => Node::ConstDefinitionPath(path.clone()),
+        Node::WrappingNeg(inner) => Node::WrappingNeg(recurse(inner)?),
+        Node::BitNot(inner) => Node::BitNot(recurse(inner)?),
+        Node::WrappingMul(left, right) => Node::WrappingMul(recurse(left)?, recurse(right)?),
+        Node::IntegerDivide(left, right) => Node::IntegerDivide(recurse(left)?, recurse(right)?),
+        Node::IntegerRemainder(left, right) => {
+            Node::IntegerRemainder(recurse(left)?, recurse(right)?)
+        }
+        Node::WrappingAdd(left, right) => Node::WrappingAdd(recurse(left)?, recurse(right)?),
+        Node::WrappingSub(left, right) => Node::WrappingSub(recurse(left)?, recurse(right)?),
+        Node::MaskedShiftLeft(left, right) => {
+            Node::MaskedShiftLeft(recurse(left)?, recurse(right)?)
+        }
+        Node::MaskedShiftRight(left, right) => {
+            Node::MaskedShiftRight(recurse(left)?, recurse(right)?)
+        }
+        Node::BitAnd(left, right) => Node::BitAnd(recurse(left)?, recurse(right)?),
+        Node::BitXor(left, right) => Node::BitXor(recurse(left)?, recurse(right)?),
+        Node::BitOr(left, right) => Node::BitOr(recurse(left)?, recurse(right)?),
+    };
+    Some(arche_frontend::SymbolicConstExpression {
+        integer_type: expression.integer_type,
+        node,
+    })
+}
+
+/// Expands type-alias spellings anywhere in `ty` to their declared targets,
+/// substituting each alias's identity frame. Aliases are transparent and
+/// nonnominal (design doc 838, 3806-3807), so no declaration judgment may key
+/// on an alias spelling. `None` means the spelling cannot be expanded here (a
+/// cycle, an unresolved alias body, or a substitution the identity frame
+/// cannot express); callers stay fail-closed there.
+fn expand_alias_spelling(
+    ty: &SymbolicType,
+    inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
+) -> Option<SymbolicType> {
+    fn go(
+        ty: &SymbolicType,
+        inputs: &[InputRow<'_>],
+        paths: &BTreeMap<SemanticDeclarationPath, usize>,
+        stack: &mut Vec<usize>,
+    ) -> Option<SymbolicType> {
+        Some(match ty {
+            SymbolicType::NominalPath {
+                declaration,
+                arguments,
+            } => {
+                if declaration.kind == DeclarationKind::TypeAlias {
+                    let &target = paths.get(declaration)?;
+                    if stack.contains(&target) {
+                        return None;
+                    }
+                    // Arguments were spelled outside the alias: expand them
+                    // under the current stack BEFORE substitution, so nested
+                    // applications of one alias never read as a cycle.
+                    let mut expanded_arguments = Vec::with_capacity(arguments.len());
+                    for argument in arguments {
+                        expanded_arguments.push(match argument {
+                            GenericArgumentShape::Type(ty) => {
+                                GenericArgumentShape::Type(go(ty, inputs, paths, stack)?)
+                            }
+                            other => other.clone(),
+                        });
+                    }
+                    let payload = &inputs[target].definition.symbolic_shape.payload;
+                    let SymbolicDeclarationPayloadSkeleton::Alias {
+                        target: alias_target,
+                    } = payload
+                    else {
+                        return None;
+                    };
+                    let arche_frontend::SymbolicTypeShapeSkeleton::Resolved { value, .. } =
+                        alias_target
+                    else {
+                        return None;
+                    };
+                    let expanded = substitute_identity_frame(value, &expanded_arguments)?;
+                    stack.push(target);
+                    let result = go(&expanded, inputs, paths, stack);
+                    stack.pop();
+                    return result;
+                }
+                SymbolicType::NominalPath {
+                    declaration: declaration.clone(),
+                    arguments: arguments
+                        .iter()
+                        .map(|argument| {
+                            Some(match argument {
+                                GenericArgumentShape::Type(ty) => {
+                                    GenericArgumentShape::Type(go(ty, inputs, paths, stack)?)
+                                }
+                                other => other.clone(),
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()?,
+                }
+            }
+            SymbolicType::Reference {
+                mutability,
+                lifetime,
+                pointee,
+            } => SymbolicType::Reference {
+                mutability: *mutability,
+                lifetime: lifetime.clone(),
+                pointee: Box::new(go(pointee, inputs, paths, stack)?),
+            },
+            SymbolicType::RawPointer {
+                mutability,
+                pointee,
+            } => SymbolicType::RawPointer {
+                mutability: *mutability,
+                pointee: Box::new(go(pointee, inputs, paths, stack)?),
+            },
+            SymbolicType::Slice(element) => {
+                SymbolicType::Slice(Box::new(go(element, inputs, paths, stack)?))
+            }
+            SymbolicType::Array { element, length } => SymbolicType::Array {
+                element: Box::new(go(element, inputs, paths, stack)?),
+                length: length.clone(),
+            },
+            SymbolicType::Tuple(fields) => SymbolicType::Tuple(
+                fields
+                    .iter()
+                    .map(|field| go(field, inputs, paths, stack))
+                    .collect::<Option<Vec<_>>>()?,
+            ),
+            SymbolicType::JoinHandle { result, throws } => {
+                let mut expanded_throws = Vec::with_capacity(throws.members().len());
+                for member in throws.members() {
+                    expanded_throws.push(go(member, inputs, paths, stack)?);
+                }
+                SymbolicType::JoinHandle {
+                    result: Box::new(go(result, inputs, paths, stack)?),
+                    throws: rebuild_effect_set(throws, expanded_throws)?,
+                }
+            }
+            SymbolicType::FunctionPointer {
+                unsafe_,
+                parameters,
+                result,
+                requires,
+                throws,
+            } => {
+                let mut expanded_parameters = Vec::with_capacity(parameters.len());
+                for parameter in parameters {
+                    expanded_parameters.push(go(parameter, inputs, paths, stack)?);
+                }
+                let mut expanded_requires = Vec::with_capacity(requires.members().len());
+                for member in requires.members() {
+                    expanded_requires.push(go(member, inputs, paths, stack)?);
+                }
+                let mut expanded_throws = Vec::with_capacity(throws.members().len());
+                for member in throws.members() {
+                    expanded_throws.push(go(member, inputs, paths, stack)?);
+                }
+                SymbolicType::FunctionPointer {
+                    unsafe_: *unsafe_,
+                    parameters: expanded_parameters,
+                    result: Box::new(go(result, inputs, paths, stack)?),
+                    requires: rebuild_effect_set(requires, expanded_requires)?,
+                    throws: rebuild_effect_set(throws, expanded_throws)?,
+                }
+            }
+            SymbolicType::I8
+            | SymbolicType::I16
+            | SymbolicType::I32
+            | SymbolicType::I64
+            | SymbolicType::U8
+            | SymbolicType::U16
+            | SymbolicType::U32
+            | SymbolicType::U64
+            | SymbolicType::Isize
+            | SymbolicType::Usize
+            | SymbolicType::F32
+            | SymbolicType::F64
+            | SymbolicType::Bool
+            | SymbolicType::Char
+            | SymbolicType::Entity
+            | SymbolicType::Unit
+            | SymbolicType::Never
+            | SymbolicType::Str
+            | SymbolicType::BoundType { .. } => ty.clone(),
+            _ => return None,
+        })
+    }
+    go(ty, inputs, paths, &mut Vec::new())
+}
+
+/// Expands alias spellings inside one generic argument.
+fn expand_argument(
+    argument: &GenericArgumentShape,
+    inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
+) -> Option<GenericArgumentShape> {
+    Some(match argument {
+        GenericArgumentShape::Type(ty) => {
+            GenericArgumentShape::Type(expand_alias_spelling(ty, inputs, paths)?)
+        }
+        other => other.clone(),
+    })
+}
+
+/// Expands alias spellings inside a resolved type skeleton; a pending
+/// skeleton stays unexpandable.
+fn expand_type_skeleton(
+    shape: &arche_frontend::SymbolicTypeShapeSkeleton,
+    inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
+) -> Option<arche_frontend::SymbolicTypeShapeSkeleton> {
+    match shape {
+        arche_frontend::SymbolicTypeShapeSkeleton::Resolved { value, .. } => {
+            let value = expand_alias_spelling(value, inputs, paths)?;
+            // C1 computed readiness from the spelled form; the canonical
+            // bytes of the expanded form carry no alias, so recompute it.
+            let readiness = arche_frontend::symbolic_type_readiness(&value);
+            Some(arche_frontend::SymbolicTypeShapeSkeleton::Resolved { value, readiness })
+        }
+        arche_frontend::SymbolicTypeShapeSkeleton::Pending(_) => None,
+    }
+}
+
+/// Expands alias spellings inside one predicate skeleton.
+fn expand_predicate_skeleton(
+    predicate: &SymbolicPredicateShapeSkeleton,
+    inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
+) -> Option<SymbolicPredicateShapeSkeleton> {
+    match predicate {
+        arche_frontend::SymbolicPredicateShapeSkeleton::Resolved { value, .. } => {
+            let expanded = match &**value {
+                SymbolicPredicate::Trait {
+                    trait_path,
+                    self_type,
+                    arguments,
+                } => SymbolicPredicate::Trait {
+                    trait_path: trait_path.clone(),
+                    self_type: expand_alias_spelling(self_type, inputs, paths)?,
+                    arguments: arguments
+                        .iter()
+                        .map(|argument| expand_argument(argument, inputs, paths))
+                        .collect::<Option<Vec<_>>>()?,
+                },
+                SymbolicPredicate::TypeOutlives { ty, lifetime } => {
+                    SymbolicPredicate::TypeOutlives {
+                        ty: expand_alias_spelling(ty, inputs, paths)?,
+                        lifetime: lifetime.clone(),
+                    }
+                }
+                other @ SymbolicPredicate::LifetimeOutlives { .. } => other.clone(),
+            };
+            let readiness = arche_frontend::symbolic_predicate_readiness(&expanded);
+            Some(arche_frontend::SymbolicPredicateShapeSkeleton::Resolved {
+                value: Box::new(expanded),
+                readiness,
+            })
+        }
+        arche_frontend::SymbolicPredicateShapeSkeleton::Pending(_) => None,
+    }
+}
+
+/// Expands alias spellings across a declaration shape skeleton: predicates,
+/// callable surfaces, and trait method shapes. Payload families the impl
+/// conformance never consumes are kept as spelled.
+fn expand_shape_skeleton(
+    shape: &SymbolicDeclarationShapeSkeleton,
+    inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
+) -> Option<SymbolicDeclarationShapeSkeleton> {
+    let expand_effects = |effects: &arche_frontend::SymbolicEffectSetsSkeleton| {
+        let expand_list = |list: &[arche_frontend::SymbolicEffectShapeSkeleton]| {
+            list.iter()
+                .map(|effect| match effect {
+                    arche_frontend::SymbolicEffectShapeSkeleton::Resolved { value, .. } => {
+                        let value = expand_alias_spelling(value, inputs, paths)?;
+                        let readiness = arche_frontend::symbolic_type_readiness(&value);
+                        Some(arche_frontend::SymbolicEffectShapeSkeleton::Resolved {
+                            value,
+                            readiness,
+                        })
+                    }
+                    arche_frontend::SymbolicEffectShapeSkeleton::Pending(_) => None,
+                })
+                .collect::<Option<Vec<_>>>()
+        };
+        Some(arche_frontend::SymbolicEffectSetsSkeleton {
+            requires: expand_list(&effects.requires)?,
+            throws: expand_list(&effects.throws)?,
+        })
+    };
+    let payload = match &shape.payload {
+        SymbolicDeclarationPayloadSkeleton::Callable(callable) => {
+            SymbolicDeclarationPayloadSkeleton::Callable(Box::new(
+                arche_frontend::SymbolicCallableShapeSkeleton {
+                    kind: callable.kind,
+                    parameters: callable
+                        .parameters
+                        .iter()
+                        .map(|parameter| {
+                            Some(arche_frontend::SymbolicCallableParameterSkeleton {
+                                mode: parameter.mode,
+                                ty: expand_type_skeleton(&parameter.ty, inputs, paths)?,
+                            })
+                        })
+                        .collect::<Option<Vec<_>>>()?,
+                    result: expand_type_skeleton(&callable.result, inputs, paths)?,
+                    unsafe_: callable.unsafe_,
+                    resume: match &callable.resume {
+                        Some(resume) => Some(expand_type_skeleton(resume, inputs, paths)?),
+                        None => None,
+                    },
+                    yields: match &callable.yields {
+                        Some(yields) => Some(expand_type_skeleton(yields, inputs, paths)?),
+                        None => None,
+                    },
+                    effects: expand_effects(&callable.effects)?,
+                },
+            ))
+        }
+        SymbolicDeclarationPayloadSkeleton::Trait { methods } => {
+            SymbolicDeclarationPayloadSkeleton::Trait {
+                methods: methods
+                    .iter()
+                    .map(|method| expand_method_skeleton(method, inputs, paths))
+                    .collect::<Option<Vec<_>>>()?,
+            }
+        }
+        other => other.clone(),
+    };
+    Some(SymbolicDeclarationShapeSkeleton {
+        generic_parameters: shape.generic_parameters.clone(),
+        predicates: shape
+            .predicates
+            .iter()
+            .map(|predicate| expand_predicate_skeleton(predicate, inputs, paths))
+            .collect::<Option<Vec<_>>>()?,
+        payload,
+    })
+}
+
+/// Expands alias spellings inside one method shape skeleton.
+fn expand_method_skeleton(
+    method: &arche_frontend::SymbolicMethodShapeSkeleton,
+    inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
+) -> Option<arche_frontend::SymbolicMethodShapeSkeleton> {
+    Some(arche_frontend::SymbolicMethodShapeSkeleton {
+        name: method.name.clone(),
+        shape: Box::new(expand_shape_skeleton(&method.shape, inputs, paths)?),
+    })
+}
+
+/// True when any nominal path occurs anywhere in `ty`.
+fn type_contains_nominal(ty: &SymbolicType) -> bool {
+    match ty {
+        SymbolicType::NominalPath { .. } => true,
+        SymbolicType::Reference { pointee, .. } | SymbolicType::RawPointer { pointee, .. } => {
+            type_contains_nominal(pointee)
+        }
+        SymbolicType::Slice(element) | SymbolicType::Array { element, .. } => {
+            type_contains_nominal(element)
+        }
+        SymbolicType::Tuple(fields) => fields.iter().any(type_contains_nominal),
+        SymbolicType::FunctionPointer {
+            parameters, result, ..
+        } => parameters.iter().any(type_contains_nominal) || type_contains_nominal(result),
+        SymbolicType::JoinHandle { result, throws } => {
+            type_contains_nominal(result) || throws.members().iter().any(type_contains_nominal)
+        }
+        _ => false,
+    }
+}
+
+/// True when a float occurs anywhere in `ty` (design doc 2393: floating-point
+/// values are ineligible at any depth).
+fn type_contains_float(ty: &SymbolicType) -> bool {
+    match ty {
+        SymbolicType::F32 | SymbolicType::F64 => true,
+        SymbolicType::Reference { pointee, .. } | SymbolicType::RawPointer { pointee, .. } => {
+            type_contains_float(pointee)
+        }
+        SymbolicType::Slice(element) | SymbolicType::Array { element, .. } => {
+            type_contains_float(element)
+        }
+        SymbolicType::Tuple(fields) => fields.iter().any(type_contains_float),
+        SymbolicType::NominalPath { arguments, .. } => arguments.iter().any(|argument| {
+            matches!(argument, GenericArgumentShape::Type(ty) if type_contains_float(ty))
+        }),
+        _ => false,
+    }
 }
 
 /// The sizedness/recursion declaration judgment (design doc 830-839): every
@@ -2785,6 +3471,7 @@ fn check_workspace_sizedness(
             mentions: Vec::new(),
             bare_unsized: Vec::new(),
             unknown: false,
+            field_name: String::new(),
         };
         let mut fields: Vec<(String, &arche_frontend::SymbolicTypeShapeSkeleton)> = Vec::new();
         match &shape.payload {
@@ -2937,13 +3624,178 @@ fn outermost_nominal_package(ty: &SymbolicType) -> Option<&str> {
     }
 }
 
-/// First-order overlap test between two impl heads: bound coordinates on
-/// either side unify with anything, concrete constructors must agree. With
-/// 0.1's closed entailment there is no disjointness reasoning beyond heads,
-/// so a unifiable pair genuinely overlaps.
-fn impl_heads_unify(left: &SymbolicType, right: &SymbolicType) -> bool {
+/// Collects every bound coordinate mentioned in a head position (types,
+/// lifetimes, and consts, including mentions nested in const operators).
+fn collect_bound_coordinates(ty: &SymbolicType, out: &mut Vec<(u8, u64, u64)>) {
+    fn collect_const(
+        expression: &arche_frontend::SymbolicConstExpression,
+        out: &mut Vec<(u8, u64, u64)>,
+    ) {
+        use arche_frontend::SymbolicConstNode as Node;
+        match &expression.node {
+            Node::Bound { depth, index } => out.push((2, *depth, *index)),
+            Node::IntegerLiteral(_) | Node::ConstDefinitionPath(_) => {}
+            Node::WrappingNeg(inner) | Node::BitNot(inner) => collect_const(inner, out),
+            Node::WrappingMul(left, right)
+            | Node::IntegerDivide(left, right)
+            | Node::IntegerRemainder(left, right)
+            | Node::WrappingAdd(left, right)
+            | Node::WrappingSub(left, right)
+            | Node::MaskedShiftLeft(left, right)
+            | Node::MaskedShiftRight(left, right)
+            | Node::BitAnd(left, right)
+            | Node::BitXor(left, right)
+            | Node::BitOr(left, right) => {
+                collect_const(left, out);
+                collect_const(right, out);
+            }
+        }
+    }
+    fn collect_lifetime(lifetime: &SymbolicLifetime, out: &mut Vec<(u8, u64, u64)>) {
+        if let SymbolicLifetime::Bound { depth, index } = lifetime {
+            out.push((1, *depth, *index));
+        }
+    }
+    match ty {
+        SymbolicType::BoundType { depth, index } => out.push((0, *depth, *index)),
+        SymbolicType::Reference {
+            lifetime, pointee, ..
+        } => {
+            collect_lifetime(lifetime, out);
+            collect_bound_coordinates(pointee, out);
+        }
+        SymbolicType::RawPointer { pointee, .. } => collect_bound_coordinates(pointee, out),
+        SymbolicType::Slice(element) => collect_bound_coordinates(element, out),
+        SymbolicType::Array { element, length } => {
+            collect_bound_coordinates(element, out);
+            collect_const(length, out);
+        }
+        SymbolicType::Tuple(fields) => {
+            for field in fields {
+                collect_bound_coordinates(field, out);
+            }
+        }
+        SymbolicType::NominalPath { arguments, .. } => {
+            for argument in arguments {
+                match argument {
+                    GenericArgumentShape::Type(ty) => collect_bound_coordinates(ty, out),
+                    GenericArgumentShape::Lifetime(lifetime) => collect_lifetime(lifetime, out),
+                    GenericArgumentShape::IntegerConst(expression) => {
+                        collect_const(expression, out);
+                    }
+                }
+            }
+        }
+        SymbolicType::FunctionPointer {
+            parameters,
+            result,
+            requires,
+            throws,
+            ..
+        } => {
+            for parameter in parameters {
+                collect_bound_coordinates(parameter, out);
+            }
+            collect_bound_coordinates(result, out);
+            for member in requires.members().iter().chain(throws.members()) {
+                collect_bound_coordinates(member, out);
+            }
+        }
+        SymbolicType::JoinHandle { result, throws } => {
+            collect_bound_coordinates(result, out);
+            for member in throws.members() {
+                collect_bound_coordinates(member, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// True when any bound coordinate is mentioned more than once across the
+/// row's target and trait head. The per-position wildcard cannot witness the
+/// correlation such a head imposes, so its overlap answers stay fail-closed.
+fn head_is_nonlinear(target: &SymbolicType, trait_head: Option<&SymbolicType>) -> bool {
+    let mut coordinates = Vec::new();
+    collect_bound_coordinates(target, &mut coordinates);
+    if let Some(head) = trait_head {
+        collect_bound_coordinates(head, &mut coordinates);
+    }
+    coordinates.sort_unstable();
+    coordinates.windows(2).any(|pair| pair[0] == pair[1])
+}
+
+/// The three-valued outcome of first-order head unification: a pair either
+/// provably overlaps, is provably disjoint, or cannot be decided at C2 (a
+/// const whose value the CTFE authority owns) and must stay fail-closed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HeadUnification {
+    Overlaps,
+    Disjoint,
+    Undecided,
+}
+
+impl HeadUnification {
+    fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Disjoint, _) | (_, Self::Disjoint) => Self::Disjoint,
+            (Self::Undecided, _) | (_, Self::Undecided) => Self::Undecided,
+            (Self::Overlaps, Self::Overlaps) => Self::Overlaps,
+        }
+    }
+
+    fn from_eq(equal: bool) -> Self {
+        if equal {
+            Self::Overlaps
+        } else {
+            Self::Disjoint
+        }
+    }
+}
+
+/// Const arguments: a BARE bound coordinate on either side is a wildcard;
+/// equal spellings overlap; two closed pure literals are decidably disjoint;
+/// every other relation — differing const-path or operator spellings,
+/// including expressions that merely contain a bound coordinate — is
+/// undecided: C2 owns no const evaluator, and a match resting on an
+/// unresolved const is pending, never nonviable (doc 1084-1090).
+fn const_unification(
+    left: &arche_frontend::SymbolicConstExpression,
+    right: &arche_frontend::SymbolicConstExpression,
+) -> HeadUnification {
+    use arche_frontend::SymbolicConstNode as Node;
+    if matches!(left.node, Node::Bound { .. }) || matches!(right.node, Node::Bound { .. }) {
+        return HeadUnification::Overlaps;
+    }
+    if left == right {
+        return HeadUnification::Overlaps;
+    }
+    match (&left.node, &right.node) {
+        (Node::IntegerLiteral(_), Node::IntegerLiteral(_)) => HeadUnification::Disjoint,
+        _ => HeadUnification::Undecided,
+    }
+}
+
+/// Lifetime arguments unify when either side is a bound coordinate.
+fn lifetime_unification(left: &SymbolicLifetime, right: &SymbolicLifetime) -> HeadUnification {
+    if matches!(left, SymbolicLifetime::Bound { .. })
+        || matches!(right, SymbolicLifetime::Bound { .. })
+    {
+        HeadUnification::Overlaps
+    } else {
+        HeadUnification::from_eq(left == right)
+    }
+}
+
+/// Per-position overlap approximation between two impl heads: bare bound
+/// coordinates unify with anything, concrete constructors must agree, and a
+/// comparison resting on an unresolved const value stays undecided. It
+/// carries no substitution map, so its Overlaps answer is sound only for
+/// linear heads — the caller downgrades non-linear rows to Undecided. With
+/// 0.1's closed entailment there is no disjointness reasoning beyond heads.
+fn impl_heads_unification(left: &SymbolicType, right: &SymbolicType) -> HeadUnification {
+    use HeadUnification as HU;
     match (left, right) {
-        (SymbolicType::BoundType { .. }, _) | (_, SymbolicType::BoundType { .. }) => true,
+        (SymbolicType::BoundType { .. }, _) | (_, SymbolicType::BoundType { .. }) => HU::Overlaps,
         (
             SymbolicType::NominalPath {
                 declaration: left_declaration,
@@ -2954,17 +3806,29 @@ fn impl_heads_unify(left: &SymbolicType, right: &SymbolicType) -> bool {
                 arguments: right_arguments,
             },
         ) => {
-            left_declaration == right_declaration
-                && left_arguments.len() == right_arguments.len()
-                && left_arguments
-                    .iter()
-                    .zip(right_arguments)
-                    .all(|(left, right)| match (left, right) {
-                        (GenericArgumentShape::Type(left), GenericArgumentShape::Type(right)) => {
-                            impl_heads_unify(left, right)
-                        }
-                        (left, right) => left == right,
-                    })
+            if left_declaration != right_declaration
+                || left_arguments.len() != right_arguments.len()
+            {
+                return HU::Disjoint;
+            }
+            left_arguments
+                .iter()
+                .zip(right_arguments)
+                .map(|(left, right)| match (left, right) {
+                    (GenericArgumentShape::Type(left), GenericArgumentShape::Type(right)) => {
+                        impl_heads_unification(left, right)
+                    }
+                    (
+                        GenericArgumentShape::Lifetime(left),
+                        GenericArgumentShape::Lifetime(right),
+                    ) => lifetime_unification(left, right),
+                    (
+                        GenericArgumentShape::IntegerConst(left),
+                        GenericArgumentShape::IntegerConst(right),
+                    ) => const_unification(left, right),
+                    (left, right) => HU::from_eq(left == right),
+                })
+                .fold(HU::Overlaps, HU::combine)
         }
         (
             SymbolicType::Reference {
@@ -2977,7 +3841,13 @@ fn impl_heads_unify(left: &SymbolicType, right: &SymbolicType) -> bool {
                 pointee: right_pointee,
                 ..
             },
-        ) => left_mutability == right_mutability && impl_heads_unify(left_pointee, right_pointee),
+        ) => {
+            if left_mutability != right_mutability {
+                HU::Disjoint
+            } else {
+                impl_heads_unification(left_pointee, right_pointee)
+            }
+        }
         (
             SymbolicType::RawPointer {
                 mutability: left_mutability,
@@ -2987,15 +3857,25 @@ fn impl_heads_unify(left: &SymbolicType, right: &SymbolicType) -> bool {
                 mutability: right_mutability,
                 pointee: right_pointee,
             },
-        ) => left_mutability == right_mutability && impl_heads_unify(left_pointee, right_pointee),
+        ) => {
+            if left_mutability != right_mutability {
+                HU::Disjoint
+            } else {
+                impl_heads_unification(left_pointee, right_pointee)
+            }
+        }
         (SymbolicType::Tuple(left), SymbolicType::Tuple(right)) => {
-            left.len() == right.len()
-                && left
-                    .iter()
-                    .zip(right)
-                    .all(|(left, right)| impl_heads_unify(left, right))
+            if left.len() != right.len() {
+                return HU::Disjoint;
+            }
+            left.iter()
+                .zip(right)
+                .map(|(left, right)| impl_heads_unification(left, right))
+                .fold(HU::Overlaps, HU::combine)
         }
-        (SymbolicType::Slice(left), SymbolicType::Slice(right)) => impl_heads_unify(left, right),
+        (SymbolicType::Slice(left), SymbolicType::Slice(right)) => {
+            impl_heads_unification(left, right)
+        }
         (
             SymbolicType::Array {
                 element: left_element,
@@ -3005,8 +3885,70 @@ fn impl_heads_unify(left: &SymbolicType, right: &SymbolicType) -> bool {
                 element: right_element,
                 length: right_length,
             },
-        ) => left_length == right_length && impl_heads_unify(left_element, right_element),
-        (left, right) => left == right,
+        ) => const_unification(left_length, right_length)
+            .combine(impl_heads_unification(left_element, right_element)),
+        (
+            SymbolicType::FunctionPointer {
+                unsafe_: left_unsafe,
+                parameters: left_parameters,
+                result: left_result,
+                requires: left_requires,
+                throws: left_throws,
+            },
+            SymbolicType::FunctionPointer {
+                unsafe_: right_unsafe,
+                parameters: right_parameters,
+                result: right_result,
+                requires: right_requires,
+                throws: right_throws,
+            },
+        ) => {
+            let sets_unify =
+                |left: &arche_frontend::SymbolicTypeEffectSet,
+                 right: &arche_frontend::SymbolicTypeEffectSet| {
+                    if left.members().len() != right.members().len() {
+                        return HU::Disjoint;
+                    }
+                    left.members()
+                        .iter()
+                        .zip(right.members())
+                        .map(|(left, right)| impl_heads_unification(left, right))
+                        .fold(HU::Overlaps, HU::combine)
+                };
+            if left_unsafe != right_unsafe || left_parameters.len() != right_parameters.len() {
+                return HU::Disjoint;
+            }
+            left_parameters
+                .iter()
+                .zip(right_parameters)
+                .map(|(left, right)| impl_heads_unification(left, right))
+                .fold(HU::Overlaps, HU::combine)
+                .combine(impl_heads_unification(left_result, right_result))
+                .combine(sets_unify(left_requires, right_requires))
+                .combine(sets_unify(left_throws, right_throws))
+        }
+        (
+            SymbolicType::JoinHandle {
+                result: left_result,
+                throws: left_throws,
+            },
+            SymbolicType::JoinHandle {
+                result: right_result,
+                throws: right_throws,
+            },
+        ) => {
+            if left_throws.members().len() != right_throws.members().len() {
+                return HU::Disjoint;
+            }
+            left_throws
+                .members()
+                .iter()
+                .zip(right_throws.members())
+                .map(|(left, right)| impl_heads_unification(left, right))
+                .fold(HU::Overlaps, HU::combine)
+                .combine(impl_heads_unification(left_result, right_result))
+        }
+        (left, right) => HU::from_eq(left == right),
     }
 }
 
@@ -3017,7 +3959,7 @@ struct ImplRowFacts<'a> {
     is_default: bool,
     method_names: Vec<&'a str>,
     generic_parameters: &'a [GenericParameterKind],
-    predicates: &'a [SymbolicPredicateShapeSkeleton],
+    predicates: Vec<SymbolicPredicateShapeSkeleton>,
     resolved: bool,
 }
 
@@ -3026,7 +3968,10 @@ struct ImplRowFacts<'a> {
 /// inherent methods under one byte-identical canonical head (TRAIT001).
 /// Default-parent specialization containment stays behind the fail-closed
 /// blocker until the strict-subset calculus exists.
-fn check_workspace_impl_family(inputs: &[InputRow<'_>]) -> Vec<ImplFamilyOutcome> {
+fn check_workspace_impl_family(
+    inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
+) -> Vec<ImplFamilyOutcome> {
     let mut rows: Vec<Option<ImplRowFacts<'_>>> = Vec::with_capacity(inputs.len());
     for (index, input) in inputs.iter().enumerate() {
         let shape = &input.definition.symbolic_shape;
@@ -3042,7 +3987,17 @@ fn check_workspace_impl_family(inputs: &[InputRow<'_>]) -> Vec<ImplFamilyOutcome
         };
         let mut resolved = true;
         let target_ty = match target {
-            SymbolicTypeShapeSkeleton::Resolved { value, .. } => value.clone(),
+            SymbolicTypeShapeSkeleton::Resolved { value, .. } => {
+                // Aliases are transparent and nonnominal: every family
+                // comparison keys on the expanded spelling.
+                match expand_alias_spelling(value, inputs, paths) {
+                    Some(expanded) => expanded,
+                    None => {
+                        resolved = false;
+                        SymbolicType::Unit
+                    }
+                }
+            }
             SymbolicTypeShapeSkeleton::Pending(_) => {
                 resolved = false;
                 SymbolicType::Unit
@@ -3051,7 +4006,18 @@ fn check_workspace_impl_family(inputs: &[InputRow<'_>]) -> Vec<ImplFamilyOutcome
         let trait_head = match trait_ref {
             None => None,
             Some(SymbolicTypeShapeSkeleton::Resolved { value, .. }) => match value {
-                SymbolicType::NominalPath { declaration, .. } => Some((declaration, value.clone())),
+                SymbolicType::NominalPath { declaration, .. } => {
+                    // The head's arguments expand alias spellings too.
+                    match expand_alias_spelling(value, inputs, paths) {
+                        Some(expanded) => Some((declaration, expanded)),
+                        None => {
+                            // Keep the trait provenance so the fail-closed
+                            // blocker is labelled as the coherence judgment.
+                            resolved = false;
+                            Some((declaration, value.clone()))
+                        }
+                    }
+                }
                 _ => {
                     resolved = false;
                     None
@@ -3062,6 +4028,24 @@ fn check_workspace_impl_family(inputs: &[InputRow<'_>]) -> Vec<ImplFamilyOutcome
                 None
             }
         };
+        let predicates = match shape
+            .predicates
+            .iter()
+            .map(|predicate| expand_predicate_skeleton(predicate, inputs, paths))
+            .collect::<Option<Vec<_>>>()
+        {
+            Some(mut predicates) => {
+                // Aliases expanded: re-sort and dedup so the canonical head
+                // is the expanded byte order (doc 1044-1046).
+                predicates.sort();
+                predicates.dedup();
+                predicates
+            }
+            None => {
+                resolved = false;
+                Vec::new()
+            }
+        };
         rows.push(Some(ImplRowFacts {
             input: index,
             trait_head,
@@ -3069,7 +4053,7 @@ fn check_workspace_impl_family(inputs: &[InputRow<'_>]) -> Vec<ImplFamilyOutcome
             is_default: *is_default,
             method_names: methods.iter().map(|method| method.name.as_str()).collect(),
             generic_parameters: &shape.generic_parameters,
-            predicates: &shape.predicates,
+            predicates,
             resolved,
         }));
     }
@@ -3114,7 +4098,12 @@ fn check_workspace_impl_family(inputs: &[InputRow<'_>]) -> Vec<ImplFamilyOutcome
                 let owns_trait = trait_path.package_name == package;
                 let owns_target = outermost_nominal_package(&row.target) == Some(package);
                 if !owns_trait && !owns_target {
-                    if matches!(row.target, SymbolicType::BoundType { .. }) {
+                    if matches!(row.target, SymbolicType::BoundType { .. })
+                        || (outermost_nominal_package(&row.target).is_none()
+                            && type_contains_nominal(&row.target))
+                    {
+                        // The doc never defines the outermost nominal of a
+                        // reference/tuple/array wrapper; stay fail-closed.
                         block(&mut outcomes, row.input, judgment);
                     } else {
                         reject(
@@ -3139,6 +4128,36 @@ fn check_workspace_impl_family(inputs: &[InputRow<'_>]) -> Vec<ImplFamilyOutcome
                         "an inherent impl never uses the default specialization marker".to_owned(),
                     );
                 }
+                // Inherent impls require ownership of the nominal type
+                // (design doc 1042-1043).
+                let package = inputs[row.input].package_scope;
+                match outermost_nominal_package(&row.target) {
+                    Some(owner) if owner == package => {}
+                    Some(_) => reject(
+                        &mut outcomes,
+                        row.input,
+                        "COHERENCE001",
+                        "an inherent impl requires ownership of the nominal type: the \
+                         target's outermost nominal belongs to another package"
+                            .to_owned(),
+                    ),
+                    None => {
+                        if matches!(row.target, SymbolicType::BoundType { .. })
+                            || type_contains_nominal(&row.target)
+                        {
+                            block(&mut outcomes, row.input, judgment);
+                        } else {
+                            reject(
+                                &mut outcomes,
+                                row.input,
+                                "COHERENCE001",
+                                "an inherent impl requires ownership of the nominal type: \
+                                 the target carries no ownable nominal"
+                                    .to_owned(),
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -3155,8 +4174,33 @@ fn check_workspace_impl_family(inputs: &[InputRow<'_>]) -> Vec<ImplFamilyOutcome
             if a_path != b_path || !a.resolved || !b.resolved {
                 continue;
             }
-            if !(impl_heads_unify(&a.target, &b.target) && impl_heads_unify(a_head, b_head)) {
-                continue;
+            let mut unification = impl_heads_unification(&a.target, &b.target)
+                .combine(impl_heads_unification(a_head, b_head));
+            if unification == HeadUnification::Overlaps
+                && (head_is_nonlinear(&a.target, Some(a_head))
+                    || head_is_nonlinear(&b.target, Some(b_head)))
+            {
+                // A repeated coordinate correlates positions the per-position
+                // wildcard cannot witness; a definite constructor clash is
+                // substitution-independent, so only the overlap answer
+                // downgrades (followup: the substitution-carrying unifier).
+                unification = HeadUnification::Undecided;
+            }
+            match unification {
+                HeadUnification::Disjoint => continue,
+                HeadUnification::Undecided => {
+                    // The pair's match relation rests on an unresolved const
+                    // value: pending at C2, never nonviable (doc 1084-1090).
+                    for index in [a.input, b.input] {
+                        block(
+                            &mut outcomes,
+                            index,
+                            UnimplementedDeclarationJudgment::ImplCoherenceOverlap,
+                        );
+                    }
+                    continue;
+                }
+                HeadUnification::Overlaps => {}
             }
             if a.is_default || b.is_default {
                 // Specialization containment needs the strict-subset calculus.
@@ -3228,8 +4272,9 @@ fn check_workspace_impl_family(inputs: &[InputRow<'_>]) -> Vec<ImplFamilyOutcome
 
 /// Outcome of the map-key comparison judgment for one declaration.
 enum MapKeyOutcome {
-    /// No embedded map mention, or every key is eligible.
-    Discharged,
+    /// No embedded map mention, or every key is eligible. Nonprimitive
+    /// discharged keys count sealed-comparison continuations for C4.
+    Discharged { sealed_continuations: usize },
     /// A key is categorically ineligible; messages become TRAIT002.
     Rejected(Vec<String>),
     /// A key needs authority this judgment does not yet carry (structural
@@ -3359,53 +4404,71 @@ fn collect_type_map_keys(
 fn collect_shape_map_keys(
     shape: &SymbolicDeclarationShapeSkeleton,
     embedded: &VerifiedEmbeddedCoreAuthority,
+    inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
     out: &mut Vec<SymbolicType>,
+    unexpandable: &mut bool,
 ) {
+    // A Map reached only through an alias spelling is invisible to the
+    // spelled walk, so every stored type expands before collection; an
+    // unexpandable spelling keeps the row fail-closed.
     let walk_shape = |shape: &arche_frontend::SymbolicTypeShapeSkeleton,
-                      out: &mut Vec<SymbolicType>| {
+                      out: &mut Vec<SymbolicType>,
+                      unexpandable: &mut bool| {
         if let arche_frontend::SymbolicTypeShapeSkeleton::Resolved { value, .. } = shape {
-            collect_type_map_keys(value, embedded, out);
+            match expand_alias_spelling(value, inputs, paths) {
+                Some(expanded) => collect_type_map_keys(&expanded, embedded, out),
+                None => *unexpandable = true,
+            }
         }
     };
     let walk_effects = |effects: &arche_frontend::SymbolicEffectSetsSkeleton,
-                        out: &mut Vec<SymbolicType>| {
+                        out: &mut Vec<SymbolicType>,
+                        unexpandable: &mut bool| {
         for effect in effects.requires.iter().chain(effects.throws.iter()) {
             if let arche_frontend::SymbolicEffectShapeSkeleton::Resolved { value, .. } = effect {
-                collect_type_map_keys(value, embedded, out);
+                match expand_alias_spelling(value, inputs, paths) {
+                    Some(expanded) => collect_type_map_keys(&expanded, embedded, out),
+                    None => *unexpandable = true,
+                }
             }
         }
     };
     let walk_callable = |callable: &arche_frontend::SymbolicCallableShapeSkeleton,
-                         out: &mut Vec<SymbolicType>| {
+                         out: &mut Vec<SymbolicType>,
+                         unexpandable: &mut bool| {
         for parameter in &callable.parameters {
-            walk_shape(&parameter.ty, out);
+            walk_shape(&parameter.ty, out, unexpandable);
         }
-        walk_shape(&callable.result, out);
+        walk_shape(&callable.result, out, unexpandable);
         if let Some(resume) = &callable.resume {
-            walk_shape(resume, out);
+            walk_shape(resume, out, unexpandable);
         }
         if let Some(yields) = &callable.yields {
-            walk_shape(yields, out);
+            walk_shape(yields, out, unexpandable);
         }
-        walk_effects(&callable.effects, out);
+        walk_effects(&callable.effects, out, unexpandable);
     };
     match &shape.payload {
+        // Schedule effects are derived from already-judged system rows.
         SymbolicDeclarationPayloadSkeleton::World
         | SymbolicDeclarationPayloadSkeleton::Tag
         | SymbolicDeclarationPayloadSkeleton::Schedule { .. } => {}
         SymbolicDeclarationPayloadSkeleton::Record(record) => {
             for field in &record.fields {
-                walk_shape(&field.ty, out);
+                walk_shape(&field.ty, out, unexpandable);
             }
         }
         SymbolicDeclarationPayloadSkeleton::Enum(variants) => {
             for variant in variants {
                 for field in &variant.fields {
-                    walk_shape(&field.ty, out);
+                    walk_shape(&field.ty, out, unexpandable);
                 }
             }
         }
-        SymbolicDeclarationPayloadSkeleton::Callable(callable) => walk_callable(callable, out),
+        SymbolicDeclarationPayloadSkeleton::Callable(callable) => {
+            walk_callable(callable, out, unexpandable)
+        }
         SymbolicDeclarationPayloadSkeleton::System {
             accesses,
             implied_requires,
@@ -3418,26 +4481,26 @@ fn collect_shape_map_keys(
                     | arche_frontend::SymbolicSystemAccessShapeSkeleton::CapabilityMutable(ty)
                     | arche_frontend::SymbolicSystemAccessShapeSkeleton::ResourceRead(ty)
                     | arche_frontend::SymbolicSystemAccessShapeSkeleton::ResourceWrite(ty) => {
-                        walk_shape(ty, out);
+                        walk_shape(ty, out, unexpandable);
                     }
                     arche_frontend::SymbolicSystemAccessShapeSkeleton::Query(terms) => {
                         for term in terms {
-                            walk_shape(&term.ty, out);
+                            walk_shape(&term.ty, out, unexpandable);
                         }
                     }
                     arche_frontend::SymbolicSystemAccessShapeSkeleton::Commands => {}
                 }
             }
             for requirement in implied_requires {
-                walk_shape(&requirement.referent, out);
+                walk_shape(&requirement.referent, out, unexpandable);
             }
-            walk_shape(result, out);
-            walk_effects(effects, out);
+            walk_shape(result, out, unexpandable);
+            walk_effects(effects, out, unexpandable);
         }
         SymbolicDeclarationPayloadSkeleton::Trait { methods } => {
-            for method in methods {
-                collect_shape_map_keys(&method.shape, embedded, out);
-            }
+            // Trait methods are their own declaration rows; collecting them
+            // here would emit every key diagnostic twice.
+            let _ = methods;
         }
         SymbolicDeclarationPayloadSkeleton::Impl {
             trait_ref,
@@ -3446,19 +4509,23 @@ fn collect_shape_map_keys(
             ..
         } => {
             if let Some(trait_ref) = trait_ref {
-                walk_shape(trait_ref, out);
+                walk_shape(trait_ref, out, unexpandable);
             }
-            walk_shape(target, out);
-            for method in methods {
-                collect_shape_map_keys(&method.shape, embedded, out);
-            }
+            walk_shape(target, out, unexpandable);
+            // Impl methods are their own declaration rows; collecting them
+            // here would emit every key diagnostic twice.
+            let _ = methods;
         }
-        SymbolicDeclarationPayloadSkeleton::Alias { target } => walk_shape(target, out),
+        SymbolicDeclarationPayloadSkeleton::Alias { target } => {
+            walk_shape(target, out, unexpandable)
+        }
         SymbolicDeclarationPayloadSkeleton::Const { ty }
-        | SymbolicDeclarationPayloadSkeleton::Static { ty, .. } => walk_shape(ty, out),
+        | SymbolicDeclarationPayloadSkeleton::Static { ty, .. } => {
+            walk_shape(ty, out, unexpandable)
+        }
         SymbolicDeclarationPayloadSkeleton::Query { terms } => {
             for term in terms {
-                walk_shape(&term.ty, out);
+                walk_shape(&term.ty, out, unexpandable);
             }
         }
     }
@@ -3470,15 +4537,24 @@ fn collect_shape_map_keys(
                     arguments,
                     ..
                 } => {
-                    collect_type_map_keys(self_type, embedded, out);
+                    match expand_alias_spelling(self_type, inputs, paths) {
+                        Some(expanded) => collect_type_map_keys(&expanded, embedded, out),
+                        None => *unexpandable = true,
+                    }
                     for argument in arguments {
                         if let GenericArgumentShape::Type(ty) = argument {
-                            collect_type_map_keys(ty, embedded, out);
+                            match expand_alias_spelling(ty, inputs, paths) {
+                                Some(expanded) => collect_type_map_keys(&expanded, embedded, out),
+                                None => *unexpandable = true,
+                            }
                         }
                     }
                 }
                 SymbolicPredicate::TypeOutlives { ty, .. } => {
-                    collect_type_map_keys(ty, embedded, out);
+                    match expand_alias_spelling(ty, inputs, paths) {
+                        Some(expanded) => collect_type_map_keys(&expanded, embedded, out),
+                        None => *unexpandable = true,
+                    }
                 }
                 SymbolicPredicate::LifetimeOutlives { .. } => {}
             }
@@ -3495,11 +4571,19 @@ fn collect_shape_map_keys(
 fn map_key_judgment(
     shape: &SymbolicDeclarationShapeSkeleton,
     embedded: &VerifiedEmbeddedCoreAuthority,
+    inputs: &[InputRow<'_>],
+    paths: &BTreeMap<SemanticDeclarationPath, usize>,
 ) -> MapKeyOutcome {
     let mut keys = Vec::new();
-    collect_shape_map_keys(shape, embedded, &mut keys);
+    let mut unexpandable = false;
+    collect_shape_map_keys(shape, embedded, inputs, paths, &mut keys, &mut unexpandable);
+    if unexpandable {
+        return MapKeyOutcome::Blocked;
+    }
     if keys.is_empty() {
-        return MapKeyOutcome::Discharged;
+        return MapKeyOutcome::Discharged {
+            sealed_continuations: 0,
+        };
     }
     let has_indexed = |key: &SymbolicType, kind: CompilerTraitKind| {
         shape.predicates.iter().any(|predicate| {
@@ -3531,7 +4615,19 @@ fn map_key_judgment(
     };
     let mut messages = Vec::new();
     let mut blocked = false;
+    let mut sealed_continuations = 0_usize;
     for key in &keys {
+        // Keys were collected from expanded spellings; floats are
+        // ineligible at any depth (design doc 838, 2393).
+        if type_contains_float(key) && !matches!(key, SymbolicType::F32 | SymbolicType::F64) {
+            messages.push(
+                "float map keys are categorically ineligible at any depth: exact same-type \
+                 float comparison is a syntax-only primitive exception and furnishes no \
+                 Eq/Ord selection"
+                    .to_owned(),
+            );
+            continue;
+        }
         match key {
             SymbolicType::F32 | SymbolicType::F64 => {
                 messages.push(
@@ -3560,7 +4656,13 @@ fn map_key_judgment(
                 arguments,
             } if declaration.name == "String"
                 && arguments.is_empty()
-                && is_embedded_path(declaration, embedded) => {}
+                && is_embedded_path(declaration, embedded) =>
+            {
+                // A nonprimitive key uses the sealed structural comparator;
+                // C2 fixes the Eq/Ord callable shape and retains a typed
+                // PendingC4 sealed-comparison continuation (doc 1558-1566).
+                sealed_continuations += 1;
+            }
             SymbolicType::BoundType { .. } => {
                 if !(has_indexed(key, CompilerTraitKind::Eq)
                     && has_indexed(key, CompilerTraitKind::Ord))
@@ -3578,13 +4680,15 @@ fn map_key_judgment(
     } else if blocked {
         MapKeyOutcome::Blocked
     } else {
-        MapKeyOutcome::Discharged
+        MapKeyOutcome::Discharged {
+            sealed_continuations,
+        }
     }
 }
 
 fn validate_ordinary_trait_impl(
     input: &InputRow<'_>,
-    trait_row: &CheckedDeclarationRow,
+    trait_shape: &SymbolicDeclarationShapeSkeleton,
     arguments: &[GenericArgumentShape],
     target: &SymbolicType,
     impl_methods: &[arche_frontend::SymbolicMethodShapeSkeleton],
@@ -3592,7 +4696,7 @@ fn validate_ordinary_trait_impl(
 ) -> bool {
     let SymbolicDeclarationPayloadSkeleton::Trait {
         methods: trait_methods,
-    } = &trait_row.declaration_shape.payload
+    } = &trait_shape.payload
     else {
         push_diagnostic(
             input,
@@ -3639,7 +4743,7 @@ fn validate_ordinary_trait_impl(
         }
     };
     let substitution = match TraitFrameSubstitution::new(
-        trait_row.declaration_shape.generic_parameters.clone(),
+        trait_shape.generic_parameters.clone(),
         method_arguments,
         method_target,
     ) {
@@ -3858,10 +4962,12 @@ fn substitute_declaration_shape(
         .predicates
         .iter()
         .map(|predicate| match predicate {
-            SymbolicPredicateShapeSkeleton::Resolved { value, readiness } => {
+            SymbolicPredicateShapeSkeleton::Resolved { value, .. } => {
+                let value = substitution.substitute_predicate(value, trait_depth)?;
+                let readiness = arche_frontend::symbolic_predicate_readiness(&value);
                 Ok(SymbolicPredicateShapeSkeleton::Resolved {
-                    value: Box::new(substitution.substitute_predicate(value, trait_depth)?),
-                    readiness: *readiness,
+                    value: Box::new(value),
+                    readiness,
                 })
             }
             SymbolicPredicateShapeSkeleton::Pending(pending) => {
@@ -4042,11 +5148,12 @@ fn substitute_type_shape(
     trait_depth: u64,
 ) -> Result<SymbolicTypeShapeSkeleton, crate::formation::GenericFormationError> {
     Ok(match shape {
-        SymbolicTypeShapeSkeleton::Resolved { value, readiness } => {
-            SymbolicTypeShapeSkeleton::Resolved {
-                value: substitution.substitute_type(value, trait_depth)?,
-                readiness: *readiness,
-            }
+        SymbolicTypeShapeSkeleton::Resolved { value, .. } => {
+            let value = substitution.substitute_type(value, trait_depth)?;
+            // Readiness is derived from the substituted value; carrying the
+            // pre-substitution tag fabricates conformance mismatches.
+            let readiness = arche_frontend::symbolic_type_readiness(&value);
+            SymbolicTypeShapeSkeleton::Resolved { value, readiness }
         }
         SymbolicTypeShapeSkeleton::Pending(pending) => {
             SymbolicTypeShapeSkeleton::Pending(pending.clone())
@@ -4061,11 +5168,10 @@ fn substitute_effects(
 ) -> Result<SymbolicEffectSetsSkeleton, crate::formation::GenericFormationError> {
     let substitute = |shape: &SymbolicEffectShapeSkeleton| {
         Ok(match shape {
-            SymbolicEffectShapeSkeleton::Resolved { value, readiness } => {
-                SymbolicEffectShapeSkeleton::Resolved {
-                    value: substitution.substitute_type(value, trait_depth)?,
-                    readiness: *readiness,
-                }
+            SymbolicEffectShapeSkeleton::Resolved { value, .. } => {
+                let value = substitution.substitute_type(value, trait_depth)?;
+                let readiness = arche_frontend::symbolic_type_readiness(&value);
+                SymbolicEffectShapeSkeleton::Resolved { value, readiness }
             }
             SymbolicEffectShapeSkeleton::Pending(pending) => {
                 SymbolicEffectShapeSkeleton::Pending(pending.clone())
@@ -5304,5 +6410,1292 @@ mod tests {
                 failure.blockers()
             )
         });
+    }
+
+    #[test]
+    fn alias_spellings_do_not_bypass_the_impl_family() {
+        let orphan = declaration_rejection(concat!(
+            "pub type MyInt = i32;\n",
+            "impl Clone for MyInt {\n",
+            "    fn clone(&self) -> MyInt {\n",
+            "        *self\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(orphan.contains("COHERENCE001"), "{orphan}");
+
+        let overlap = declaration_rejection(concat!(
+            "pub struct H2 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub type Alias2 = H2;\n",
+            "pub trait One2 {\n",
+            "    fn one(&self) -> i32;\n",
+            "}\n",
+            "impl One2 for H2 {\n",
+            "    fn one(&self) -> i32 {\n",
+            "        1i32\n",
+            "    }\n",
+            "}\n",
+            "impl One2 for Alias2 {\n",
+            "    fn one(&self) -> i32 {\n",
+            "        2i32\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(overlap.contains("COHERENCE002"), "{overlap}");
+
+        let duplicate = declaration_rejection(concat!(
+            "pub struct H3 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub type Alias3 = H3;\n",
+            "impl H3 {\n",
+            "    pub fn a(&self) -> i32 {\n",
+            "        self.v\n",
+            "    }\n",
+            "}\n",
+            "impl Alias3 {\n",
+            "    pub fn a(&self) -> i32 {\n",
+            "        self.v\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(duplicate.contains("TRAIT001"), "{duplicate}");
+    }
+
+    #[test]
+    fn inherent_impls_require_nominal_ownership() {
+        for source in [
+            "impl i32 {\n    pub fn twice(&self) -> i32 {\n        *self\n    }\n}\n",
+            "impl String {\n    pub fn blank(&self) -> i32 {\n        0i32\n    }\n}\n",
+            "impl Vec<i32> {\n    pub fn none(&self) -> i32 {\n        0i32\n    }\n}\n",
+            "pub type MyInt2 = i32;\nimpl MyInt2 {\n    pub fn twice(&self) -> i32 {\n        *self\n    }\n}\n",
+        ] {
+            let rejection = declaration_rejection(source);
+            assert!(
+                rejection.contains("COHERENCE001")
+                    && rejection.contains("requires ownership of the nominal type"),
+                "source={source} rejection={rejection}"
+            );
+        }
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct Own {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "impl Own {\n",
+            "    pub fn value(&self) -> i32 {\n",
+            "        self.v\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        check_declarations_c2(&handoff, &declarations)
+            .unwrap_or_else(|failure| panic!("owned inherent impl must close: {failure:#?}"));
+    }
+
+    #[test]
+    fn undetermined_outermost_targets_stay_blocked() {
+        use UnimplementedDeclarationJudgment as J;
+        assert_eq!(
+            judgment_blockers(concat!(
+                "pub struct H4 {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "impl<'a> Clone for &'a H4 {\n",
+                "    fn clone(&self) -> &'a H4 {\n",
+                "        *self\n",
+                "    }\n",
+                "}\n",
+            )),
+            vec![J::ImplCoherenceOverlap]
+        );
+    }
+
+    #[test]
+    fn bare_unsized_storage_is_rejected_at_depth() {
+        for source in [
+            "pub type Raw = str;\npub struct S1 {\n    pub f: Raw,\n}\n",
+            "pub type A1 = str;\npub type B1 = A1;\npub struct S2 {\n    pub f: B1,\n}\n",
+            "pub type RawS = [u8];\npub struct S3 {\n    pub f: RawS,\n}\n",
+            "pub struct S4 {\n    pub f: (str, i32),\n}\n",
+            "pub struct S5 {\n    pub f: ((str, i32), u8),\n}\n",
+            "pub enum E1 {\n    V((str, i32)),\n}\n",
+            "pub struct S6 {\n    pub f: [str; 2],\n}\n",
+            "pub struct S7 {\n    pub f: (i32, [u8]),\n}\n",
+            "pub struct S8 {\n    pub f: Option<str>,\n}\n",
+            "pub struct S9 {\n    pub f: Vec<str>,\n}\n",
+            "pub struct W1<T> {\n    pub v: T,\n}\npub struct S10 {\n    pub f: W1<str>,\n}\n",
+        ] {
+            let rejection = declaration_rejection(source);
+            assert!(
+                rejection.contains("TYPE001") && rejection.contains("unsized"),
+                "source={source} rejection={rejection}"
+            );
+        }
+
+        for source in [
+            "pub struct P1<'a> {\n    pub f: &'a str,\n}\n",
+            "pub struct P2<'a> {\n    pub f: &'a [u8],\n}\n",
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!("reference-held unsized must close: {source} {failure:#?}")
+            });
+        }
+
+        use UnimplementedDeclarationJudgment as J;
+        assert_eq!(
+            judgment_blockers("pub struct B2 {\n    pub f: Box<str>,\n}\n"),
+            vec![J::SizednessRecursion]
+        );
+    }
+
+    #[test]
+    fn float_map_keys_reject_at_any_depth() {
+        for source in [
+            "pub struct T1 {\n    pub m: Map<(f32, i32), i32>,\n}\n",
+            "pub struct T2 {\n    pub m: Map<[f32; 2], i32>,\n}\n",
+            "pub type F1 = f32;\npub struct T3 {\n    pub m: Map<F1, i32>,\n}\n",
+        ] {
+            let rejection = declaration_rejection(source);
+            assert!(
+                rejection.contains("TRAIT002") && rejection.contains("float map keys"),
+                "source={source} rejection={rejection}"
+            );
+        }
+    }
+
+    #[test]
+    fn string_map_keys_retain_the_sealed_comparison_continuation() {
+        let handoff = C2Handoff::begin(inline_frontend(
+            "pub struct Names2 {\n    pub scores: Map<String, i32>,\n}\n",
+        ))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked = check_declarations_c2(&handoff, &declarations)
+            .unwrap_or_else(|failure| panic!("String map keys must close: {failure:#?}"));
+        let rendered = format!("{checked:?}");
+        let row = rendered
+            .find("name: \"Names2\"")
+            .expect("Names2 row is rendered");
+        let window = &rendered[row..(row + 2400).min(rendered.len())];
+        assert!(
+            window.contains("pending_c4: PendingC4Dependencies([PendingC4Dependency"),
+            "the String key must retain a sealed-comparison continuation: {window}"
+        );
+    }
+
+    #[test]
+    fn argument_position_cycles_stay_blocked() {
+        use UnimplementedDeclarationJudgment as J;
+        assert_eq!(
+            judgment_blockers(concat!(
+                "pub struct P9<T> {\n",
+                "    pub x: Box<T>,\n",
+                "}\n",
+                "pub struct Q9 {\n",
+                "    pub p: P9<Q9>,\n",
+                "}\n",
+            )),
+            vec![J::SizednessRecursion]
+        );
+    }
+
+    #[test]
+    fn legal_alias_spelled_trait_impls_still_close() {
+        for source in [
+            concat!(
+                "pub struct Own2 {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub type AOwn2 = Own2;\n",
+                "pub trait Loc2 {\n",
+                "    fn loc(&self) -> i32;\n",
+                "}\n",
+                "impl Loc2 for AOwn2 {\n",
+                "    fn loc(&self) -> i32 {\n",
+                "        self.v\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct T8b {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub type AT8 = T8b;\n",
+                "impl Clone for AT8 {\n",
+                "    fn clone(&self) -> AT8 {\n",
+                "        T8b { v: self.v }\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct G5<T> {\n",
+                "    pub v: T,\n",
+                "}\n",
+                "pub type AG5<T> = G5<T>;\n",
+                "pub trait One5 {\n",
+                "    fn one(&self) -> i32;\n",
+                "}\n",
+                "impl One5 for AG5<i32> {\n",
+                "    fn one(&self) -> i32 {\n",
+                "        self.v\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!("legal alias-spelled impl must close: {source} {failure:#?}")
+            });
+        }
+    }
+
+    #[test]
+    fn alias_spellings_in_heads_and_predicates_still_collide() {
+        let overlap = declaration_rejection(concat!(
+            "pub struct HR1 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub struct KR1 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub type AKR1 = KR1;\n",
+            "pub trait OneR1<T> {\n",
+            "    fn one(&self) -> i32;\n",
+            "}\n",
+            "impl OneR1<KR1> for HR1 {\n",
+            "    fn one(&self) -> i32 {\n",
+            "        1i32\n",
+            "    }\n",
+            "}\n",
+            "impl OneR1<AKR1> for HR1 {\n",
+            "    fn one(&self) -> i32 {\n",
+            "        2i32\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(overlap.contains("COHERENCE002"), "{overlap}");
+
+        let duplicate = declaration_rejection(concat!(
+            "pub struct GR2<T> {\n",
+            "    pub v: T,\n",
+            "}\n",
+            "pub type AGR2<T> = GR2<T>;\n",
+            "pub trait TrR2 {\n",
+            "    fn t(&self) -> i32;\n",
+            "}\n",
+            "impl<T> GR2<T>\n",
+            "where\n",
+            "    GR2<T>: TrR2,\n",
+            "{\n",
+            "    pub fn a(&self) -> i32 {\n",
+            "        0i32\n",
+            "    }\n",
+            "}\n",
+            "impl<T> GR2<T>\n",
+            "where\n",
+            "    AGR2<T>: TrR2,\n",
+            "{\n",
+            "    pub fn a(&self) -> i32 {\n",
+            "        0i32\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(duplicate.contains("TRAIT001"), "{duplicate}");
+    }
+
+    #[test]
+    fn trait_method_float_keys_emit_one_rejection() {
+        let rejection = declaration_rejection(concat!(
+            "pub trait TR7 {\n",
+            "    fn f(&self, m: &Map<f32, i32>) -> i32;\n",
+            "}\n",
+        ));
+        assert!(rejection.contains("float map keys"), "{rejection}");
+        assert_eq!(rejection.matches("TRAIT002").count(), 1, "{rejection}");
+    }
+
+    #[test]
+    fn fn_pointer_alias_spellings_expand_in_every_position() {
+        let overlap = declaration_rejection(concat!(
+            "pub struct H8 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub struct K8 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub type AK8 = K8;\n",
+            "pub trait One8<T> {\n",
+            "    fn one(&self) -> i32;\n",
+            "}\n",
+            "impl One8<fn(K8) -> i32> for H8 {\n",
+            "    fn one(&self) -> i32 {\n",
+            "        1i32\n",
+            "    }\n",
+            "}\n",
+            "impl One8<fn(AK8) -> i32> for H8 {\n",
+            "    fn one(&self) -> i32 {\n",
+            "        2i32\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(overlap.contains("COHERENCE002"), "{overlap}");
+
+        for source in [
+            concat!(
+                "pub struct P6g {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub struct K6g {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub type AK6g = K6g;\n",
+                "pub trait TA6g {\n",
+                "    fn one(&self, x: fn(K6g) -> i32) -> i32;\n",
+                "}\n",
+                "impl TA6g for P6g {\n",
+                "    fn one(&self, x: fn(AK6g) -> i32) -> i32 {\n",
+                "        self.v\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct HE1 {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub type FE1<T> = fn(T) -> i32;\n",
+                "pub trait OneE1<T> {\n",
+                "    fn one(&self) -> i32;\n",
+                "}\n",
+                "impl OneE1<FE1<i32>> for HE1 {\n",
+                "    fn one(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+                "impl OneE1<FE1<u8>> for HE1 {\n",
+                "    fn one(&self) -> i32 {\n",
+                "        2i32\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!("legal fn-pointer alias spellings must close: {source} {failure:#?}")
+            });
+        }
+    }
+
+    #[test]
+    fn nested_alias_applications_expand_and_conformance_runs() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct P6 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub type W6<T> = Box<T>;\n",
+            "pub struct Holder6 {\n",
+            "    pub a: W6<W6<P6>>,\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+            panic!("nested alias applications must stay sized: {failure:#?}")
+        });
+
+        let mismatch = declaration_rejection(concat!(
+            "pub struct P6d {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub type W6d<T> = Box<T>;\n",
+            "pub trait TA6d {\n",
+            "    fn one(&self, x: W6d<W6d<P6d>>) -> i32;\n",
+            "}\n",
+            "impl TA6d for P6d {\n",
+            "    fn one(&self, x: W6d<W6d<P6d>>) -> u8 {\n",
+            "        0u8\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(
+            mismatch.contains("TRAIT001") && mismatch.contains("does not conform"),
+            "{mismatch}"
+        );
+    }
+
+    #[test]
+    fn lifetime_alias_arguments_substitute() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct HG1 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub struct KG1 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub type RefG1<'a, T> = &'a T;\n",
+            "pub trait OneG1<T> {\n",
+            "    fn one(&self) -> i32;\n",
+            "}\n",
+            "impl OneG1<RefG1<'static, KG1>> for HG1 {\n",
+            "    fn one(&self) -> i32 {\n",
+            "        1i32\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+            panic!("lifetime alias arguments must substitute: {failure:#?}")
+        });
+    }
+
+    #[test]
+    fn nominal_alias_arguments_substitute_lifetimes_and_consts() {
+        for source in [
+            concat!(
+                "pub struct HG3 {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub struct KG3<'a> {\n",
+                "    pub r: &'a i32,\n",
+                "}\n",
+                "pub type AG3<'a> = KG3<'a>;\n",
+                "pub trait OneG3<T> {\n",
+                "    fn one(&self) -> i32;\n",
+                "}\n",
+                "impl OneG3<AG3<'static>> for HG3 {\n",
+                "    fn one(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct HC2 {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub struct KC2<const N: usize> {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub type AC2<const N: usize> = KC2<const N>;\n",
+                "pub trait OneC2<T> {\n",
+                "    fn one(&self) -> i32;\n",
+                "}\n",
+                "impl OneC2<AC2<const 4usize>> for HC2 {\n",
+                "    fn one(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct KCC<const N: usize> {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub type ACC<const N: usize> = KCC<const N>;\n",
+                "impl ACC<const 4usize> {\n",
+                "    pub fn a(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl ACC<const 8usize> {\n",
+                "    pub fn a(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!("nominal alias arguments must substitute: {source} {failure:#?}")
+            });
+        }
+
+        for source in [
+            concat!(
+                "pub struct KG9<'a> {\n",
+                "    pub r: &'a i32,\n",
+                "}\n",
+                "pub type AG9<'a> = KG9<'a>;\n",
+                "impl KG9<'static> {\n",
+                "    pub fn a(&self) -> i32 {\n",
+                "        *self.r\n",
+                "    }\n",
+                "}\n",
+                "impl AG9<'static> {\n",
+                "    pub fn a(&self) -> i32 {\n",
+                "        *self.r\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct KCA<const N: usize> {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub type ACA<const N: usize> = KCA<const N>;\n",
+                "impl KCA<const 4usize> {\n",
+                "    pub fn a(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl ACA<const 4usize> {\n",
+                "    pub fn a(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let rejection = declaration_rejection(source);
+            assert!(
+                rejection.contains("TRAIT001") && rejection.contains("declared more than once"),
+                "source={source} rejection={rejection}"
+            );
+        }
+    }
+
+    #[test]
+    fn expanded_predicate_lists_recanonicalize() {
+        let duplicate = declaration_rejection(concat!(
+            "pub struct AA9<T> {\n",
+            "    pub v: T,\n",
+            "}\n",
+            "pub struct MM9<T> {\n",
+            "    pub v: T,\n",
+            "}\n",
+            "pub struct GG9<T> {\n",
+            "    pub v: T,\n",
+            "}\n",
+            "pub type ZZ9<T> = AA9<T>;\n",
+            "pub trait Ta9 {\n",
+            "    fn t(&self) -> i32;\n",
+            "}\n",
+            "impl<T> GG9<T>\n",
+            "where\n",
+            "    AA9<T>: Ta9,\n",
+            "    MM9<T>: Ta9,\n",
+            "{\n",
+            "    pub fn m(&self) -> i32 {\n",
+            "        0i32\n",
+            "    }\n",
+            "}\n",
+            "impl<T> GG9<T>\n",
+            "where\n",
+            "    ZZ9<T>: Ta9,\n",
+            "    MM9<T>: Ta9,\n",
+            "{\n",
+            "    pub fn m(&self) -> i32 {\n",
+            "        0i32\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(
+            duplicate.contains("TRAIT001") && duplicate.contains("declared more than once"),
+            "{duplicate}"
+        );
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct AA8<T> {\n",
+            "    pub v: T,\n",
+            "}\n",
+            "pub struct GG8<T> {\n",
+            "    pub v: T,\n",
+            "}\n",
+            "pub type ZZ8<T> = AA8<T>;\n",
+            "pub trait Ta8 {\n",
+            "    fn t(&self) -> i32;\n",
+            "}\n",
+            "pub trait Tb8 {\n",
+            "    fn u(&self) -> i32;\n",
+            "}\n",
+            "impl<T> Tb8 for GG8<T>\n",
+            "where\n",
+            "    ZZ8<T>: Ta8,\n",
+            "    AA8<T>: Ta8,\n",
+            "{\n",
+            "    fn u(&self) -> i32 {\n",
+            "        0i32\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+            panic!("expansion-duplicated predicates must dedup, not reject: {failure:#?}")
+        });
+    }
+
+    #[test]
+    fn join_handle_spellings_expand() {
+        for source in [
+            concat!(
+                "pub struct HJ2 {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait OneJ2<T> {\n",
+                "    fn one(&self) -> i32;\n",
+                "}\n",
+                "impl OneJ2<JoinHandle<i32>> for HJ2 {\n",
+                "    fn one(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct HJ3 {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub type Task3 = JoinHandle<i32>;\n",
+                "pub trait OneJ3<T> {\n",
+                "    fn one(&self) -> i32;\n",
+                "}\n",
+                "impl OneJ3<Task3> for HJ3 {\n",
+                "    fn one(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!("JoinHandle spellings must close: {source} {failure:#?}")
+            });
+        }
+    }
+
+    #[test]
+    fn alias_readiness_recanonicalizes() {
+        for source in [
+            concat!(
+                "pub const KN4: usize = 4usize;\n",
+                "pub type AR4 = [i32; KN4];\n",
+                "pub struct HB4 {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait TB4 {\n",
+                "    fn a(&self, t: [i32; KN4]) -> i32;\n",
+                "}\n",
+                "impl TB4 for HB4 {\n",
+                "    fn a(&self, t: AR4) -> i32 {\n",
+                "        self.v\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub const KN5: usize = 4usize;\n",
+                "pub type AR5 = [i32; KN5];\n",
+                "pub struct HB5 {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait TB5 {\n",
+                "    fn a(&self, t: AR5) -> i32;\n",
+                "}\n",
+                "impl TB5 for HB5 {\n",
+                "    fn a(&self, t: [i32; KN5]) -> i32 {\n",
+                "        self.v\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub const WIDTH5: usize = 3usize;\n",
+                "pub const HEIGHT5: usize = 2usize;\n",
+                "pub type Grid5<T> = [T; WIDTH5 * HEIGHT5];\n",
+                "pub struct HG5 {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait TG5 {\n",
+                "    fn a(&self, t: [i32; WIDTH5 * HEIGHT5]) -> i32;\n",
+                "}\n",
+                "impl TG5 for HG5 {\n",
+                "    fn a(&self, t: Grid5<i32>) -> i32 {\n",
+                "        self.v\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub const KN8: usize = 4usize;\n",
+                "pub type TR8 = [i32; KN8];\n",
+                "pub struct GG8b {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait Tc8 {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "pub trait Td8 {\n",
+                "    fn u(&self) -> i32;\n",
+                "}\n",
+                "impl Td8 for GG8b\n",
+                "where\n",
+                "    TR8: Tc8,\n",
+                "    [i32; KN8]: Tc8,\n",
+                "{\n",
+                "    fn u(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!("alias readiness must recanonicalize: {source} {failure:#?}")
+            });
+        }
+
+        let duplicate = declaration_rejection(concat!(
+            "pub const KA3: usize = 4usize;\n",
+            "pub type AA3 = [i32; KA3];\n",
+            "pub struct GA3 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub trait TA3b {\n",
+            "    fn t(&self) -> i32;\n",
+            "}\n",
+            "impl GA3\n",
+            "where\n",
+            "    AA3: TA3b,\n",
+            "{\n",
+            "    pub fn m(&self) -> i32 {\n",
+            "        0i32\n",
+            "    }\n",
+            "}\n",
+            "impl GA3\n",
+            "where\n",
+            "    [i32; KA3]: TA3b,\n",
+            "{\n",
+            "    pub fn m(&self) -> i32 {\n",
+            "        0i32\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(
+            duplicate.contains("TRAIT001") && duplicate.contains("declared more than once"),
+            "{duplicate}"
+        );
+    }
+
+    #[test]
+    fn bound_positions_unify_in_impl_heads() {
+        for source in [
+            concat!(
+                "pub struct KCE<const N: usize> {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait TCE {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<const N: usize> TCE for KCE<const N> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TCE for KCE<const 4usize> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct KLB<'a> {\n",
+                "    pub r: &'a i32,\n",
+                "}\n",
+                "pub trait TLB {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<'a> TLB for KLB<'a> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TLB for KLB<'static> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub trait TA1 {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<const N: usize> TA1 for [i32; N] {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TA1 for [i32; 4usize] {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub trait TA2 {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<T> TA2 for JoinHandle<T> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TA2 for JoinHandle<i32> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub trait TA3c {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<T> TA3c for fn(T) -> i32 {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TA3c for fn(i32) -> i32 {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let rejection = declaration_rejection(source);
+            assert!(
+                rejection.contains("COHERENCE002"),
+                "source={source} rejection={rejection}"
+            );
+        }
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct KCF<const N: usize> {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub trait TCF {\n",
+            "    fn t(&self) -> i32;\n",
+            "}\n",
+            "impl TCF for KCF<const 4usize> {\n",
+            "    fn t(&self) -> i32 {\n",
+            "        0i32\n",
+            "    }\n",
+            "}\n",
+            "impl TCF for KCF<const 8usize> {\n",
+            "    fn t(&self) -> i32 {\n",
+            "        1i32\n",
+            "    }\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+            panic!("distinct concrete const heads stay disjoint: {failure:#?}")
+        });
+    }
+
+    #[test]
+    fn join_handle_participates_in_sizedness() {
+        use UnimplementedDeclarationJudgment as J;
+        for source in [
+            "pub struct SJ1 {\n    pub t: JoinHandle<str>,\n}\n",
+            "pub type TJ4 = JoinHandle<str>;\npub struct SJ4 {\n    pub t: TJ4,\n}\n",
+            "pub struct SJ8 {\n    pub t: (JoinHandle<str>, i32),\n}\n",
+        ] {
+            assert_eq!(
+                judgment_blockers(source),
+                vec![J::SizednessRecursion],
+                "{source}"
+            );
+        }
+
+        for source in [
+            "pub struct SJ2 {\n    pub t: JoinHandle<Vec<str>>,\n}\n",
+            "pub struct SJ3 {\n    pub t: JoinHandle<(str, i32)>,\n}\n",
+            "pub struct SJ7 {\n    pub t: JoinHandle<[str; 2]>,\n}\n",
+        ] {
+            let rejection = declaration_rejection(source);
+            assert!(
+                rejection.contains("TYPE001") && rejection.contains("unsized"),
+                "source={source} rejection={rejection}"
+            );
+        }
+
+        let handoff = C2Handoff::begin(inline_frontend(
+            "pub struct SJD {\n    pub t: JoinHandle<SJD>,\n}\n",
+        ))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+            panic!("handle recursion is regular indirection: {failure:#?}")
+        });
+    }
+
+    #[test]
+    fn alias_hidden_map_keys_are_still_judged() {
+        for source in [
+            concat!(
+                "pub type OA1<K> = Map<K, i32> where K: Eq + Ord;\n",
+                "pub struct SO1 {\n",
+                "    pub m: OA1<f32>,\n",
+                "}\n",
+            ),
+            concat!(
+                "pub type OA4<K, V> = Vec<Map<K, Option<Box<V>>>> where K: Eq + Ord;\n",
+                "pub struct SO4 {\n",
+                "    pub m: OA4<f64, i32>,\n",
+                "}\n",
+            ),
+        ] {
+            let rejection = declaration_rejection(source);
+            assert!(
+                rejection.contains("TRAIT002") && rejection.contains("float map keys"),
+                "source={source} rejection={rejection}"
+            );
+        }
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub type OA2<K> = Map<K, i32> where K: Eq + Ord;\n",
+            "pub struct SO2 {\n",
+            "    pub m: OA2<String>,\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked = check_declarations_c2(&handoff, &declarations)
+            .unwrap_or_else(|failure| panic!("alias String key must close: {failure:#?}"));
+        let rendered = format!("{checked:?}");
+        let row = rendered.find("name: \"SO2\"").expect("SO2 row is rendered");
+        let window = &rendered[row..(row + 2400).min(rendered.len())];
+        assert!(
+            window.contains("pending_c4: PendingC4Dependencies([PendingC4Dependency"),
+            "an alias-spelled String key must keep the sealed continuation: {window}"
+        );
+    }
+
+    #[test]
+    fn alias_cycles_through_join_handles_reject() {
+        for source in [
+            "pub type LJ1 = JoinHandle<LJ1>;\n",
+            "pub type LJ3 = (JoinHandle<LJ3>, i32);\n",
+            "pub type LJ4 = Vec<JoinHandle<LJ4>>;\n",
+        ] {
+            let rejection = declaration_rejection(source);
+            assert!(
+                rejection.contains("TYPE001"),
+                "source={source} rejection={rejection}"
+            );
+        }
+    }
+
+    #[test]
+    fn const_dependent_impl_heads_conform() {
+        for source in [
+            concat!(
+                "pub const KJ1: usize = 4usize;\n",
+                "pub struct KHJ1<const N: usize> {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait TJ1 {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl TJ1 for KHJ1<const KJ1> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub const KJ3: usize = 4usize;\n",
+                "pub trait TJ3 {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl TJ3 for [i32; KJ3] {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!("const-dependent impl heads must conform: {source} {failure:#?}")
+            });
+        }
+    }
+
+    #[test]
+    fn const_expression_heads_stay_fail_closed() {
+        use UnimplementedDeclarationJudgment as J;
+        for source in [
+            concat!(
+                "pub struct KLA<const N: usize> {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait TLA {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl TLA for KLA<const 2usize * 2usize> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TLA for KLA<const 4usize> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub trait TLB2 {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl TLB2 for [i32; 2usize * 2usize] {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TLB2 for [i32; 4usize] {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub const KP1: usize = 4usize;\n",
+                "pub struct KPH<const N: usize> {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait TPH {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl TPH for KPH<const KP1> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TPH for KPH<const 4usize> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let blockers = judgment_blockers(source);
+            assert_eq!(blockers, vec![J::ImplCoherenceOverlap], "{source}");
+        }
+
+        let equal = declaration_rejection(concat!(
+            "pub struct KCE2 {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub struct KHE<const N: usize> {\n",
+            "    pub v: i32,\n",
+            "}\n",
+            "pub trait TCE2 {\n",
+            "    fn t(&self) -> i32;\n",
+            "}\n",
+            "impl TCE2 for KHE<const 4usize> {\n",
+            "    fn t(&self) -> i32 {\n",
+            "        0i32\n",
+            "    }\n",
+            "}\n",
+            "impl TCE2 for KHE<const 4usize> {\n",
+            "    fn t(&self) -> i32 {\n",
+            "        1i32\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(equal.contains("COHERENCE002"), "{equal}");
+    }
+
+    #[test]
+    fn alias_spelled_identity_recursion_is_regular() {
+        for source in [
+            concat!(
+                "pub type IdA<T> = T;\n",
+                "pub struct RecA<T> {\n",
+                "    pub v: Box<RecA<IdA<T>>>,\n",
+                "}\n",
+            ),
+            concat!(
+                "pub type IdB<T> = T;\n",
+                "pub struct RecB<T> {\n",
+                "    pub v: Box<RecB<IdB<IdB<T>>>>,\n",
+                "}\n",
+            ),
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(source)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            check_declarations_c2(&handoff, &declarations).unwrap_or_else(|failure| {
+                panic!("alias-spelled identity re-entry is regular: {source} {failure:#?}")
+            });
+        }
+
+        let nonregular = declaration_rejection(concat!(
+            "pub type IdD<T> = Option<T>;\n",
+            "pub struct RecF<T> {\n",
+            "    pub v: Box<RecF<IdD<T>>>,\n",
+            "}\n",
+        ));
+        assert!(
+            nonregular.contains("TYPE001") && nonregular.contains("nonregular"),
+            "{nonregular}"
+        );
+    }
+
+    #[test]
+    fn bound_const_expressions_stay_fail_closed_not_overlapping() {
+        use UnimplementedDeclarationJudgment as J;
+        for source in [
+            concat!(
+                "pub struct ZK<const N: usize> {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait ZT {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<const N: usize> ZT for ZK<const N * 2usize> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl ZT for ZK<const 3usize> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct CK<const N: usize> {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait CT {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<const N: usize> CT for CK<const N * 2usize> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl<const M: usize> CT for CK<const M * 2usize + 1usize> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let blockers = judgment_blockers(source);
+            assert_eq!(blockers, vec![J::ImplCoherenceOverlap], "{source}");
+        }
+    }
+
+    #[test]
+    fn nonlinear_heads_stay_fail_closed() {
+        use UnimplementedDeclarationJudgment as J;
+        for source in [
+            concat!(
+                "pub struct KNL<A, B> {\n",
+                "    pub a: A,\n",
+                "    pub b: B,\n",
+                "}\n",
+                "pub trait TNL {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<T> TNL for KNL<T, T> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TNL for KNL<i32, u8> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct KNC<const N: usize, const M: usize> {\n",
+                "    pub v: i32,\n",
+                "}\n",
+                "pub trait TNC {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<const N: usize> TNC for KNC<const N, const N> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TNC for KNC<const 4usize, const 8usize> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct KNH<T> {\n",
+                "    pub v: T,\n",
+                "}\n",
+                "pub trait TNH<T> {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<T> TNH<T> for KNH<T> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TNH<i32> for KNH<u8> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub struct KNO<A, B> {\n",
+                "    pub a: A,\n",
+                "    pub b: B,\n",
+                "}\n",
+                "pub trait TNO {\n",
+                "    fn t(&self) -> i32;\n",
+                "}\n",
+                "impl<T> TNO for KNO<T, T> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        0i32\n",
+                "    }\n",
+                "}\n",
+                "impl TNO for KNO<i32, i32> {\n",
+                "    fn t(&self) -> i32 {\n",
+                "        1i32\n",
+                "    }\n",
+                "}\n",
+            ),
+        ] {
+            let blockers = judgment_blockers(source);
+            assert_eq!(blockers, vec![J::ImplCoherenceOverlap], "{source}");
+        }
+
+        let overlap = declaration_rejection(concat!(
+            "pub struct KLN<A, B> {\n",
+            "    pub a: A,\n",
+            "    pub b: B,\n",
+            "}\n",
+            "pub trait TLN {\n",
+            "    fn t(&self) -> i32;\n",
+            "}\n",
+            "impl<A, B> TLN for KLN<A, B> {\n",
+            "    fn t(&self) -> i32 {\n",
+            "        0i32\n",
+            "    }\n",
+            "}\n",
+            "impl TLN for KLN<i32, u8> {\n",
+            "    fn t(&self) -> i32 {\n",
+            "        1i32\n",
+            "    }\n",
+            "}\n",
+        ));
+        assert!(overlap.contains("COHERENCE002"), "{overlap}");
     }
 }

@@ -11528,20 +11528,24 @@ mod tests {
                 panic!("generic-owner closure values must close: {failure:#?}")
             });
         assert!(bodies.all_authority_complete());
-        let locals = format!(
-            "{:?}",
-            bodies
-                .bodies()
-                .flat_map(C2BodyView::locals)
-                .collect::<Vec<_>>()
-        );
+        let closure_locals: Vec<String> = bodies
+            .bodies()
+            .flat_map(C2BodyView::locals)
+            .map(|local| format!("{local:?}"))
+            .filter(|rendered| rendered.contains("ty: Closure {"))
+            .collect();
         assert!(
-            locals.contains("Lifetime(Bound { depth: 0, index: 0 })")
-                && locals.contains("BoundType { depth: 0, index: 1 }")
-                && locals.contains("Bound { depth: 0, index: 2 }")
-                && locals.contains("expression_ordinal: 1")
-                && locals.contains("captures: []"),
-            "identity arguments must carry the owner's bound generics: {locals}"
+            closure_locals.iter().any(|rendered| {
+                rendered.contains(concat!(
+                    "arguments: [Lifetime(Bound { depth: 0, index: 0 }), ",
+                    "Type(BoundType { depth: 0, index: 1 }), ",
+                    "IntegerConst(SymbolicConstExpression { integer_type: Usize, ",
+                    "node: Bound { depth: 0, index: 2 } })]",
+                )) && rendered.contains("expression_ordinal: 1")
+                    && rendered.contains("captures: []")
+            }),
+            "closure locals must carry the owner's exact identity arguments: \
+             {closure_locals:#?}"
         );
     }
 
