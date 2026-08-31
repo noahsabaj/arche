@@ -422,12 +422,31 @@ pub enum CheckedPrimitiveSelection {
 }
 
 /// Checks one expression and refuses to construct a result until every dense
-/// inference variable has a concrete `SymbolicType` substitution.
+/// inference variable has a concrete `SymbolicType` substitution. This entry
+/// seeds no enclosing loops; the body-check adapter always goes through
+/// `check_typed_expression_in_loops`.
 pub fn check_typed_expression(
     input: &TypedExpressionInput,
     expected: Option<&SymbolicType>,
     context: &TypingContext,
 ) -> Result<CheckedExpression, TypeCheckError> {
+    check_typed_expression_in_loops(input, expected, context, 0).map(|(checked, _)| checked)
+}
+
+/// Checks one expression that sits inside `enclosing_loops` source loops whose
+/// owning `While`/`Loop` nodes are not part of `input`. Each enclosing loop is
+/// seeded as a frame so a `break` in the subtree binds honestly instead of
+/// reporting itself outside a loop. The returned vector gives, per enclosing
+/// loop (innermost last), how many breaks in the subtree constrained that
+/// seeded frame: those breaks never reach the enclosing loop's authoritative
+/// frame, so the caller must treat the loops they targeted as unsound to type
+/// and keep them incomplete.
+pub fn check_typed_expression_in_loops(
+    input: &TypedExpressionInput,
+    expected: Option<&SymbolicType>,
+    context: &TypingContext,
+    enclosing_loops: usize,
+) -> Result<(CheckedExpression, Vec<usize>), TypeCheckError> {
     if let Some(return_type) = context.return_type() {
         validate_type(return_type, context.binders())?;
     }
@@ -436,11 +455,19 @@ pub fn check_typed_expression(
     }
 
     let mut checker = TypeChecker::new(context);
+    for _ in 0..enclosing_loops {
+        let join_type = checker.variable(VariableClass::Any)?;
+        checker.loops.push(LoopFrame {
+            join_type,
+            break_count: 0,
+        });
+    }
     let expected = expected.cloned().map(InferType::Symbolic);
     let raw = checker.infer(input, expected.as_ref())?;
+    let seeded_break_counts = checker.settle_enclosing_loop_frames()?;
     checker.default_numeric_variables()?;
     checker.reject_unresolved_variables()?;
-    checker.materialize(raw)
+    Ok((checker.materialize(raw)?, seeded_break_counts))
 }
 
 /// Uses the shared generic-formation and binder authorities at an adapter
@@ -676,7 +703,23 @@ impl<'a> TypeChecker<'a> {
             } => self.infer_if(condition, then_branch, else_branch.as_deref(), expected)?,
             TypedExpressionInput::While { condition, body } => {
                 let condition = self.infer(condition, Some(&bool_type()))?;
+                // A while loop owns a loop frame for its body: a bare
+                // `break` there carries the unit loop value and never escapes
+                // to an outer frame. The condition is inferred before the
+                // frame is pushed, so a break in the condition binds the
+                // enclosing loop instead.
+                let join_type = self.variable(VariableClass::Any)?;
+                self.loops.push(LoopFrame {
+                    join_type: join_type.clone(),
+                    break_count: 0,
+                });
                 let body = self.infer(body, None)?;
+                let frame = self.loops.pop().expect("while frame was pushed");
+                // The while join is always unit: only bare `break` reaches a
+                // while frame (value-carrying breaks are rejected at source
+                // lowering), and pinning the join here resolves the frame
+                // variable even when the body never breaks.
+                self.unify(&InferType::Symbolic(SymbolicType::Unit), &frame.join_type)?;
                 RawExpression {
                     natural_type: InferType::Symbolic(SymbolicType::Unit),
                     coerced_type: None,
@@ -1576,6 +1619,32 @@ impl<'a> TypeChecker<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Pops the seeded enclosing-loop frames and reports how many breaks
+    /// constrained each (seed order, innermost last). A frame no break
+    /// touched has its join bound to unit so the sweep below stays honest; a
+    /// frame some break constrained is left entirely alone (even when its
+    /// root binding is still `None`, a break may have merged it with a
+    /// numeric-class variable, and rebinding it to unit would fabricate a
+    /// class mismatch). Seeded joins never reach the enclosing loop's
+    /// authoritative frame; the caller keeps loops with a nonzero count
+    /// incomplete.
+    fn settle_enclosing_loop_frames(&mut self) -> Result<Vec<usize>, TypeCheckError> {
+        let mut break_counts = Vec::with_capacity(self.loops.len());
+        while let Some(frame) = self.loops.pop() {
+            break_counts.push(frame.break_count);
+            let InferType::Variable(variable) = &frame.join_type else {
+                continue;
+            };
+            let root = self.root(variable)?;
+            let node = &self.variables[usize::try_from(root).expect("u32 fits usize")];
+            if frame.break_count == 0 && node.binding.is_none() {
+                self.unify(&frame.join_type, &InferType::Symbolic(SymbolicType::Unit))?;
+            }
+        }
+        break_counts.reverse();
+        Ok(break_counts)
     }
 
     fn reject_unresolved_variables(&self) -> Result<(), TypeCheckError> {
