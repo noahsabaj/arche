@@ -39,7 +39,7 @@ fn assert_terminal_rejection_sequence(
     expected: &[ExpectedDiagnostic],
 ) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../tests/m27c2/v1/negative")
+        .join("../../../../tests/m27c2/v1/vectors")
         .join(fixture);
     let workspace = load_workspace(&ManifestRequest::discover_from(&root))
         .unwrap_or_else(|error| panic!("{fixture} must load as a standalone package: {error}"));
@@ -101,7 +101,7 @@ fn assert_terminal_rejection_sequence(
 
 fn assert_terminal_rejection(case: ExpectedCase) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../tests/m27c2/v1/negative")
+        .join("../../../../tests/m27c2/v1/vectors")
         .join(case.fixture);
     let workspace =
         load_workspace(&ManifestRequest::discover_from(&root)).unwrap_or_else(|error| {
@@ -542,4 +542,100 @@ fn trait002_map_float_key_is_a_terminal_c2_rejection() {
         end_line: 3,
         end_column: 2,
     });
+}
+
+#[test]
+fn frozen_corpus_bytes_agree_across_git_surfaces() {
+    use std::process::Command;
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let toplevel_probe = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&manifest)
+        .output()
+        .expect("git is available");
+    assert!(toplevel_probe.status.success(), "git rev-parse failed");
+    let toplevel = PathBuf::from(String::from_utf8(toplevel_probe.stdout).unwrap().trim());
+    // Every corpus pathspec is repo-relative, so every command runs from the
+    // repository toplevel.
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&toplevel)
+            .output()
+            .expect("git is available");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
+    };
+
+    let status = git(&["status", "--porcelain", "--", "tests/m27c2"]);
+    assert!(
+        status.is_empty(),
+        "the frozen corpus differs between worktree and index:\n{}",
+        String::from_utf8_lossy(&status)
+    );
+
+    let head_listing =
+        String::from_utf8(git(&["ls-tree", "-r", "HEAD", "--", "tests/m27c2"])).unwrap();
+    let index_listing = String::from_utf8(git(&["ls-files", "-s", "--", "tests/m27c2"])).unwrap();
+    let head_rows: Vec<(String, String)> = head_listing
+        .lines()
+        .map(|line| {
+            let mut parts = line.split_whitespace();
+            let _mode = parts.next().unwrap();
+            let _kind = parts.next().unwrap();
+            let blob = parts.next().unwrap().to_owned();
+            let path = line.split('\t').nth(1).unwrap().to_owned();
+            (path, blob)
+        })
+        .collect();
+    let index_rows: Vec<(String, String)> = index_listing
+        .lines()
+        .map(|line| {
+            let mut parts = line.split_whitespace();
+            let _mode = parts.next().unwrap();
+            let blob = parts.next().unwrap().to_owned();
+            let _stage = parts.next().unwrap();
+            let path = line.split('\t').nth(1).unwrap().to_owned();
+            (path, blob)
+        })
+        .collect();
+    assert!(!head_rows.is_empty(), "the frozen corpus is tracked");
+    assert_eq!(
+        head_rows, index_rows,
+        "HEAD and index disagree over tests/m27c2"
+    );
+
+    for (path, blob) in &head_rows {
+        let blob_bytes = git(&["cat-file", "blob", blob]);
+        let worktree_bytes = std::fs::read(toplevel.join(path))
+            .unwrap_or_else(|error| panic!("{path} must exist in the worktree: {error}"));
+        assert_eq!(
+            blob_bytes, worktree_bytes,
+            "{path} bytes differ between the Git blob and the worktree"
+        );
+    }
+
+    let fresh = std::env::temp_dir().join(format!("arche-corpus-freeze-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&fresh);
+    git(&[
+        "worktree",
+        "add",
+        "--detach",
+        fresh.to_str().unwrap(),
+        "HEAD",
+    ]);
+    for (path, _) in &head_rows {
+        let fresh_bytes = std::fs::read(fresh.join(path))
+            .unwrap_or_else(|error| panic!("{path} must exist in a fresh checkout: {error}"));
+        let worktree_bytes = std::fs::read(toplevel.join(path)).unwrap();
+        assert_eq!(
+            fresh_bytes, worktree_bytes,
+            "{path} bytes differ in a fresh detached checkout"
+        );
+    }
+    git(&["worktree", "remove", "--force", fresh.to_str().unwrap()]);
 }
