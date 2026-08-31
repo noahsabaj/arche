@@ -1,7 +1,7 @@
 # Arche Work Log
 
 **Status:** Living operational ledger. `arche_comprehensive_design_document.md` defines the contracts; this file records what has actually shipped.
-**Current focus:** M27 is the active umbrella milestone. M27-A, M27-B, M27-C0, and M27-C1 are Done. M27-C2 is Doing on `m27/c2-semantics` ([PR #19](https://github.com/noahsabaj/arche/pull/19), draft). M27-D through M27-L are Backlog. M28 (Arche 0.1 release) follows M27.
+**Current focus:** M27 is the active umbrella milestone. M27-A, M27-B, M27-C0, and M27-C1 are Done. M27-C2 is Doing through short reviewed slice PRs recorded in the evidence ledger below. M27-D through M27-L are Backlog. M28 (Arche 0.1 release) follows M27.
 
 ## Ledger rules
 
@@ -17,7 +17,7 @@
 
 | Issue | Title | Notes |
 |---|---|---|
-| M27-C | General language semantics and verified generic Core | Slices C0 and C1 are Done. C2 is Doing: const-independent type checking, explicit conversion selection, symbolic type-level-const obligations, static trait selection, orphan/coherence and `impl default`, operator dispatch, const-independent exhaustive decision trees, and checked `NeedsCtfe` pattern leaves, with exact positive/negative goldens for both `tests/m27c2/v1` workspaces. C3–C6 follow in order. M27-C stays Doing until C6's exact-head closure evidence is recorded; M27-D cannot start early. |
+| M27-C | General language semantics and verified generic Core | Slices C0 and C1 are Done. C2 is Doing: const-independent type checking, explicit conversion selection, symbolic type-level-const obligations, static trait selection, orphan/coherence and `impl default`, operator dispatch, const-independent exhaustive decision trees, and checked `NeedsCtfe` pattern leaves, with exact positive/negative goldens for both `tests/m27c2/v1` workspaces. Still owed before C2 closes: golden rendering of the C2-resolved declaration/owner shapes and corpus growth to exercise the remaining coercion kinds, logical-not, float comparison, and environment-corpus impls, plus the pattern surfaces absent from both corpora (unsigned ranges, pending array-length tests, ref-mut bindings, symbolic slices and arrays, opaque and unsupported domains); the corpus freeze binds fixtures, not the printer. C3–C6 follow in order. M27-C stays Doing until C6's exact-head closure evidence is recorded; M27-D cannot start early. |
 
 M27-C slice state: C0 **Done**, C1 **Done**, C2 **Doing**, C3–C6 **Backlog**. Closure boundaries for every slice are in design document §0.7.
 
@@ -49,6 +49,7 @@ Newest first. Run links are the exact-head `Proof` workflow runs; "merged main" 
 
 | Date | Closed | PR | Exact-head CI |
 |---|---|---|---|
+| 2026-08-31 | M27-C2 slice: every staged declaration judgment implemented and hardened through ten adversarial review rounds (alias transparency, readiness recanonicalization, three-valued head unification) — both v1 corpora terminate as fully checked C2 workspaces | [#28](https://github.com/noahsabaj/arche/pull/28) | PR head [33429022324](https://github.com/noahsabaj/arche/actions/runs/33429022324), merged main [33430512570](https://github.com/noahsabaj/arche/actions/runs/33430512570) |
 | 2026-08-31 | M27-C2 slice: closure and generator-factory values, associated-method inference, the reserved resume postfix, corpus repair — every body in both v1 corpora authority-complete with zero diagnostics | [#27](https://github.com/noahsabaj/arche/pull/27) | PR head [33408087022](https://github.com/noahsabaj/arche/actions/runs/33408087022), merged main [33410255862](https://github.com/noahsabaj/arche/actions/runs/33410255862) |
 | 2026-08-31 | M27-C2 slice: constructor-inference dispatch, while loop frames, the bare-break rule, honest isolated-subtree break gaps (C2 stays Doing) | [#26](https://github.com/noahsabaj/arche/pull/26) | PR head [33405352124](https://github.com/noahsabaj/arche/actions/runs/33405352124), merged main [33407819405](https://github.com/noahsabaj/arche/actions/runs/33407819405) |
 | 2026-08-30 | M27-C2 slice: catch arms typed against declared singleton throws sets | [#25](https://github.com/noahsabaj/arche/pull/25) | PR head [33340706142](https://github.com/noahsabaj/arche/actions/runs/33340706142), merged main [33341365716](https://github.com/noahsabaj/arche/actions/runs/33341365716) |

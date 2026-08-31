@@ -48,6 +48,7 @@ use crate::declarations::DeclarationTable;
 use crate::diagnostic::{
     CompilationPhase, NonEmptySemanticDiagnostics, ScopedPackageBytes, SemanticDiagnostic,
 };
+use crate::golden::{declaration_kind_atom, integer_type_atom};
 use crate::model::{
     C2Handoff, C2Resolution, NeedsCtfeObligation, NeedsCtfeObligations, PendingC4Dependencies,
     PendingC4Dependency, SessionBrand,
@@ -7469,7 +7470,7 @@ impl BodyChecker<'_, '_, '_> {
         collect_const_paths(value, &mut paths);
         for path in paths {
             let mut bytes = b"ARCHE-C2-BODY-CONST\0".to_vec();
-            encode_declaration_path_debug(&mut bytes, &path);
+            encode_declaration_path_canonical(&mut bytes, &path);
             if let Ok(obligation) = NeedsCtfeObligation::from_canonical_bytes(bytes) {
                 self.ctfe.push(obligation);
             }
@@ -9472,23 +9473,23 @@ fn collect_const_paths(
 
 fn declaration_dependency_string(path: &SemanticDeclarationPath) -> String {
     let mut bytes = Vec::new();
-    encode_declaration_path_debug(&mut bytes, path);
+    encode_declaration_path_canonical(&mut bytes, path);
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         use std::fmt::Write as _;
-        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+        write!(&mut output, "{byte:02X}").expect("writing to String cannot fail");
     }
     output
 }
 
 fn symbolic_const_dependency_string(value: &SymbolicConstExpression) -> String {
     let mut bytes = b"ARCHE-C2-PATTERN-SYMBOLIC-CONST\0".to_vec();
-    encode_debug_string(&mut bytes, &format!("{:?}", value.integer_type));
+    encode_length_prefixed_string(&mut bytes, integer_type_atom(value.integer_type));
     encode_symbolic_const_node(&mut bytes, &value.node);
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         use std::fmt::Write as _;
-        write!(&mut output, "{byte:02x}").expect("writing to String cannot fail");
+        write!(&mut output, "{byte:02X}").expect("writing to String cannot fail");
     }
     output
 }
@@ -9511,7 +9512,7 @@ fn encode_symbolic_const_node(output: &mut Vec<u8>, node: &SymbolicConstNode) {
         }
         SymbolicConstNode::ConstDefinitionPath(path) => {
             output.push(3);
-            encode_declaration_path_debug(output, path);
+            encode_declaration_path_canonical(output, path);
         }
         SymbolicConstNode::WrappingNeg(value) => {
             output.push(4);
@@ -9569,30 +9570,38 @@ fn encode_symbolic_const_pair(
     left: &SymbolicConstExpression,
     right: &SymbolicConstExpression,
 ) {
-    encode_debug_string(output, &format!("{:?}", left.integer_type));
+    encode_length_prefixed_string(output, integer_type_atom(left.integer_type));
     encode_symbolic_const_node(output, &left.node);
-    encode_debug_string(output, &format!("{:?}", right.integer_type));
+    encode_length_prefixed_string(output, integer_type_atom(right.integer_type));
     encode_symbolic_const_node(output, &right.node);
 }
 
-fn encode_declaration_path_debug(output: &mut Vec<u8>, path: &SemanticDeclarationPath) {
-    output.extend_from_slice(b"ARCHE-SEMANTIC-PATH-DEBUG\0");
-    encode_debug_string(output, &path.registry_origin);
-    encode_debug_string(output, &path.package_name);
-    encode_debug_string(output, &format!("{:?}", path.target));
+fn target_root_spelling(target: &arche_frontend::TargetRoot) -> String {
+    match target {
+        arche_frontend::TargetRoot::Library => "library".to_owned(),
+        arche_frontend::TargetRoot::Binary(name) => format!("binary:{name}"),
+        arche_frontend::TargetRoot::Environment(name) => format!("environment:{name}"),
+    }
+}
+
+fn encode_declaration_path_canonical(output: &mut Vec<u8>, path: &SemanticDeclarationPath) {
+    output.extend_from_slice(b"ARCHE-SEMANTIC-PATH\0");
+    encode_length_prefixed_string(output, &path.registry_origin);
+    encode_length_prefixed_string(output, &path.package_name);
+    encode_length_prefixed_string(output, &target_root_spelling(&path.target));
     output.extend_from_slice(
         &u64::try_from(path.modules.len())
             .expect("module count fits u64")
             .to_le_bytes(),
     );
     for module in &path.modules {
-        encode_debug_string(output, module);
+        encode_length_prefixed_string(output, module);
     }
-    encode_debug_string(output, &format!("{:?}", path.kind));
-    encode_debug_string(output, &path.name);
+    encode_length_prefixed_string(output, declaration_kind_atom(path.kind));
+    encode_length_prefixed_string(output, &path.name);
 }
 
-fn encode_debug_string(output: &mut Vec<u8>, value: &str) {
+fn encode_length_prefixed_string(output: &mut Vec<u8>, value: &str) {
     output.extend_from_slice(
         &u64::try_from(value.len())
             .expect("string length fits u64")

@@ -12,3 +12,6 @@ arche-frontend = { path = "../arche-frontend" }
 arche-package = { path = "../arche-package" }
 num-bigint = "=0.4.8"
 num-traits = "=0.2.19"
+
+[dev-dependencies]
+sha2 = "=0.11.0"
