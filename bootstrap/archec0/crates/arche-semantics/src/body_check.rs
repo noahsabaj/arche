@@ -61,7 +61,7 @@ use crate::pattern::{
     ReferenceMutability, TypedPattern, TypedPatternKind,
 };
 use crate::typing::{
-    check_typed_expression, BinaryTypeOperator, CheckedExpression, CheckedExpressionKind,
+    check_typed_expression_in_loops, BinaryTypeOperator, CheckedExpression, CheckedExpressionKind,
     TypeCheckError, TypeCheckErrorKind, TypedExpressionInput, TypingContext, UnaryTypeOperator,
 };
 use crate::{
@@ -2263,7 +2263,12 @@ impl BodyChecker<'_, '_, '_> {
             );
             return None;
         }
-        match check_typed_expression(&lowered.input, expected, &self.typing) {
+        match check_typed_expression_in_loops(
+            &lowered.input,
+            expected,
+            &self.typing,
+            self.source_loops.len(),
+        ) {
             Ok(checked) => {
                 self.expressions.push(CheckedBodyExpression {
                     span,
@@ -10521,10 +10526,22 @@ mod tests {
 
     #[test]
     fn while_and_for_loops_accept_only_bare_break() {
-        for body in [
-            "pub fn probe(flag: bool) -> i32 {\n    while flag {\n        break ();\n    }\n    0i32\n}\n",
-            "pub fn probe(flag: bool) -> i32 {\n    while flag {\n        break 5i32;\n    }\n    0i32\n}\n",
-            "pub fn probe(flag: bool) -> i32 {\n    loop {\n        while flag {\n            break 9i32;\n        }\n    }\n}\n",
+        for (body, line, column) in [
+            (
+                "pub fn probe(flag: bool) -> i32 {\n    while flag {\n        break ();\n    }\n    0i32\n}\n",
+                3u32,
+                9u32,
+            ),
+            (
+                "pub fn probe(flag: bool) -> i32 {\n    while flag {\n        break 5i32;\n    }\n    0i32\n}\n",
+                3,
+                9,
+            ),
+            (
+                "pub fn probe(flag: bool) -> i32 {\n    loop {\n        while flag {\n            break 9i32;\n        }\n    }\n}\n",
+                4,
+                13,
+            ),
         ] {
             let handoff = C2Handoff::begin(inline_frontend(body)).unwrap();
             let declarations = DeclarationTable::build(&handoff).unwrap();
@@ -10533,8 +10550,13 @@ mod tests {
                 check_workspace_bodies_c2(&handoff, &declarations, &checked).unwrap_err();
             let diagnostics = format!("{:?}", failure.diagnostics());
             assert!(
-                diagnostics.contains("accept only a bare `break`"),
+                diagnostics.contains("accept only a bare `break`")
+                    && diagnostics.contains("TYPE002"),
                 "body={body} diagnostics={diagnostics}"
+            );
+            assert!(
+                diagnostics.contains(&format!("line: {line}, column: {column}")),
+                "the rejection must sit at the break's own span; body={body} diagnostics={diagnostics}"
             );
             assert!(failure.incompleteness().is_empty(), "body={body}");
         }
@@ -10573,7 +10595,9 @@ mod tests {
         let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
         let diagnostics = format!("{:?}", failure.diagnostics());
         assert!(
-            diagnostics.contains("accept only a bare `break`"),
+            diagnostics.contains("accept only a bare `break`")
+                && diagnostics.contains("TYPE002")
+                && diagnostics.contains("line: 19, column: 9"),
             "diagnostics={diagnostics}"
         );
     }
@@ -10599,6 +10623,155 @@ mod tests {
         let checked = check_declarations_c2(&handoff, &declarations).unwrap();
         let bodies = check_workspace_bodies_c2(&handoff, &declarations, &checked)
             .unwrap_or_else(|failure| panic!("bare breaks must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct Src {\n",
+            "    pub start: i32,\n",
+            "}\n",
+            "pub struct It {\n",
+            "    current: i32,\n",
+            "}\n",
+            "impl IntoIterator<Src, It> for Src {\n",
+            "    fn into_iter(self) -> It {\n",
+            "        It { current: self.start }\n",
+            "    }\n",
+            "}\n",
+            "impl Iterator<It, i32> for It {\n",
+            "    fn next(&mut self) -> Option<i32> {\n",
+            "        Option::None\n",
+            "    }\n",
+            "}\n",
+            "pub fn probe(source: Src) -> i32 {\n",
+            "    for element in source {\n",
+            "        break;\n",
+            "    }\n",
+            "    0i32\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("bare for break must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn breaks_nested_in_materialized_subtrees_close() {
+        for body in [
+            concat!(
+                "pub fn probe(flag: bool) -> i32 {\n",
+                "    loop {\n",
+                "        match flag {\n",
+                "            true => break,\n",
+                "            false => {}\n",
+                "        }\n",
+                "    }\n",
+                "    0i32\n",
+                "}\n",
+            ),
+            concat!(
+                "pub enum Choice {\n",
+                "    One(i32),\n",
+                "    Two,\n",
+                "}\n",
+                "pub fn probe(value: Choice) -> i32 {\n",
+                "    loop {\n",
+                "        let Choice::One(number) = value else {\n",
+                "            break;\n",
+                "        };\n",
+                "        return number;\n",
+                "    }\n",
+                "    0i32\n",
+                "}\n",
+            ),
+            concat!(
+                "pub fn probe(flag: bool) -> i32 {\n",
+                "    let mut total = 0i32;\n",
+                "    loop {\n",
+                "        total = if flag { 1i32 } else { break };\n",
+                "    }\n",
+                "    total\n",
+                "}\n",
+            ),
+            concat!(
+                "pub fn probe(flag: bool) -> i32 {\n",
+                "    while flag {\n",
+                "        match flag {\n",
+                "            true => break,\n",
+                "            false => {}\n",
+                "        }\n",
+                "    }\n",
+                "    0i32\n",
+                "}\n",
+            ),
+            concat!(
+                "pub fn probe(flag: bool) -> i32 {\n",
+                "    loop {\n",
+                "        match flag {\n",
+                "            true => break 1i32,\n",
+                "            false => 0i32,\n",
+                "        };\n",
+                "    }\n",
+                "    0i32\n",
+                "}\n",
+            ),
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(body)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            let checked_result = check_declarations_c2(&handoff, &declarations);
+            let checked = match &checked_result {
+                Ok(facts) => facts,
+                Err(failure) => failure.partial(),
+            };
+            let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+                .unwrap_or_else(|failure| {
+                    panic!("nested break must close honestly; body={body}: {failure:#?}")
+                });
+            assert!(bodies.all_authority_complete(), "body={body}");
+        }
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct Src {\n",
+            "    pub start: i32,\n",
+            "}\n",
+            "pub struct It {\n",
+            "    current: i32,\n",
+            "}\n",
+            "impl IntoIterator<Src, It> for Src {\n",
+            "    fn into_iter(self) -> It {\n",
+            "        It { current: self.start }\n",
+            "    }\n",
+            "}\n",
+            "impl Iterator<It, i32> for It {\n",
+            "    fn next(&mut self) -> Option<i32> {\n",
+            "        Option::None\n",
+            "    }\n",
+            "}\n",
+            "pub fn probe(source: Src, flag: bool) -> i32 {\n",
+            "    for element in source {\n",
+            "        match flag {\n",
+            "            true => break,\n",
+            "            false => {}\n",
+            "        }\n",
+            "    }\n",
+            "    0i32\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("nested for break must close: {failure:#?}"));
         assert!(bodies.all_authority_complete());
     }
 }

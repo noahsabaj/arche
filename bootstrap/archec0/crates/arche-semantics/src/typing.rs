@@ -428,6 +428,21 @@ pub fn check_typed_expression(
     expected: Option<&SymbolicType>,
     context: &TypingContext,
 ) -> Result<CheckedExpression, TypeCheckError> {
+    check_typed_expression_in_loops(input, expected, context, 0)
+}
+
+/// Checks one expression that sits inside `enclosing_loops` source loops whose
+/// owning `While`/`Loop` nodes are not part of `input`. Each enclosing loop is
+/// seeded as a frame so a `break` in the subtree binds honestly instead of
+/// reporting itself outside a loop; the seeded joins are advisory (the
+/// authoritative binding happens when the whole body is checked) and any frame
+/// left unbound settles to unit before the unresolved-variable sweep.
+pub fn check_typed_expression_in_loops(
+    input: &TypedExpressionInput,
+    expected: Option<&SymbolicType>,
+    context: &TypingContext,
+    enclosing_loops: usize,
+) -> Result<CheckedExpression, TypeCheckError> {
     if let Some(return_type) = context.return_type() {
         validate_type(return_type, context.binders())?;
     }
@@ -436,8 +451,16 @@ pub fn check_typed_expression(
     }
 
     let mut checker = TypeChecker::new(context);
+    for _ in 0..enclosing_loops {
+        let join_type = checker.variable(VariableClass::Any)?;
+        checker.loops.push(LoopFrame {
+            join_type,
+            break_count: 0,
+        });
+    }
     let expected = expected.cloned().map(InferType::Symbolic);
     let raw = checker.infer(input, expected.as_ref())?;
+    checker.settle_enclosing_loop_frames()?;
     checker.default_numeric_variables()?;
     checker.reject_unresolved_variables()?;
     checker.materialize(raw)
@@ -685,8 +708,10 @@ impl<'a> TypeChecker<'a> {
                 });
                 let body = self.infer(body, None)?;
                 let frame = self.loops.pop().expect("while frame was pushed");
-                // The while join is always unit: a valueless `break` supplies
-                // unit and a value-carrying `break` must unify against it.
+                // The while join is always unit: only bare `break` reaches a
+                // while frame (value-carrying breaks are rejected at source
+                // lowering), and pinning the join here resolves the frame
+                // variable even when the body never breaks.
                 self.unify(&InferType::Symbolic(SymbolicType::Unit), &frame.join_type)?;
                 RawExpression {
                     natural_type: InferType::Symbolic(SymbolicType::Unit),
@@ -1584,6 +1609,23 @@ impl<'a> TypeChecker<'a> {
                 if let Some(resolved) = self.try_resolve_type(binding)? {
                     ensure_variable_class(node.class, &resolved)?;
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Pops the seeded enclosing-loop frames, binding any join variable that
+    /// no `break` constrained to unit so the sweep below stays honest. A join
+    /// a `break` did bind keeps that binding; it is advisory and discarded.
+    fn settle_enclosing_loop_frames(&mut self) -> Result<(), TypeCheckError> {
+        while let Some(frame) = self.loops.pop() {
+            let InferType::Variable(variable) = &frame.join_type else {
+                continue;
+            };
+            let root = self.root(variable)?;
+            let node = &self.variables[usize::try_from(root).expect("u32 fits usize")];
+            if node.binding.is_none() {
+                self.unify(&frame.join_type, &InferType::Symbolic(SymbolicType::Unit))?;
             }
         }
         Ok(())
