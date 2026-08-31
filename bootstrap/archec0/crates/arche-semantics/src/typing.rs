@@ -422,7 +422,9 @@ pub enum CheckedPrimitiveSelection {
 }
 
 /// Checks one expression and refuses to construct a result until every dense
-/// inference variable has a concrete `SymbolicType` substitution.
+/// inference variable has a concrete `SymbolicType` substitution. This entry
+/// seeds no enclosing loops; the body-check adapter always goes through
+/// `check_typed_expression_in_loops`.
 pub fn check_typed_expression(
     input: &TypedExpressionInput,
     expected: Option<&SymbolicType>,
@@ -699,8 +701,11 @@ impl<'a> TypeChecker<'a> {
             } => self.infer_if(condition, then_branch, else_branch.as_deref(), expected)?,
             TypedExpressionInput::While { condition, body } => {
                 let condition = self.infer(condition, Some(&bool_type()))?;
-                // A while loop owns a loop frame: `break` inside it carries
-                // the unit loop value and never escapes to an outer frame.
+                // A while loop owns a loop frame for its body: a bare
+                // `break` there carries the unit loop value and never escapes
+                // to an outer frame. The condition is inferred before the
+                // frame is pushed, so a break in the condition binds the
+                // enclosing loop instead.
                 let join_type = self.variable(VariableClass::Any)?;
                 self.loops.push(LoopFrame {
                     join_type: join_type.clone(),
@@ -1614,9 +1619,14 @@ impl<'a> TypeChecker<'a> {
         Ok(())
     }
 
-    /// Pops the seeded enclosing-loop frames, binding any join variable that
-    /// no `break` constrained to unit so the sweep below stays honest. A join
-    /// a `break` did bind keeps that binding; it is advisory and discarded.
+    /// Pops the seeded enclosing-loop frames, binding the join variable of
+    /// any frame no `break` touched to unit so the sweep below stays honest.
+    /// A frame some `break` constrained is left entirely alone (its break
+    /// count records that): even when its root binding is still `None`, a
+    /// break may have merged it with a numeric-class variable, and rebinding
+    /// it to unit would fabricate a class mismatch. Seeded joins are
+    /// advisory; the authoritative join binds when the whole body is
+    /// checked.
     fn settle_enclosing_loop_frames(&mut self) -> Result<(), TypeCheckError> {
         while let Some(frame) = self.loops.pop() {
             let InferType::Variable(variable) = &frame.join_type else {
@@ -1624,7 +1634,7 @@ impl<'a> TypeChecker<'a> {
             };
             let root = self.root(variable)?;
             let node = &self.variables[usize::try_from(root).expect("u32 fits usize")];
-            if node.binding.is_none() {
+            if frame.break_count == 0 && node.binding.is_none() {
                 self.unify(&frame.join_type, &InferType::Symbolic(SymbolicType::Unit))?;
             }
         }

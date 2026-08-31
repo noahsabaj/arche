@@ -10721,6 +10721,26 @@ mod tests {
                 "    0i32\n",
                 "}\n",
             ),
+            concat!(
+                "pub fn probe(flag: bool) -> i32 {\n",
+                "    loop {\n",
+                "        match flag {\n",
+                "            true => break 1,\n",
+                "            false => {}\n",
+                "        }\n",
+                "    }\n",
+                "}\n",
+            ),
+            concat!(
+                "pub fn probe(flag: bool) -> f64 {\n",
+                "    loop {\n",
+                "        match flag {\n",
+                "            true => break 1.0,\n",
+                "            false => {}\n",
+                "        }\n",
+                "    }\n",
+                "}\n",
+            ),
         ] {
             let handoff = C2Handoff::begin(inline_frontend(body)).unwrap();
             let declarations = DeclarationTable::build(&handoff).unwrap();
