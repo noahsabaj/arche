@@ -249,19 +249,14 @@ mod tests {
     }
 
     #[test]
-    fn real_v1_input_blocks_without_fabricating_a_source_rejection() {
+    fn real_v1_corpora_check_completely() {
+        // Both v1 corpora terminate as fully checked C2 workspaces.
         for corpus in ["language-game", "language-environment"] {
-            let failure = check_workspace_c2(corpus_frontend(corpus)).unwrap_err();
-            let C2CheckFailure::Blocked(blocked) = failure else {
-                panic!("{corpus} must remain an internal C2 authority blocker");
-            };
-            assert_eq!(blocked.stage(), C2BlockStage::DeclarationOrBodyAuthority);
-            assert!(blocked.declarations().is_some());
-            assert!(blocked.declaration_result().is_some());
-            assert!(blocked.body_result().is_some());
+            let checked = check_workspace_c2(corpus_frontend(corpus))
+                .unwrap_or_else(|failure| panic!("{corpus} must check completely: {failure:?}"));
+            assert!(checked.indexes().checked_type_count() > 0, "{corpus}");
         }
     }
-
     #[test]
     fn empty_target_mints_an_exact_terminal_workspace_and_retains_semantic_facts() {
         let checked = check_workspace_c2(empty_frontend()).unwrap();
