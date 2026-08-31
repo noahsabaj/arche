@@ -166,41 +166,14 @@ impl TypeCheckError {
     }
 }
 
-fn spell_unary_operator(operator: UnaryTypeOperator) -> &'static str {
-    match operator {
-        UnaryTypeOperator::Negate => "negate",
-        UnaryTypeOperator::LogicalNot => "logical-not",
-        UnaryTypeOperator::BitNot => "bit-not",
-    }
-}
-
-fn spell_binary_operator(operator: BinaryTypeOperator) -> &'static str {
-    match operator {
-        BinaryTypeOperator::LogicalOr => "logical-or",
-        BinaryTypeOperator::LogicalAnd => "logical-and",
-        BinaryTypeOperator::BitOr => "bit-or",
-        BinaryTypeOperator::BitXor => "bit-xor",
-        BinaryTypeOperator::BitAnd => "bit-and",
-        BinaryTypeOperator::Equal => "equal",
-        BinaryTypeOperator::NotEqual => "not-equal",
-        BinaryTypeOperator::Less => "less",
-        BinaryTypeOperator::LessEqual => "less-equal",
-        BinaryTypeOperator::Greater => "greater",
-        BinaryTypeOperator::GreaterEqual => "greater-equal",
-        BinaryTypeOperator::ShiftLeft => "shift-left",
-        BinaryTypeOperator::ShiftRight => "shift-right",
-        BinaryTypeOperator::Add => "add",
-        BinaryTypeOperator::Subtract => "subtract",
-        BinaryTypeOperator::Multiply => "multiply",
-        BinaryTypeOperator::Divide => "divide",
-        BinaryTypeOperator::Remainder => "remainder",
-    }
-}
-
 fn spell_primitive_operator(operator: PrimitiveExpressionOperator) -> &'static str {
     match operator {
-        PrimitiveExpressionOperator::Unary(operator) => spell_unary_operator(operator),
-        PrimitiveExpressionOperator::Binary(operator) => spell_binary_operator(operator),
+        PrimitiveExpressionOperator::Unary(operator) => {
+            crate::golden::spell_unary_operator(operator)
+        }
+        PrimitiveExpressionOperator::Binary(operator) => {
+            crate::golden::spell_binary_operator(operator)
+        }
         PrimitiveExpressionOperator::AddAssignment => "add-assignment",
     }
 }

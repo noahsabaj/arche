@@ -428,6 +428,34 @@ fn validate_types_with_local_lifetimes(
     Ok(())
 }
 
+impl std::fmt::Display for BinderValidationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingFrame { depth } => {
+                write!(formatter, "no binder frame exists at depth {depth}")
+            }
+            Self::MissingSlot { depth, index } => write!(
+                formatter,
+                "no binder slot exists at depth {depth} index {index}"
+            ),
+            Self::WrongKind {
+                depth,
+                index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "binder depth {depth} index {index} must be a {} binder, found {}",
+                crate::golden::generic_parameter_prose(expected),
+                crate::golden::generic_parameter_prose(actual)
+            ),
+            Self::ErasedLocalLifetime => {
+                formatter.write_str("the erased local lifetime cannot appear in this position")
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use arche_frontend::{IntegerType, Mutability, SymbolicLifetime};

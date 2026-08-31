@@ -1456,11 +1456,7 @@ impl Printer {
                 operand,
                 selection,
             } => self.field("unary", |printer| {
-                printer.atom(match operator {
-                    UnaryTypeOperator::Negate => "negate",
-                    UnaryTypeOperator::LogicalNot => "logical-not",
-                    UnaryTypeOperator::BitNot => "bit-not",
-                });
+                printer.atom(spell_unary_operator(*operator));
                 printer.primitive_selection(selection)?;
                 printer.checked_expression(operand)
             }),
@@ -1470,26 +1466,7 @@ impl Printer {
                 right,
                 selection,
             } => self.field("binary", |printer| {
-                printer.atom(match operator {
-                    BinaryTypeOperator::LogicalOr => "logical-or",
-                    BinaryTypeOperator::LogicalAnd => "logical-and",
-                    BinaryTypeOperator::BitOr => "bit-or",
-                    BinaryTypeOperator::BitXor => "bit-xor",
-                    BinaryTypeOperator::BitAnd => "bit-and",
-                    BinaryTypeOperator::Equal => "equal",
-                    BinaryTypeOperator::NotEqual => "not-equal",
-                    BinaryTypeOperator::Less => "less",
-                    BinaryTypeOperator::LessEqual => "less-equal",
-                    BinaryTypeOperator::Greater => "greater",
-                    BinaryTypeOperator::GreaterEqual => "greater-equal",
-                    BinaryTypeOperator::ShiftLeft => "shift-left",
-                    BinaryTypeOperator::ShiftRight => "shift-right",
-                    BinaryTypeOperator::Add => "add",
-                    BinaryTypeOperator::Subtract => "subtract",
-                    BinaryTypeOperator::Multiply => "multiply",
-                    BinaryTypeOperator::Divide => "divide",
-                    BinaryTypeOperator::Remainder => "remainder",
-                });
+                printer.atom(spell_binary_operator(*operator));
                 printer.primitive_selection(selection)?;
                 printer.checked_expression(left)?;
                 printer.checked_expression(right)
@@ -1620,6 +1597,48 @@ pub(crate) const fn compiler_trait_kind_atom(
         K::TryFrom => "TryFrom",
         K::Unpin => "Unpin",
         K::UnwindPayload => "UnwindPayload",
+    }
+}
+
+pub(crate) fn spell_unary_operator(operator: UnaryTypeOperator) -> &'static str {
+    match operator {
+        UnaryTypeOperator::Negate => "negate",
+        UnaryTypeOperator::LogicalNot => "logical-not",
+        UnaryTypeOperator::BitNot => "bit-not",
+    }
+}
+
+pub(crate) fn spell_binary_operator(operator: BinaryTypeOperator) -> &'static str {
+    match operator {
+        BinaryTypeOperator::LogicalOr => "logical-or",
+        BinaryTypeOperator::LogicalAnd => "logical-and",
+        BinaryTypeOperator::BitOr => "bit-or",
+        BinaryTypeOperator::BitXor => "bit-xor",
+        BinaryTypeOperator::BitAnd => "bit-and",
+        BinaryTypeOperator::Equal => "equal",
+        BinaryTypeOperator::NotEqual => "not-equal",
+        BinaryTypeOperator::Less => "less",
+        BinaryTypeOperator::LessEqual => "less-equal",
+        BinaryTypeOperator::Greater => "greater",
+        BinaryTypeOperator::GreaterEqual => "greater-equal",
+        BinaryTypeOperator::ShiftLeft => "shift-left",
+        BinaryTypeOperator::ShiftRight => "shift-right",
+        BinaryTypeOperator::Add => "add",
+        BinaryTypeOperator::Subtract => "subtract",
+        BinaryTypeOperator::Multiply => "multiply",
+        BinaryTypeOperator::Divide => "divide",
+        BinaryTypeOperator::Remainder => "remainder",
+    }
+}
+
+/// Canonical prose for a generic-parameter kind in diagnostic text.
+pub(crate) fn generic_parameter_prose(kind: &GenericParameterKind) -> String {
+    match kind {
+        GenericParameterKind::Type => "type".to_owned(),
+        GenericParameterKind::Lifetime => "lifetime".to_owned(),
+        GenericParameterKind::IntegerConst(integer) => {
+            format!("const {}", integer_type_atom(*integer))
+        }
     }
 }
 

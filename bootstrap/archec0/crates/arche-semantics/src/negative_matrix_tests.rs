@@ -96,6 +96,15 @@ fn assert_terminal_rejection_sequence(
             diagnostic.primary.message, case.message,
             "{fixture} primary label"
         );
+        assert!(
+            diagnostic.secondary.is_empty(),
+            "{fixture} secondary labels"
+        );
+        assert!(diagnostic.notes.is_empty(), "{fixture} notes");
+        assert!(
+            semantic.secondary_paths().is_empty(),
+            "{fixture} secondary paths"
+        );
     }
 }
 
@@ -621,6 +630,18 @@ fn frozen_corpus_bytes_agree_across_git_surfaces() {
 
     let fresh = std::env::temp_dir().join(format!("arche-corpus-freeze-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&fresh);
+    struct FreshWorktree {
+        toplevel: PathBuf,
+        path: PathBuf,
+    }
+    impl Drop for FreshWorktree {
+        fn drop(&mut self) {
+            let _ = Command::new("git")
+                .args(["worktree", "remove", "--force", self.path.to_str().unwrap()])
+                .current_dir(&self.toplevel)
+                .output();
+        }
+    }
     git(&[
         "worktree",
         "add",
@@ -628,6 +649,10 @@ fn frozen_corpus_bytes_agree_across_git_surfaces() {
         fresh.to_str().unwrap(),
         "HEAD",
     ]);
+    let _cleanup = FreshWorktree {
+        toplevel: toplevel.clone(),
+        path: fresh.clone(),
+    };
     for (path, _) in &head_rows {
         let fresh_bytes = std::fs::read(fresh.join(path))
             .unwrap_or_else(|error| panic!("{path} must exist in a fresh checkout: {error}"));
@@ -637,5 +662,4 @@ fn frozen_corpus_bytes_agree_across_git_surfaces() {
             "{path} bytes differ in a fresh detached checkout"
         );
     }
-    git(&["worktree", "remove", "--force", fresh.to_str().unwrap()]);
 }

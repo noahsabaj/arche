@@ -6103,7 +6103,14 @@ impl BodyChecker<'_, '_, '_> {
                 element.as_ref().clone()
             }
             actual => {
-                self.source_error(span, "TYPE002", format!("cannot index type {actual:?}"));
+                self.source_error(
+                    span,
+                    "TYPE002",
+                    format!(
+                        "cannot index type {}",
+                        crate::golden::spell_symbolic_type(actual)
+                    ),
+                );
                 return None;
             }
         };
@@ -6197,7 +6204,10 @@ impl BodyChecker<'_, '_, '_> {
                         self.source_error(
                             span,
                             "TYPE002",
-                            format!("cannot dereference non-pointer type {actual:?}"),
+                            format!(
+                                "cannot dereference non-pointer type {}",
+                                crate::golden::spell_symbolic_type(actual)
+                            ),
                         );
                         return None;
                     }

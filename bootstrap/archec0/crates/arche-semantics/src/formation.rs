@@ -585,6 +585,40 @@ fn substitute_effect_set(
     )
 }
 
+impl std::fmt::Display for GenericFormationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Arity { expected, actual } => write!(
+                formatter,
+                "generic arity mismatch: expected {expected} arguments, found {actual}"
+            ),
+            Self::WrongArgumentKind {
+                index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "generic argument {index} must be a {} argument, found {}",
+                crate::golden::generic_parameter_prose(expected),
+                crate::golden::generic_parameter_prose(actual)
+            ),
+            Self::MissingSubstitution { depth, index } => write!(
+                formatter,
+                "no substitution binds coordinate depth {depth} index {index}"
+            ),
+            Self::WrongSubstitutionUse {
+                depth,
+                index,
+                expected,
+            } => write!(
+                formatter,
+                "coordinate depth {depth} index {index} is not usable as a {} argument",
+                crate::golden::generic_parameter_prose(expected)
+            ),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use arche_frontend::{IntegerType, SymbolicLifetime};
