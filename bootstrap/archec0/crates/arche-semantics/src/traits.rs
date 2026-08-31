@@ -928,7 +928,38 @@ pub enum TraitModelError {
 
 impl fmt::Display for TraitModelError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "invalid C2 trait model: {self:?}")
+        match self {
+            Self::ExpectedTraitDeclaration => {
+                formatter.write_str("the declaration is not a trait")
+            }
+            Self::EmptySemanticDefinitionKey => {
+                formatter.write_str("the semantic definition key is empty")
+            }
+            Self::WrongCompilerTraitArity {
+                trait_kind,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "compiler trait {} requires exactly {expected} explicit type arguments, found {actual}",
+                crate::golden::compiler_trait_kind_atom(*trait_kind)
+            ),
+            Self::NonTypeCompilerTraitArgument { trait_kind, index } => write!(
+                formatter,
+                "compiler trait {} argument {index} must be a type argument",
+                crate::golden::compiler_trait_kind_atom(*trait_kind)
+            ),
+            Self::CompilerTraitDesignatedSelfMismatch(trait_kind) => write!(
+                formatter,
+                "compiler trait {} designated-Self relation does not hold",
+                crate::golden::compiler_trait_kind_atom(*trait_kind)
+            ),
+            Self::DuplicateEnvironmentPredicate => {
+                formatter.write_str("the predicate environment contains a duplicate")
+            }
+            Self::LengthOverflow => formatter.write_str("a canonical length exceeds u64"),
+            Self::ShapeEncoding(error) => write!(formatter, "shape encoding failed: {error}"),
+        }
     }
 }
 

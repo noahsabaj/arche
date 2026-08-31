@@ -1588,7 +1588,7 @@ fn validate_checked_shape(
             return Err("post-C2 declaration retains a pending predicate".to_owned());
         };
         validate_symbolic_predicate(value, binders)
-            .map_err(|error| format!("invalid bound coordinate in predicate: {error:?}"))?;
+            .map_err(|error| format!("invalid bound coordinate in predicate: {error}"))?;
         validate_predicate_formation(value, catalog)?;
     }
     match &shape.payload {
@@ -1700,7 +1700,7 @@ fn validate_effects(
             return Err("post-C2 declaration retains a pending effect member".to_owned());
         };
         validate_symbolic_type(value, binders)
-            .map_err(|error| format!("invalid bound coordinate in effect member: {error:?}"))?;
+            .map_err(|error| format!("invalid bound coordinate in effect member: {error}"))?;
         validate_type_formation(value, catalog)?;
     }
     Ok(())
@@ -1715,7 +1715,7 @@ fn validate_type_shape(
         return Err("post-C2 declaration retains a pending type".to_owned());
     };
     validate_symbolic_type(value, binders)
-        .map_err(|error| format!("invalid bound coordinate in type: {error:?}"))?;
+        .map_err(|error| format!("invalid bound coordinate in type: {error}"))?;
     validate_type_formation(value, catalog)
 }
 
@@ -1873,7 +1873,7 @@ fn validate_declaration_arguments(
     if let Some(row) = catalog.rows.get(declaration) {
         validate_generic_arguments(&row.source_formals, arguments).map_err(|error| {
             format!(
-                "generic formation for {} does not match its exact declaration formals: {error:?}",
+                "generic formation for {} does not match its exact declaration formals: {error}",
                 declaration.name
             )
         })?;
@@ -2195,7 +2195,7 @@ fn describe_impl(
                 push_diagnostic(
                     input,
                     "IDENTITY001",
-                    format!("could not construct ordinary semantic trait key: {error:?}"),
+                    format!("could not construct ordinary semantic trait key: {error}"),
                     input.definition.key.span,
                     diagnostics,
                 );
@@ -2234,7 +2234,7 @@ fn describe_impl(
             push_diagnostic(
                 input,
                 "TRAIT001",
-                format!("trait impl designated-Self or generic formation is invalid: {error:?}"),
+                format!("trait impl designated-Self or generic formation is invalid: {error}"),
                 input.definition.key.span,
                 diagnostics,
             );
@@ -2297,7 +2297,7 @@ fn semantic_environment(
             push_diagnostic(
                 input,
                 "TRAIT001",
-                format!("impl predicate set is not canonical: {error:?}"),
+                format!("impl predicate set is not canonical: {error}"),
                 input.definition.key.span,
                 diagnostics,
             );
@@ -2325,7 +2325,7 @@ fn semantic_predicate(
                         push_diagnostic(
                             input,
                             "IDENTITY001",
-                            format!("invalid ordinary trait predicate key: {error:?}"),
+                            format!("invalid ordinary trait predicate key: {error}"),
                             input.definition.key.span,
                             diagnostics,
                         );
@@ -2350,7 +2350,7 @@ fn semantic_predicate(
                     push_diagnostic(
                         input,
                         "TRAIT001",
-                        format!("trait predicate designated-Self is invalid: {error:?}"),
+                        format!("trait predicate designated-Self is invalid: {error}"),
                         input.definition.key.span,
                         diagnostics,
                     );
@@ -2363,7 +2363,7 @@ fn semantic_predicate(
                     push_diagnostic(
                         input,
                         "IDENTITY001",
-                        format!("invalid lifetime predicate encoding: {error:?}"),
+                        format!("invalid lifetime predicate encoding: {error}"),
                         input.definition.key.span,
                         diagnostics,
                     );
@@ -2376,7 +2376,7 @@ fn semantic_predicate(
                     push_diagnostic(
                         input,
                         "IDENTITY001",
-                        format!("invalid type-outlives predicate encoding: {error:?}"),
+                        format!("invalid type-outlives predicate encoding: {error}"),
                         input.definition.key.span,
                         diagnostics,
                     );
@@ -4722,7 +4722,7 @@ fn validate_ordinary_trait_impl(
             push_diagnostic(
                 input,
                 "IDENTITY001",
-                format!("could not lift trait impl arguments into the method frame: {error:?}"),
+                format!("could not lift trait impl arguments into the method frame: {error}"),
                 input.definition.key.span,
                 diagnostics,
             );
@@ -4735,7 +4735,7 @@ fn validate_ordinary_trait_impl(
             push_diagnostic(
                 input,
                 "IDENTITY001",
-                format!("could not lift trait impl target into the method frame: {error:?}"),
+                format!("could not lift trait impl target into the method frame: {error}"),
                 input.definition.key.span,
                 diagnostics,
             );
@@ -4752,7 +4752,7 @@ fn validate_ordinary_trait_impl(
             push_diagnostic(
                 input,
                 "TRAIT001",
-                format!("trait impl explicit arguments do not match trait binders: {error:?}"),
+                format!("trait impl explicit arguments do not match trait binders: {error}"),
                 input.definition.key.span,
                 diagnostics,
             );
@@ -4781,7 +4781,17 @@ fn validate_ordinary_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "trait impl method-name set does not exactly match the trait; missing={missing:?}, extra={extra:?}"
+                "trait impl method-name set does not exactly match the trait; missing=[{}], extra=[{}]",
+                missing
+                    .iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                extra
+                    .iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             input.definition.key.span,
             diagnostics,
@@ -4797,7 +4807,7 @@ fn validate_ordinary_trait_impl(
                 push_diagnostic(
                     input,
                     "IDENTITY001",
-                    format!("could not substitute trait method {name}: {error:?}"),
+                    format!("could not substitute trait method {name}: {error}"),
                     input.definition.key.span,
                     diagnostics,
                 );
@@ -4927,7 +4937,7 @@ fn canonical_predicates(
         };
         encoded.push(
             encode_symbolic_predicate(value)
-                .map_err(|error| format!("predicate encoding failed: {error:?}"))?,
+                .map_err(|error| format!("predicate encoding failed: {error}"))?,
         );
     }
     encoded.sort();
@@ -4946,7 +4956,7 @@ fn effect_subset(
                     return Err("effect member remains PendingC2".to_owned());
                 };
                 encode_symbolic_type(value)
-                    .map_err(|error| format!("effect type encoding failed: {error:?}"))
+                    .map_err(|error| format!("effect type encoding failed: {error}"))
             })
             .collect()
     };
@@ -5224,8 +5234,8 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} requires exactly {} explicit type arguments",
-                authority.kind(),
+                "compiler trait {} requires exactly {} explicit type arguments",
+                crate::golden::compiler_trait_kind_atom(authority.kind()),
                 authority.explicit_generic_arity()
             ),
             input.definition.key.span,
@@ -5253,8 +5263,8 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} designated-Self relation does not equal the impl target",
-                authority.kind()
+                "compiler trait {} designated-Self relation does not equal the impl target",
+                crate::golden::compiler_trait_kind_atom(authority.kind())
             ),
             input.definition.key.span,
             diagnostics,
@@ -5266,8 +5276,8 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} does not permit an ordinary user impl",
-                authority.kind()
+                "compiler trait {} does not permit an ordinary user impl",
+                crate::golden::compiler_trait_kind_atom(authority.kind())
             ),
             input.definition.key.span,
             diagnostics,
@@ -5289,10 +5299,18 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} requires exact method set {:?}, found {:?}",
-                authority.kind(),
-                expected_names,
+                "compiler trait {} requires exact method set [{}], found [{}]",
+                crate::golden::compiler_trait_kind_atom(authority.kind()),
+                expected_names
+                    .iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 actual_names
+                    .iter()
+                    .map(|name| format!("\"{name}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ")
             ),
             input.definition.key.span,
             diagnostics,
@@ -5411,8 +5429,8 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} method receiver does not match its exact designated-Self mode",
-                authority.kind()
+                "compiler trait {} method receiver does not match its exact designated-Self mode",
+                crate::golden::compiler_trait_kind_atom(authority.kind())
             ),
             input.definition.key.span,
             diagnostics,
@@ -5443,8 +5461,8 @@ fn validate_compiler_trait_impl(
             input,
             "TRAIT001",
             format!(
-                "compiler trait {:?} method parameter/result signature does not match typed Embedded Core",
-                authority.kind()
+                "compiler trait {} method parameter/result signature does not match typed Embedded Core",
+                crate::golden::compiler_trait_kind_atom(authority.kind())
             ),
             input.definition.key.span,
             diagnostics,

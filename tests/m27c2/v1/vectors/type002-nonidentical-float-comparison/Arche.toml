@@ -1,0 +1,11 @@
+schema = 1
+
+[package]
+name = "fixtures/m27c2-negative-type002-nonidentical-float-comparison"
+version = "0.1.0"
+edition = "2026"
+arche = ">=0.0.0"
+publish = false
+
+[lib]
+path = "src/lib.arc"

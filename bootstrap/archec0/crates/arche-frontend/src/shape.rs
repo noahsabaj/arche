@@ -827,7 +827,19 @@ impl fmt::Display for ShapeEncodingError {
                 actual,
             } => write!(
                 formatter,
-                "{integer_type:?} literal requires {} bytes, found {actual}",
+                "{} literal requires {} bytes, found {actual}",
+                match integer_type {
+                    IntegerType::I8 => "i8",
+                    IntegerType::I16 => "i16",
+                    IntegerType::I32 => "i32",
+                    IntegerType::I64 => "i64",
+                    IntegerType::U8 => "u8",
+                    IntegerType::U16 => "u16",
+                    IntegerType::U32 => "u32",
+                    IntegerType::U64 => "u64",
+                    IntegerType::Isize => "isize",
+                    IntegerType::Usize => "usize",
+                },
                 integer_type.byte_width()
             ),
             Self::DuplicateEffect => formatter.write_str("duplicate symbolic effect atom"),

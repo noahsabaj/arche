@@ -4326,7 +4326,11 @@ impl BodyChecker<'_, '_, '_> {
                 self.source_error(
                     *argument_span,
                     "TYPE002",
-                    format!("expected {parameter:?}, found {actual:?}"),
+                    format!(
+                        "expected {}, found {}",
+                        crate::golden::spell_symbolic_type(parameter),
+                        crate::golden::spell_symbolic_type(actual)
+                    ),
                 );
             }
         }
@@ -6099,7 +6103,14 @@ impl BodyChecker<'_, '_, '_> {
                 element.as_ref().clone()
             }
             actual => {
-                self.source_error(span, "TYPE002", format!("cannot index type {actual:?}"));
+                self.source_error(
+                    span,
+                    "TYPE002",
+                    format!(
+                        "cannot index type {}",
+                        crate::golden::spell_symbolic_type(actual)
+                    ),
+                );
                 return None;
             }
         };
@@ -6193,7 +6204,10 @@ impl BodyChecker<'_, '_, '_> {
                         self.source_error(
                             span,
                             "TYPE002",
-                            format!("cannot dereference non-pointer type {actual:?}"),
+                            format!(
+                                "cannot dereference non-pointer type {}",
+                                crate::golden::spell_symbolic_type(actual)
+                            ),
                         );
                         return None;
                     }
@@ -6241,8 +6255,9 @@ impl BodyChecker<'_, '_, '_> {
                 span,
                 "TYPE002",
                 format!(
-                    "`as` supports only raw-pointer/address reconstruction, not {:?} to {target:?}",
-                    checked.ty()
+                    "`as` supports only raw-pointer/address reconstruction, not {} to {}",
+                    crate::golden::spell_symbolic_type(checked.ty()),
+                    crate::golden::spell_symbolic_type(&target)
                 ),
             );
             return None;
@@ -6422,8 +6437,9 @@ impl BodyChecker<'_, '_, '_> {
                         span,
                         "TYPE002",
                         format!(
-                            "{:?} declaration `{}` is not a value",
-                            entry.definition.key.kind, entry.definition.key.name
+                            "{} declaration `{}` is not a value",
+                            declaration_kind_atom(entry.definition.key.kind),
+                            entry.definition.key.name
                         ),
                     );
                     None
@@ -7266,7 +7282,11 @@ impl BodyChecker<'_, '_, '_> {
                         self.source_error(
                             operand.span,
                             "TYPE002",
-                            format!("expected {expected_ty:?}, found {operand_ty:?}"),
+                            format!(
+                                "expected {}, found {}",
+                                crate::golden::spell_symbolic_type(expected_ty),
+                                crate::golden::spell_symbolic_type(operand_ty)
+                            ),
                         );
                         complete = false;
                     }
@@ -9834,7 +9854,7 @@ mod tests {
         assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
         let diagnostic = diagnostics[0].diagnostic();
         assert_eq!(diagnostic.code, "TYPE002");
-        assert_eq!(diagnostic.message, "expected I32, found Bool");
+        assert_eq!(diagnostic.message, "expected i32, found bool");
         assert_eq!(
             diagnostic
                 .primary
@@ -10938,7 +10958,7 @@ mod tests {
             failure.incompleteness()
         );
         assert!(
-            diagnostics.contains("expected Char, found I32"),
+            diagnostics.contains("expected char, found i32"),
             "diagnostics={diagnostics}"
         );
     }
@@ -11380,7 +11400,7 @@ mod tests {
         let failure = check_workspace_bodies_c2(&handoff, &declarations, &checked).unwrap_err();
         let diagnostics = format!("{:?}", failure.diagnostics());
         assert!(
-            diagnostics.contains("TYPE002") && diagnostics.contains("expected Bool, found I32"),
+            diagnostics.contains("TYPE002") && diagnostics.contains("expected bool, found i32"),
             "diagnostics={diagnostics} incompleteness={:?}",
             failure.incompleteness()
         );

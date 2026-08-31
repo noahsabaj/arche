@@ -1456,11 +1456,7 @@ impl Printer {
                 operand,
                 selection,
             } => self.field("unary", |printer| {
-                printer.atom(match operator {
-                    UnaryTypeOperator::Negate => "negate",
-                    UnaryTypeOperator::LogicalNot => "logical-not",
-                    UnaryTypeOperator::BitNot => "bit-not",
-                });
+                printer.atom(spell_unary_operator(*operator));
                 printer.primitive_selection(selection)?;
                 printer.checked_expression(operand)
             }),
@@ -1470,26 +1466,7 @@ impl Printer {
                 right,
                 selection,
             } => self.field("binary", |printer| {
-                printer.atom(match operator {
-                    BinaryTypeOperator::LogicalOr => "logical-or",
-                    BinaryTypeOperator::LogicalAnd => "logical-and",
-                    BinaryTypeOperator::BitOr => "bit-or",
-                    BinaryTypeOperator::BitXor => "bit-xor",
-                    BinaryTypeOperator::BitAnd => "bit-and",
-                    BinaryTypeOperator::Equal => "equal",
-                    BinaryTypeOperator::NotEqual => "not-equal",
-                    BinaryTypeOperator::Less => "less",
-                    BinaryTypeOperator::LessEqual => "less-equal",
-                    BinaryTypeOperator::Greater => "greater",
-                    BinaryTypeOperator::GreaterEqual => "greater-equal",
-                    BinaryTypeOperator::ShiftLeft => "shift-left",
-                    BinaryTypeOperator::ShiftRight => "shift-right",
-                    BinaryTypeOperator::Add => "add",
-                    BinaryTypeOperator::Subtract => "subtract",
-                    BinaryTypeOperator::Multiply => "multiply",
-                    BinaryTypeOperator::Divide => "divide",
-                    BinaryTypeOperator::Remainder => "remainder",
-                });
+                printer.atom(spell_binary_operator(*operator));
                 printer.primitive_selection(selection)?;
                 printer.checked_expression(left)?;
                 printer.checked_expression(right)
@@ -1571,6 +1548,97 @@ impl Printer {
                 Ok(())
             }
         })
+    }
+}
+
+/// Infallible canonical spelling of a symbolic type for diagnostic text.
+pub(crate) fn spell_symbolic_type(ty: &SymbolicType) -> String {
+    let mut printer = Printer::new("");
+    printer
+        .symbolic_type(ty)
+        .expect("the symbolic type printer is total");
+    printer.output.split_off(1).trim_start().to_owned()
+}
+
+/// Canonical spelling of a compiler trait kind for diagnostic text.
+pub(crate) const fn compiler_trait_kind_atom(
+    kind: arche_frontend::embedded_core::CompilerTraitKind,
+) -> &'static str {
+    use arche_frontend::embedded_core::CompilerTraitKind as K;
+    match kind {
+        K::Add => "Add",
+        K::BitAnd => "BitAnd",
+        K::BitNot => "BitNot",
+        K::BitOr => "BitOr",
+        K::BitXor => "BitXor",
+        K::Clone => "Clone",
+        K::Copy => "Copy",
+        K::Div => "Div",
+        K::Drop => "Drop",
+        K::EcsKey => "EcsKey",
+        K::EcsValue => "EcsValue",
+        K::Eq => "Eq",
+        K::Fn => "Fn",
+        K::FnMut => "FnMut",
+        K::FnOnce => "FnOnce",
+        K::From => "From",
+        K::IntoIterator => "IntoIterator",
+        K::Iterator => "Iterator",
+        K::LogicalNot => "LogicalNot",
+        K::Mul => "Mul",
+        K::Neg => "Neg",
+        K::Ord => "Ord",
+        K::Rem => "Rem",
+        K::Send => "Send",
+        K::ShiftLeft => "ShiftLeft",
+        K::ShiftRight => "ShiftRight",
+        K::Sub => "Sub",
+        K::Sync => "Sync",
+        K::TryFrom => "TryFrom",
+        K::Unpin => "Unpin",
+        K::UnwindPayload => "UnwindPayload",
+    }
+}
+
+pub(crate) fn spell_unary_operator(operator: UnaryTypeOperator) -> &'static str {
+    match operator {
+        UnaryTypeOperator::Negate => "negate",
+        UnaryTypeOperator::LogicalNot => "logical-not",
+        UnaryTypeOperator::BitNot => "bit-not",
+    }
+}
+
+pub(crate) fn spell_binary_operator(operator: BinaryTypeOperator) -> &'static str {
+    match operator {
+        BinaryTypeOperator::LogicalOr => "logical-or",
+        BinaryTypeOperator::LogicalAnd => "logical-and",
+        BinaryTypeOperator::BitOr => "bit-or",
+        BinaryTypeOperator::BitXor => "bit-xor",
+        BinaryTypeOperator::BitAnd => "bit-and",
+        BinaryTypeOperator::Equal => "equal",
+        BinaryTypeOperator::NotEqual => "not-equal",
+        BinaryTypeOperator::Less => "less",
+        BinaryTypeOperator::LessEqual => "less-equal",
+        BinaryTypeOperator::Greater => "greater",
+        BinaryTypeOperator::GreaterEqual => "greater-equal",
+        BinaryTypeOperator::ShiftLeft => "shift-left",
+        BinaryTypeOperator::ShiftRight => "shift-right",
+        BinaryTypeOperator::Add => "add",
+        BinaryTypeOperator::Subtract => "subtract",
+        BinaryTypeOperator::Multiply => "multiply",
+        BinaryTypeOperator::Divide => "divide",
+        BinaryTypeOperator::Remainder => "remainder",
+    }
+}
+
+/// Canonical prose for a generic-parameter kind in diagnostic text.
+pub(crate) fn generic_parameter_prose(kind: &GenericParameterKind) -> String {
+    match kind {
+        GenericParameterKind::Type => "type".to_owned(),
+        GenericParameterKind::Lifetime => "lifetime".to_owned(),
+        GenericParameterKind::IntegerConst(integer) => {
+            format!("const {}", integer_type_atom(*integer))
+        }
     }
 }
 
