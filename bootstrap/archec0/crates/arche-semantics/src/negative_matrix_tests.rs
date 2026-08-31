@@ -20,6 +20,85 @@ struct ExpectedCase {
     end_column: u64,
 }
 
+#[derive(Clone, Copy)]
+struct ExpectedDiagnostic {
+    code: &'static str,
+    message: &'static str,
+    start_byte: u64,
+    start_line: u64,
+    start_column: u64,
+    end_byte: u64,
+    end_line: u64,
+    end_column: u64,
+}
+
+fn assert_terminal_rejection_sequence(
+    fixture: &'static str,
+    package: &'static str,
+    phase: CompilationPhase,
+    expected: &[ExpectedDiagnostic],
+) {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../../tests/m27c2/v1/negative")
+        .join(fixture);
+    let workspace = load_workspace(&ManifestRequest::discover_from(&root))
+        .unwrap_or_else(|error| panic!("{fixture} must load as a standalone package: {error}"));
+    let graph = resolve(&workspace, &RegistrySnapshot::empty())
+        .unwrap_or_else(|error| panic!("{fixture} must resolve without a registry: {error}"));
+    let frontend = check_workspace_c1(&workspace, &graph, &[])
+        .unwrap_or_else(|error| panic!("{fixture} must reach the C2 boundary: {error}"));
+    let rejected = match check_workspace_c2(frontend) {
+        Err(C2CheckFailure::Rejected(rejected)) => rejected,
+        other => panic!("{fixture} must terminate as a source rejection: {other:#?}"),
+    };
+    let diagnostics = rejected.diagnostics().as_slice();
+    assert_eq!(
+        diagnostics.len(),
+        expected.len(),
+        "{fixture} diagnostic count: {diagnostics:#?}"
+    );
+    for (semantic, case) in diagnostics.iter().zip(expected) {
+        assert_eq!(semantic.phase(), phase, "{fixture} phase");
+        assert_eq!(
+            semantic.package().as_bytes(),
+            package.as_bytes(),
+            "{fixture} package scope"
+        );
+        assert_eq!(semantic.target(), TargetId(0), "{fixture} target");
+        assert_eq!(semantic.path().as_str(), "src/lib.arc", "{fixture} path");
+        let diagnostic = semantic.diagnostic();
+        assert_eq!(
+            diagnostic.code, case.code,
+            "{fixture} code in {diagnostic:#?}"
+        );
+        assert_eq!(
+            diagnostic.message, case.message,
+            "{fixture} message in {diagnostic:#?}"
+        );
+        assert_eq!(
+            diagnostic.primary.span,
+            Some(Span {
+                file: FileId(0),
+                start: SourcePosition {
+                    byte: case.start_byte,
+                    line: case.start_line,
+                    column: case.start_column,
+                },
+                end: SourcePosition {
+                    byte: case.end_byte,
+                    line: case.end_line,
+                    column: case.end_column,
+                },
+            }),
+            "{fixture} primary span"
+        );
+        assert_eq!(
+            diagnostic.primary.message, case.message,
+            "{fixture} primary label"
+        );
+    }
+}
+
 fn assert_terminal_rejection(case: ExpectedCase) {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../../tests/m27c2/v1/negative")
@@ -280,5 +359,187 @@ fn type002_reference_address_cast_is_a_terminal_c2_rejection() {
         end_byte: 84,
         end_line: 3,
         end_column: 23,
+    });
+}
+
+#[test]
+fn type002_map_remove_owned_key_is_a_terminal_c2_rejection() {
+    assert_terminal_rejection(ExpectedCase {
+        fixture: "type002-map-remove-owned-key",
+        package: "fixtures/m27c2-negative-type002-map-remove-owned-key",
+        phase: CompilationPhase::BodyCallOperatorPattern,
+        code: "TYPE002",
+        message:
+            "expected (reference shared erased-local (bound-type 0 0)), found (bound-type 0 0)",
+        start_byte: 98,
+        start_line: 3,
+        start_column: 16,
+        end_byte: 101,
+        end_line: 3,
+        end_column: 19,
+    });
+}
+
+#[test]
+fn type003_u8_overflow_literal_is_a_terminal_c2_rejection() {
+    assert_terminal_rejection(ExpectedCase {
+        fixture: "type003-u8-overflow-literal",
+        package: "fixtures/m27c2-negative-type003-u8-overflow-literal",
+        phase: CompilationPhase::BodyCallOperatorPattern,
+        code: "TYPE003",
+        message: "invalid integer literal: the positive value is out of range for u8",
+        start_byte: 24,
+        start_line: 1,
+        start_column: 25,
+        end_byte: 37,
+        end_line: 3,
+        end_column: 2,
+    });
+}
+
+#[test]
+fn pattern002_nonexhaustive_match_is_a_terminal_c2_rejection() {
+    assert_terminal_rejection(ExpectedCase {
+        fixture: "pattern002-nonexhaustive-match",
+        package: "fixtures/m27c2-negative-pattern002-nonexhaustive-match",
+        phase: CompilationPhase::BodyCallOperatorPattern,
+        code: "PATTERN002",
+        message: "match is not exhaustive",
+        start_byte: 87,
+        start_line: 6,
+        start_column: 11,
+        end_byte: 91,
+        end_line: 6,
+        end_column: 15,
+    });
+}
+
+#[test]
+fn coherence001_orphan_impl_is_a_terminal_c2_rejection() {
+    assert_terminal_rejection(ExpectedCase {
+        fixture: "coherence001-orphan-impl",
+        package: "fixtures/m27c2-negative-coherence001-orphan-impl",
+        phase: CompilationPhase::DeclarationTypeTraitCoherence,
+        code: "COHERENCE001",
+        message: "impl of `Clone` violates the orphan rule: the package owns neither the trait nor the outermost nominal target",
+        start_byte: 0,
+        start_line: 1,
+        start_column: 1,
+        end_byte: 71,
+        end_line: 5,
+        end_column: 2,
+    });
+}
+
+#[test]
+fn coherence002_nondefault_overlap_is_a_terminal_c2_rejection() {
+    assert_terminal_rejection_sequence(
+        "coherence002-nondefault-overlap",
+        "fixtures/m27c2-negative-coherence002-nondefault-overlap",
+        CompilationPhase::DeclarationTypeTraitCoherence,
+        &[
+            ExpectedDiagnostic {
+                code: "COHERENCE002",
+                message: "impls of `One` have overlapping match sets and neither is a default specialization parent",
+                start_byte: 82,
+                start_line: 7,
+                start_column: 1,
+                end_byte: 151,
+                end_line: 11,
+                end_column: 2,
+            },
+            ExpectedDiagnostic {
+                code: "COHERENCE002",
+                message: "impls of `One` have overlapping match sets and neither is a default specialization parent",
+                start_byte: 152,
+                start_line: 12,
+                start_column: 1,
+                end_byte: 221,
+                end_line: 16,
+                end_column: 2,
+            },
+        ],
+    );
+}
+
+#[test]
+fn trait001_duplicate_inherent_method_is_a_terminal_c2_rejection() {
+    assert_terminal_rejection_sequence(
+        "trait001-duplicate-inherent-method",
+        "fixtures/m27c2-negative-trait001-duplicate-inherent-method",
+        CompilationPhase::DeclarationTypeTraitCoherence,
+        &[
+            ExpectedDiagnostic {
+                code: "TRAIT001",
+                message: "inherent method `value` is declared more than once under one byte-identical canonical impl head",
+                start_byte: 38,
+                start_line: 4,
+                start_column: 1,
+                end_byte: 107,
+                end_line: 8,
+                end_column: 2,
+            },
+            ExpectedDiagnostic {
+                code: "TRAIT001",
+                message: "inherent method `value` is declared more than once under one byte-identical canonical impl head",
+                start_byte: 108,
+                start_line: 9,
+                start_column: 1,
+                end_byte: 177,
+                end_line: 13,
+                end_column: 2,
+            },
+        ],
+    );
+}
+
+#[test]
+fn type001_direct_sized_recursion_is_a_terminal_c2_rejection() {
+    assert_terminal_rejection(ExpectedCase {
+        fixture: "type001-direct-sized-recursion",
+        package: "fixtures/m27c2-negative-type001-direct-sized-recursion",
+        phase: CompilationPhase::DeclarationTypeTraitCoherence,
+        code: "TYPE001",
+        message: "`Nest` participates in a direct recursive storage cycle with no approved sized indirection",
+        start_byte: 4,
+        start_line: 1,
+        start_column: 5,
+        end_byte: 40,
+        end_line: 3,
+        end_column: 2,
+    });
+}
+
+#[test]
+fn type002_nonidentical_float_comparison_is_a_terminal_c2_rejection() {
+    assert_terminal_rejection(ExpectedCase {
+        fixture: "type002-nonidentical-float-comparison",
+        package: "fixtures/m27c2-negative-type002-nonidentical-float-comparison",
+        phase: CompilationPhase::BodyCallOperatorPattern,
+        code: "TYPE002",
+        message: "expected f32, found f64",
+        start_byte: 46,
+        start_line: 1,
+        start_column: 47,
+        end_byte: 67,
+        end_line: 3,
+        end_column: 2,
+    });
+}
+
+#[test]
+fn trait002_map_float_key_is_a_terminal_c2_rejection() {
+    assert_terminal_rejection(ExpectedCase {
+        fixture: "trait002-map-float-key",
+        package: "fixtures/m27c2-negative-trait002-map-float-key",
+        phase: CompilationPhase::DeclarationTypeTraitCoherence,
+        code: "TRAIT002",
+        message: "float map keys are categorically ineligible: exact same-type float comparison is a syntax-only primitive exception and furnishes no Eq/Ord selection",
+        start_byte: 4,
+        start_line: 1,
+        start_column: 5,
+        end_byte: 51,
+        end_line: 3,
+        end_column: 2,
     });
 }
