@@ -913,6 +913,22 @@ enum ConstructorSelection {
     EmbeddedVariant(VirtualEnumVariantId),
 }
 
+/// The source form of an enclosing loop, deciding which `break` operands it
+/// accepts: `loop` joins break values, while `while` and `for` accept only a
+/// bare `break` and have type `()`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SourceLoopKind {
+    Loop,
+    While,
+    For,
+}
+
+impl SourceLoopKind {
+    const fn accepts_break_value(self) -> bool {
+        matches!(self, Self::Loop)
+    }
+}
+
 struct BodyChecker<'catalog, 'hir, 'locals> {
     catalog: &'catalog BodyCatalog<'hir>,
     scope: &'catalog BodyScope<'hir>,
@@ -929,7 +945,7 @@ struct BodyChecker<'catalog, 'hir, 'locals> {
     pending_c4: Vec<PendingC4Dependency>,
     diagnostics: Vec<SemanticDiagnostic>,
     gaps: Vec<BodyCheckIncompleteness>,
-    source_loop_depth: usize,
+    source_loops: Vec<SourceLoopKind>,
     unsafe_depth: usize,
     generator_resume_type: Option<SymbolicType>,
     generator_yield_type: Option<SymbolicType>,
@@ -965,7 +981,7 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
             pending_c4: Vec::new(),
             diagnostics: Vec::new(),
             gaps: Vec::new(),
-            source_loop_depth: 0,
+            source_loops: Vec::new(),
             unsafe_depth,
             generator_resume_type: None,
             generator_yield_type: None,
@@ -2266,14 +2282,6 @@ impl BodyChecker<'_, '_, '_> {
                         return self.materialize(lowered, None, span);
                     }
                 }
-                if matches!(error.kind(), TypeCheckErrorKind::BreakOutsideLoop) {
-                    self.gap(
-                        span,
-                        BodyCheckIncompletenessKind::UnsupportedC2AdapterSurface,
-                        "the expression typing algebra does not retain while/for loop frames for nested break expressions",
-                    );
-                    return None;
-                }
                 if let TypeCheckErrorKind::UnsatisfiedPrimitiveOperator {
                     operator,
                     left,
@@ -2368,7 +2376,7 @@ impl BodyChecker<'_, '_, '_> {
             AstExpressionKind::If(if_) => self.lower_if(expression.span, if_, expected),
             AstExpressionKind::While(while_) => self.lower_while(expression.span, while_, expected),
             AstExpressionKind::Loop(block) => {
-                let body = self.lower_loop_body(block)?;
+                let body = self.lower_loop_body(block, SourceLoopKind::Loop)?;
                 Some(LoweredValue::ordinary(TypedExpressionInput::Loop {
                     body: Box::new(body.input),
                 }))
@@ -2412,8 +2420,19 @@ impl BodyChecker<'_, '_, '_> {
                 Some(LoweredValue::ordinary(TypedExpressionInput::Return(value)))
             }
             AstExpressionKind::Break(value) => {
-                if self.source_loop_depth == 0 {
+                let Some(&enclosing) = self.source_loops.last() else {
                     self.source_error(expression.span, "TYPE002", "break used outside a loop");
+                    if let Some(value) = value {
+                        self.walk_expression(value);
+                    }
+                    return None;
+                };
+                if value.is_some() && !enclosing.accepts_break_value() {
+                    self.source_error(
+                        expression.span,
+                        "TYPE002",
+                        "`while` and `for` loops accept only a bare `break`",
+                    );
                     if let Some(value) = value {
                         self.walk_expression(value);
                     }
@@ -2426,7 +2445,7 @@ impl BodyChecker<'_, '_, '_> {
                 Some(LoweredValue::ordinary(TypedExpressionInput::Break(value)))
             }
             AstExpressionKind::Continue => {
-                if self.source_loop_depth == 0 {
+                if self.source_loops.is_empty() {
                     self.source_error(expression.span, "TYPE002", "continue used outside a loop");
                     return None;
                 }
@@ -6455,7 +6474,7 @@ impl BodyChecker<'_, '_, '_> {
                         // manufacture missing-local gaps from a body whose
                         // binding cannot have a typed selection.
                     } else {
-                        let lowered_body = self.lower_loop_body(body);
+                        let lowered_body = self.lower_loop_body(body, SourceLoopKind::For);
                         if lowered_body.is_none() {
                             complete = false;
                         }
@@ -6531,10 +6550,10 @@ impl BodyChecker<'_, '_, '_> {
         complete.then(|| LoweredValue::ordinary(TypedExpressionInput::Block { statements, tail }))
     }
 
-    fn lower_loop_body(&mut self, block: &AstBlock) -> Option<LoweredValue> {
-        self.source_loop_depth += 1;
+    fn lower_loop_body(&mut self, block: &AstBlock, kind: SourceLoopKind) -> Option<LoweredValue> {
+        self.source_loops.push(kind);
         let lowered = self.lower_block(block, None);
-        self.source_loop_depth -= 1;
+        self.source_loops.pop();
         lowered
     }
 
@@ -6603,7 +6622,7 @@ impl BodyChecker<'_, '_, '_> {
                 }
             }
         };
-        let body = self.lower_loop_body(&while_.body);
+        let body = self.lower_loop_body(&while_.body, SourceLoopKind::While);
         let (Some(condition), Some(body)) = (condition, body) else {
             return None;
         };
@@ -10497,6 +10516,89 @@ mod tests {
             check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_or_else(|failure| {
                 panic!("generic control-flow bindings must close: {failure:#?}")
             });
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn while_and_for_loops_accept_only_bare_break() {
+        for body in [
+            "pub fn probe(flag: bool) -> i32 {\n    while flag {\n        break ();\n    }\n    0i32\n}\n",
+            "pub fn probe(flag: bool) -> i32 {\n    while flag {\n        break 5i32;\n    }\n    0i32\n}\n",
+            "pub fn probe(flag: bool) -> i32 {\n    loop {\n        while flag {\n            break 9i32;\n        }\n    }\n}\n",
+        ] {
+            let handoff = C2Handoff::begin(inline_frontend(body)).unwrap();
+            let declarations = DeclarationTable::build(&handoff).unwrap();
+            let checked = check_declarations_c2(&handoff, &declarations).unwrap();
+            let failure =
+                check_workspace_bodies_c2(&handoff, &declarations, &checked).unwrap_err();
+            let diagnostics = format!("{:?}", failure.diagnostics());
+            assert!(
+                diagnostics.contains("accept only a bare `break`"),
+                "body={body} diagnostics={diagnostics}"
+            );
+            assert!(failure.incompleteness().is_empty(), "body={body}");
+        }
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub struct Src {\n",
+            "    pub start: i32,\n",
+            "}\n",
+            "pub struct It {\n",
+            "    current: i32,\n",
+            "}\n",
+            "impl IntoIterator<Src, It> for Src {\n",
+            "    fn into_iter(self) -> It {\n",
+            "        It { current: self.start }\n",
+            "    }\n",
+            "}\n",
+            "impl Iterator<It, i32> for It {\n",
+            "    fn next(&mut self) -> Option<i32> {\n",
+            "        Option::None\n",
+            "    }\n",
+            "}\n",
+            "pub fn probe(source: Src) -> i32 {\n",
+            "    for element in source {\n",
+            "        break 2i32;\n",
+            "    }\n",
+            "    0i32\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(
+            diagnostics.contains("accept only a bare `break`"),
+            "diagnostics={diagnostics}"
+        );
+    }
+
+    #[test]
+    fn bare_breaks_close_in_while_and_for_loops() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn probe(flag: bool) -> i32 {\n",
+            "    while flag {\n",
+            "        break;\n",
+            "    }\n",
+            "    let joined = loop {\n",
+            "        while flag {\n",
+            "            break;\n",
+            "        }\n",
+            "        break 7i32;\n",
+            "    };\n",
+            "    joined\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked = check_declarations_c2(&handoff, &declarations).unwrap();
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, &checked)
+            .unwrap_or_else(|failure| panic!("bare breaks must close: {failure:#?}"));
         assert!(bodies.all_authority_complete());
     }
 }

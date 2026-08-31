@@ -687,7 +687,7 @@ impl<'a> TypeChecker<'a> {
                 let frame = self.loops.pop().expect("while frame was pushed");
                 // The while join is always unit: a valueless `break` supplies
                 // unit and a value-carrying `break` must unify against it.
-                self.unify(&frame.join_type, &InferType::Symbolic(SymbolicType::Unit))?;
+                self.unify(&InferType::Symbolic(SymbolicType::Unit), &frame.join_type)?;
                 RawExpression {
                     natural_type: InferType::Symbolic(SymbolicType::Unit),
                     coerced_type: None,
