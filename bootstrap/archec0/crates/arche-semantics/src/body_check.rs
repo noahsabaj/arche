@@ -316,6 +316,12 @@ pub enum CheckedBodyCallee {
     DirectItem(HirItemId),
     AssociatedItem(HirItemId),
     FunctionPointer,
+    /// A call through a first-class closure value.
+    ClosureValue,
+    /// A generator-factory call constructing the produced generator state.
+    GeneratorFactoryValue,
+    /// The reserved resume postfix on a pinned generator state.
+    GeneratorResume,
     EmbeddedMethod(VirtualMethodId),
     EmbeddedDefinition(VirtualDefinitionId),
     TraitMethod {
@@ -1257,6 +1263,185 @@ impl<'catalog, 'hir, 'locals> BodyChecker<'catalog, 'hir, 'locals> {
 
     fn check_const_body(&mut self, expression: &AstConstExpression) {
         let _ = self.const_at_span(expression.span);
+    }
+
+    /// Types a closure expression exactly when its shape is fully decided at
+    /// C2: a non-generic owner, no captured enclosing locals, every parameter
+    /// and the result annotated, and explicitly empty effect boundaries.
+    /// Anything else returns `None` and keeps the caller's honest gap for the
+    /// C4 capture/Fn-category authority.
+    fn lower_noncapturing_closure(
+        &mut self,
+        closure: &arche_frontend::ast::AstClosure,
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let (owner, expression_ordinal, arguments) =
+            self.closure_expression_identity(span, SemanticBodyKind::Closure)?;
+        if !self.closure_is_noncapturing(span) {
+            return None;
+        }
+        let (parameters, result, throws) = self.annotated_closure_signature(
+            &closure.parameters,
+            &closure.effects,
+            closure.result.as_ref(),
+        )?;
+        let ty = SymbolicType::Closure {
+            owner: Box::new(owner),
+            expression_ordinal,
+            captures: Vec::new(),
+            parameters,
+            result: Box::new(result),
+            requires: SymbolicTypeEffectSet::default(),
+            throws,
+            arguments,
+        };
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(ty)))
+    }
+
+    /// Types a generator-closure expression as its anonymous factory value
+    /// under the same full-decision gates as `lower_noncapturing_closure`.
+    /// A zero-capture factory implements `Fn` exactly, with empty factory
+    /// effect sets per the generator-construction contract.
+    fn lower_noncapturing_generator_closure(
+        &mut self,
+        generator: &arche_frontend::ast::AstGeneratorClosure,
+        span: Span,
+    ) -> Option<LoweredValue> {
+        let (owner, expression_ordinal, arguments) =
+            self.closure_expression_identity(span, SemanticBodyKind::Generator)?;
+        if !self.closure_is_noncapturing(span) {
+            return None;
+        }
+        let (parameters, result, throws) = self.annotated_closure_signature(
+            &generator.parameters,
+            &generator.effects,
+            generator.result.as_ref(),
+        )?;
+        let resume = self.type_at_span(generator.resume.span)?;
+        let yields = self.type_at_span(generator.yields.span)?;
+        let target = arche_frontend::GeneratorTarget::Anonymous {
+            owner,
+            expression_ordinal,
+            arguments,
+        };
+        let produced = SymbolicType::Generator {
+            target: Box::new(target.clone()),
+            captures: Vec::new(),
+            parameters: parameters.clone(),
+            factory_unsafe: false,
+            resume: Box::new(resume),
+            yields: Box::new(yields),
+            result: Box::new(result),
+            requires: SymbolicTypeEffectSet::default(),
+            throws,
+        };
+        let ty = SymbolicType::GeneratorFactory {
+            target: Box::new(target),
+            captures: Vec::new(),
+            call_trait: arche_frontend::CallTrait::Fn,
+            parameters,
+            factory_unsafe: false,
+            produced_generator: Box::new(produced),
+        };
+        Some(LoweredValue::ordinary(TypedExpressionInput::Known(ty)))
+    }
+
+    /// Resolves the owner declaration path and the C1 expression ordinal of
+    /// the closure or generator body row whose span sits inside this
+    /// expression. Non-generic owners only; anything ambiguous fails closed.
+    fn closure_expression_identity(
+        &self,
+        span: Span,
+        kind: SemanticBodyKind,
+    ) -> Option<(SemanticDeclarationPath, u64, Vec<GenericArgumentShape>)> {
+        let entry = self.catalog.definitions.get(&self.scope.item.id)?;
+        let shape = entry.declaration_shape?;
+        // Inside its own owner, a closure's owner instantiation is exactly
+        // the identity arguments of the owner's generic parameters.
+        let arguments = shape
+            .generic_parameters
+            .iter()
+            .enumerate()
+            .map(|(index, kind)| {
+                let index = u64::try_from(index).ok()?;
+                Some(match kind {
+                    GenericParameterKind::Type => {
+                        GenericArgumentShape::Type(SymbolicType::BoundType { depth: 0, index })
+                    }
+                    GenericParameterKind::Lifetime => {
+                        GenericArgumentShape::Lifetime(SymbolicLifetime::Bound { depth: 0, index })
+                    }
+                    GenericParameterKind::IntegerConst(integer_type) => {
+                        GenericArgumentShape::IntegerConst(SymbolicConstExpression {
+                            integer_type: *integer_type,
+                            node: SymbolicConstNode::Bound { depth: 0, index },
+                        })
+                    }
+                })
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let mut rows = self.scope.target.bodies.iter().filter(|body| {
+            body.owner == self.scope.item.id && body.kind == kind && span_contains(span, body.span)
+        });
+        let row = rows.next()?;
+        if rows.next().is_some() {
+            return None;
+        }
+        Some((entry.semantic_path(), row.ordinal, arguments))
+    }
+
+    /// True when no path inside the expression span resolves to a local
+    /// declared outside it — i.e. the closure captures nothing.
+    fn closure_is_noncapturing(&self, span: Span) -> bool {
+        !self.scope.target.path_resolutions.iter().any(|resolution| {
+            if !span_contains(span, resolution.span) {
+                return false;
+            }
+            let [Res::Local(local)] = resolution.resolutions.as_slice() else {
+                return false;
+            };
+            self.scope
+                .item
+                .locals
+                .iter()
+                .find(|binding| binding.id == *local)
+                .is_some_and(|binding| !span_contains(span, binding.span))
+        })
+    }
+
+    /// Fully annotated closure signature with explicitly empty effect
+    /// boundaries; `None` whenever inference would be required.
+    fn annotated_closure_signature(
+        &mut self,
+        parameters: &[arche_frontend::ast::AstClosureParameter],
+        effects: &arche_frontend::ast::AstEffectSets,
+        result: Option<&arche_frontend::ast::AstType>,
+    ) -> Option<(Vec<SymbolicType>, SymbolicType, SymbolicTypeEffectSet)> {
+        let explicitly_empty_requires = effects
+            .requires
+            .as_ref()
+            .is_some_and(|set| set.members.is_empty());
+        if !explicitly_empty_requires {
+            return None;
+        }
+        // Spelled throws members lower by annotation; C1's convention wraps a
+        // nonempty source list as PendingC4 until canonicalization, and an
+        // explicitly empty set is already canonical.
+        let throws_members = effects
+            .throws
+            .as_ref()?
+            .members
+            .iter()
+            .map(|member| self.type_at_span(member.span))
+            .collect::<Option<Vec<_>>>()?;
+        let throws = SymbolicTypeEffectSet::pending_c4(throws_members);
+        let mut parameter_types = Vec::new();
+        for parameter in parameters {
+            let annotation = parameter.ty.as_ref()?;
+            parameter_types.push(self.type_at_span(annotation.span)?);
+        }
+        let result = self.type_at_span(result?.span)?;
+        Some((parameter_types, result, throws))
     }
 
     fn check_closure_body(&mut self, closure: &arche_frontend::ast::AstClosure) {
@@ -2424,21 +2609,31 @@ impl BodyChecker<'_, '_, '_> {
                 self.unsafe_depth -= 1;
                 lowered
             }
-            AstExpressionKind::Closure(_closure) => {
-                self.gap(
-                    expression.span,
-                    BodyCheckIncompletenessKind::MissingClosureType,
-                    "closure expression type requires the C4 capture/Fn-category authority",
-                );
-                None
+            AstExpressionKind::Closure(closure) => {
+                if let Some(value) = self.lower_noncapturing_closure(closure, expression.span) {
+                    Some(value)
+                } else {
+                    self.gap(
+                        expression.span,
+                        BodyCheckIncompletenessKind::MissingClosureType,
+                        "closure expression type requires the C4 capture/Fn-category authority",
+                    );
+                    None
+                }
             }
-            AstExpressionKind::GeneratorClosure(_generator) => {
-                self.gap(
-                    expression.span,
-                    BodyCheckIncompletenessKind::MissingGeneratorType,
-                    "generator-closure factory type requires the C4 capture authority",
-                );
-                None
+            AstExpressionKind::GeneratorClosure(generator) => {
+                if let Some(value) =
+                    self.lower_noncapturing_generator_closure(generator, expression.span)
+                {
+                    Some(value)
+                } else {
+                    self.gap(
+                        expression.span,
+                        BodyCheckIncompletenessKind::MissingGeneratorType,
+                        "generator-closure factory type requires the C4 capture authority",
+                    );
+                    None
+                }
             }
             AstExpressionKind::Return(value) => {
                 let expected = self.typing.return_type().cloned();
@@ -2726,7 +2921,10 @@ impl BodyChecker<'_, '_, '_> {
     ) -> Option<LoweredValue> {
         let (mut value, parts) = match self.embedded_prelude_call_head(base, parts) {
             Some((value, rest)) => (value?, rest),
-            None => (self.lower_expression(base, expected)?, parts),
+            None => match self.verified_associated_call_head(base, parts, expected) {
+                Some((value, rest)) => (value?, rest),
+                None => (self.lower_expression(base, expected)?, parts),
+            },
         };
         for part in parts {
             value = match &part.kind {
@@ -2893,13 +3091,91 @@ impl BodyChecker<'_, '_, '_> {
                     LoweredValue::ordinary(TypedExpressionInput::Unit)
                 }
                 AstPostfixKind::Resume(resume) => {
-                    self.check_expression(resume, None);
-                    self.gap(
-                        part.span,
-                        BodyCheckIncompletenessKind::MissingGeneratorType,
-                        "resume postfix requires finalized generator suspension-state typing",
-                    );
-                    return None;
+                    // The reserved resume postfix types exactly on Pin<&mut G>
+                    // for a known generator G: the argument checks against
+                    // G's resume type and the call yields
+                    // GeneratorState<G::Yield, G::Return>.
+                    let receiver_ty = match &value.input {
+                        TypedExpressionInput::Known(ty) => Some(ty.clone()),
+                        _ => self
+                            .materialize(&value, None, part.span)
+                            .map(|checked| checked.ty().clone()),
+                    };
+                    let pinned = match &receiver_ty {
+                        Some(SymbolicType::NominalPath {
+                            declaration,
+                            arguments,
+                        }) if self.embedded_nominal_kind(declaration)
+                            == Some(CompilerNominalKind::Pin) =>
+                        {
+                            match arguments.as_slice() {
+                                [GenericArgumentShape::Type(SymbolicType::Reference {
+                                    mutability: Mutability::Mutable,
+                                    pointee,
+                                    ..
+                                })] => match &**pointee {
+                                    SymbolicType::Generator {
+                                        resume: resume_ty,
+                                        yields,
+                                        result,
+                                        throws,
+                                        ..
+                                    } => Some((
+                                        resume_ty.as_ref().clone(),
+                                        yields.as_ref().clone(),
+                                        result.as_ref().clone(),
+                                        throws.clone(),
+                                    )),
+                                    _ => None,
+                                },
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    let state_path = pinned.as_ref().and_then(|_| {
+                        let definition = {
+                            let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+                            core.typed_c2()
+                                .nominal(CompilerNominalKind::GeneratorState)
+                                .c1_definition()
+                        };
+                        self.embedded_declaration_path(definition)
+                    });
+                    match (pinned, state_path) {
+                        (Some((resume_ty, yields, completion, throws)), Some(declaration)) => {
+                            self.check_expression(resume, Some(&resume_ty));
+                            if !throws.members().is_empty() {
+                                self.pending_c4(
+                                    part.span,
+                                    b"generator-resume-throws".to_vec(),
+                                    "resume exception propagation is finalized by C4 effects",
+                                );
+                            }
+                            let state = SymbolicType::NominalPath {
+                                declaration,
+                                arguments: vec![
+                                    GenericArgumentShape::Type(yields),
+                                    GenericArgumentShape::Type(completion),
+                                ],
+                            };
+                            self.calls.push(CheckedBodyCall {
+                                span: part.span,
+                                callee: CheckedBodyCallee::GeneratorResume,
+                                result: state.clone(),
+                            });
+                            LoweredValue::ordinary(TypedExpressionInput::Known(state))
+                        }
+                        _ => {
+                            self.check_expression(resume, None);
+                            self.gap(
+                                part.span,
+                                BodyCheckIncompletenessKind::MissingGeneratorType,
+                                "resume postfix requires finalized generator suspension-state typing",
+                            );
+                            return None;
+                        }
+                    }
                 }
             };
         }
@@ -5125,6 +5401,187 @@ impl BodyChecker<'_, '_, '_> {
         Some(LoweredValue::ordinary(TypedExpressionInput::Known(result)))
     }
 
+    /// Types a direct call of an associated compiler nominal method whose
+    /// generics are only decidable from the call arguments (`Pin::new_unchecked`
+    /// on a concrete referent, say). Engages only when the value path would
+    /// gap: no turbofish, generics present, and the expected type alone does
+    /// not bind every generic. Everything else falls through to the ordinary
+    /// function-value lowering unchanged.
+    fn verified_associated_call_head<'p>(
+        &mut self,
+        base: &AstExpression,
+        parts: &'p [arche_frontend::ast::AstPostfix],
+        expected: Option<&SymbolicType>,
+    ) -> Option<(Option<LoweredValue>, &'p [arche_frontend::ast::AstPostfix])> {
+        let AstExpressionKind::Path(path) = &base.kind else {
+            return None;
+        };
+        if path.generic_arguments.is_some() {
+            return None;
+        }
+        let [first, rest @ ..] = parts else {
+            return None;
+        };
+        let AstPostfixKind::Call(arguments) = &first.kind else {
+            return None;
+        };
+        {
+            let path_uses = self
+                .scope
+                .item
+                .path_uses
+                .iter()
+                .filter(|candidate| candidate.path.span == path.span)
+                .collect::<Vec<_>>();
+            let [path_use] = path_uses.as_slice() else {
+                return None;
+            };
+            if path_use.lexical_local.is_some() || !path_use.generic_arguments.is_empty() {
+                return None;
+            }
+        }
+        let resolution = self
+            .scope
+            .target
+            .path_resolutions
+            .iter()
+            .find(|resolution| resolution.span == path.span)?;
+        if resolution.unresolved.is_some() {
+            return None;
+        }
+        let [Res::Builtin(arche_frontend::BuiltinRes {
+            target: BuiltinResTarget::Method(method),
+        })] = resolution.resolutions.as_slice()
+        else {
+            return None;
+        };
+        let method = *method;
+        let spec = {
+            let core = &self.catalog.handoff.frontend().inventory().embedded_core;
+            let authority = core.compiler_nominal_method_for_c1_method(method)?;
+            CompilerNominalMethodSpec::from_authority(authority)
+        };
+        if spec.receiver != CompilerNominalMethodReceiverMode::None
+            || spec.receiver_type.is_some()
+            || !spec.selectors.is_empty()
+            || spec.generics.is_empty()
+        {
+            return None;
+        }
+        let mut substitution = CompilerMethodSubstitution::default();
+        if rest.is_empty() {
+            if let Some(expected) = expected {
+                match self.bind_compiler_method_pattern(
+                    &spec.result,
+                    expected,
+                    &mut substitution,
+                    false,
+                ) {
+                    Some(true) => {}
+                    // A mismatch or an unrepresentable pattern is the value
+                    // path's diagnostic to mint; stay out of its way.
+                    Some(false) | None => return None,
+                }
+            }
+        }
+        let fully_bound = spec.generics.iter().all(|generic| {
+            let coordinate = generic.coordinate();
+            match generic.kind() {
+                CompilerMethodGenericParameterKind::Type => {
+                    substitution.types.contains_key(&coordinate)
+                        || substitution.capability_packs.contains_key(&coordinate)
+                }
+                CompilerMethodGenericParameterKind::Lifetime => {
+                    substitution.lifetimes.contains_key(&coordinate)
+                }
+            }
+        });
+        if fully_bound {
+            return None;
+        }
+        // Committed: bind the remaining generics from the checked arguments.
+        let checked = match self.lower_arguments_bottom_up(arguments) {
+            Some(checked) => checked,
+            None => return Some((None, rest)),
+        };
+        if spec.parameters.len() != checked.len() {
+            self.source_error(
+                first.span,
+                "TYPE002",
+                format!(
+                    "call expects {} arguments, found {}",
+                    spec.parameters.len(),
+                    checked.len()
+                ),
+            );
+            return Some((None, rest));
+        }
+        for (pattern, (argument_span, actual)) in spec.parameters.iter().zip(&checked) {
+            match self.bind_compiler_method_pattern(pattern, actual, &mut substitution, false) {
+                Some(true) => {}
+                Some(false) => {
+                    self.source_error(
+                        *argument_span,
+                        "TYPE002",
+                        "argument does not match the verified compiler method parameter",
+                    );
+                    return Some((None, rest));
+                }
+                None => return Some((None, rest)),
+            }
+        }
+        if !self.validate_compiler_method_generics(
+            &spec,
+            &substitution,
+            &BTreeSet::new(),
+            first.span,
+        ) {
+            return Some((None, rest));
+        }
+        if !self.validate_compiler_method_effects(&spec, &substitution, first.span) {
+            return Some((None, rest));
+        }
+        let parameters = match spec
+            .parameters
+            .iter()
+            .map(|pattern| self.compiler_method_pattern_type(pattern, &substitution, first.span))
+            .collect::<Option<Vec<_>>>()
+        {
+            Some(parameters) => parameters,
+            None => return Some((None, rest)),
+        };
+        let result =
+            match self.compiler_method_pattern_type(&spec.result, &substitution, first.span) {
+                Some(result) => result,
+                None => return Some((None, rest)),
+            };
+        if spec.is_unsafe && self.unsafe_depth == 0 {
+            self.source_error(
+                first.span,
+                "TYPE002",
+                "unsafe compiler nominal method call requires an unsafe context",
+            );
+            return Some((None, rest));
+        }
+        if !spec.requires.is_empty() || !spec.throws.is_empty() {
+            self.pending_c4(
+                first.span,
+                compiler_method_dependency_bytes(spec.method, b"associated-effects"),
+                "compiler nominal method effect membership is finalized by C4",
+            );
+        }
+        self.check_prepared_arguments(&parameters, &checked, first.span);
+        self.calls.push(CheckedBodyCall {
+            span: first.span,
+            callee: CheckedBodyCallee::EmbeddedMethod(spec.method),
+            result: result.clone(),
+        });
+        Some((
+            Some(LoweredValue::ordinary(TypedExpressionInput::Known(result))),
+            rest,
+        ))
+    }
+
     fn lower_embedded_include_call(
         &mut self,
         definition: VirtualDefinitionId,
@@ -5310,26 +5767,70 @@ impl BodyChecker<'_, '_, '_> {
             TypedExpressionInput::Known(ty) => ty.clone(),
             _ => self.materialize(&value, None, span)?.ty().clone(),
         };
-        let SymbolicType::FunctionPointer {
-            parameters,
-            result,
-            requires,
-            throws,
-            ..
-        } = function_ty
-        else {
-            self.source_error(span, "TYPE002", "value is not a function pointer");
-            return None;
+        let (callee, parameters, result, has_effects) = match function_ty {
+            SymbolicType::FunctionPointer {
+                parameters,
+                result,
+                requires,
+                throws,
+                ..
+            } => {
+                let has_effects = !requires.members().is_empty() || !throws.members().is_empty();
+                (callee, parameters, *result, has_effects)
+            }
+            SymbolicType::Closure {
+                parameters,
+                result,
+                requires,
+                throws,
+                ..
+            } => {
+                let has_effects = !requires.members().is_empty() || !throws.members().is_empty();
+                (
+                    CheckedBodyCallee::ClosureValue,
+                    parameters,
+                    *result,
+                    has_effects,
+                )
+            }
+            SymbolicType::GeneratorFactory {
+                parameters,
+                factory_unsafe,
+                produced_generator,
+                ..
+            } => {
+                if factory_unsafe && self.unsafe_depth == 0 {
+                    for argument in arguments {
+                        self.check_expression(argument, None);
+                    }
+                    self.source_error(
+                        span,
+                        "TYPE002",
+                        "unsafe generator factory call requires an unsafe context",
+                    );
+                    return None;
+                }
+                // Factory calls have exact empty requires/throws by contract.
+                (
+                    CheckedBodyCallee::GeneratorFactoryValue,
+                    parameters,
+                    *produced_generator,
+                    false,
+                )
+            }
+            _ => {
+                self.source_error(span, "TYPE002", "value is not a function pointer");
+                return None;
+            }
         };
         self.check_call_arguments(&parameters, arguments, span);
-        if !requires.members().is_empty() || !throws.members().is_empty() {
+        if has_effects {
             self.pending_c4(
                 span,
                 b"call-effect-membership".to_vec(),
                 "call effect membership is finalized by C4",
             );
         }
-        let result = *result;
         self.calls.push(CheckedBodyCall {
             span,
             callee,
@@ -6429,7 +6930,18 @@ impl BodyChecker<'_, '_, '_> {
                         }
                     }
                     if let Some(lowered) = lowered {
-                        statements.push(lowered.input);
+                        // The body-level pass re-infers this value; an
+                        // annotation must ride along or an
+                        // annotation-determined inference variable (an empty
+                        // array's element, say) would be re-allocated with no
+                        // context and survive unresolved.
+                        statements.push(match &annotation {
+                            Some(target) => TypedExpressionInput::Coerce {
+                                value: Box::new(lowered.input),
+                                target: target.clone(),
+                            },
+                            None => lowered.input,
+                        });
                     }
                 }
                 AstStatementKind::For {
@@ -8656,6 +9168,13 @@ fn checked_expression_diverges(expression: &CheckedExpression) -> bool {
     }
 }
 
+/// True when `inner` lies entirely within `outer` in the same file.
+fn span_contains(outer: Span, inner: Span) -> bool {
+    outer.file == inner.file
+        && inner.start.byte >= outer.start.byte
+        && inner.end.byte <= outer.end.byte
+}
+
 fn peel_references(mut ty: &SymbolicType) -> &SymbolicType {
     while let SymbolicType::Reference { pointee, .. } = ty {
         ty = pointee;
@@ -9170,51 +9689,14 @@ mod tests {
         table
     }
 
-    fn corpus_body_failure(name: &str) -> C2BodyCheckFailure {
-        let handoff = C2Handoff::begin(corpus_frontend(name)).unwrap();
-        let expected_bodies = handoff
-            .frontend()
-            .hir()
-            .packages
-            .iter()
-            .flat_map(|package| &package.targets)
-            .map(|target| target.bodies.len())
-            .sum::<usize>();
-        let declarations = DeclarationTable::build(&handoff).unwrap();
-        let checked_declarations = check_declarations_c2(&handoff, &declarations);
-        let checked_declarations = match &checked_declarations {
-            Ok(facts) => facts,
-            Err(failure) => failure.partial(),
-        };
-        let failure =
-            check_workspace_bodies_c2(&handoff, &declarations, checked_declarations).unwrap_err();
-        assert_eq!(
-            failure.partial().len(),
-            expected_bodies,
-            "corpus={name}, gaps={:?}",
-            failure.incompleteness()
-        );
-        failure
-    }
-
     #[test]
     fn real_v1_bodies_retain_every_body_and_never_turn_adapter_gaps_into_diagnostics() {
-        let failure = corpus_body_failure("language-game");
-        assert!(
-            failure.diagnostics().is_none(),
-            "diagnostics={:?}",
-            failure.diagnostics()
-        );
-        assert!(!failure.incompleteness().is_empty());
-        let complete = failure.partial().bodies().count();
-        assert!(complete > 0);
-        assert!(complete < failure.partial().len());
-        assert!(!failure.partial().all_authority_complete());
-
-        // The environment corpus's bodies now close completely: every body is
-        // retained and authority-complete, with no diagnostics minted.
-        let environment = corpus_body_complete("language-environment");
-        assert_eq!(environment.bodies().count(), environment.len());
+        // Both corpora's bodies close completely: every body is retained and
+        // authority-complete, with no diagnostics minted.
+        for corpus in ["language-game", "language-environment"] {
+            let table = corpus_body_complete(corpus);
+            assert_eq!(table.bodies().count(), table.len(), "corpus={corpus}");
+        }
     }
 
     #[test]
@@ -9403,7 +9885,9 @@ mod tests {
         let cascaded = C2Handoff::begin(inline_frontend(concat!(
             "pub fn invalid() -> i32 {\n",
             "    let invalid: i32 = true;\n",
-            "    let closure = move |input: i32| requires {} throws {} -> i32 { input };\n",
+            "    let outer = 2i32;\n",
+            "    let closure = move |input: i32|\n",
+            "        requires {} throws {} -> i32 { input + outer };\n",
             "    1i32\n",
             "}\n",
         )))
@@ -9495,16 +9979,16 @@ mod tests {
 
     #[test]
     fn checked_body_handles_are_owner_branded() {
-        let game = corpus_body_failure("language-game");
+        let game = corpus_body_complete("language-game");
         let environment = corpus_body_complete("language-environment");
-        let game_body = game.partial().bodies().next().unwrap();
+        let game_body = game.bodies().next().unwrap();
         let environment_body = environment.bodies().next().unwrap();
-        let game_handle = game.partial().handle(game_body.id()).unwrap();
+        let game_handle = game.handle(game_body.id()).unwrap();
         let environment_handle = environment.handle(environment_body.id()).unwrap();
 
-        assert!(game.partial().body(&game_handle).is_some());
+        assert!(game.body(&game_handle).is_some());
         assert!(environment.body(&environment_handle).is_some());
-        assert!(game.partial().body(&environment_handle).is_none());
+        assert!(game.body(&environment_handle).is_none());
         assert!(environment.body(&game_handle).is_none());
     }
 
@@ -10891,5 +11375,310 @@ mod tests {
             "diagnostics={diagnostics} incompleteness={:?}",
             failure.incompleteness()
         );
+    }
+
+    #[test]
+    fn noncapturing_annotated_closures_type_as_closure_values() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn holder(seed: i32) -> i32 {\n",
+            "    let doubler = move |value: i32|\n",
+            "        requires {} throws {} -> i32 {\n",
+            "            value + value\n",
+            "        };\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("noncapturing values must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn capturing_closures_keep_the_capture_authority_gap() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn holder(seed: i32) -> i32 {\n",
+            "    let outer = seed;\n",
+            "    let adder = move |value: i32|\n",
+            "        requires {} throws {} -> i32 {\n",
+            "            value + outer\n",
+            "        };\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "captures are C4 authority, not rejections: {:?}",
+            failure.diagnostics()
+        );
+        assert!(failure
+            .incompleteness()
+            .iter()
+            .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingClosureType));
+    }
+
+    #[test]
+    fn closure_and_factory_values_are_callable_with_exact_signatures() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn drive(seed: i32) -> i32 {\n",
+            "    let doubler = move |value: i32|\n",
+            "        requires {} throws {} -> i32 {\n",
+            "            value + value\n",
+            "        };\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let state = factory(seed);\n",
+            "    doubler(seed)\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("callable values must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+        let callees = bodies
+            .bodies()
+            .flat_map(C2BodyView::calls)
+            .map(CheckedBodyCall::callee)
+            .collect::<Vec<_>>();
+        assert!(callees.contains(&&CheckedBodyCallee::ClosureValue));
+        assert!(callees.contains(&&CheckedBodyCallee::GeneratorFactoryValue));
+    }
+
+    #[test]
+    fn closure_call_argument_mismatches_are_type002() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn drive(seed: i32) -> i32 {\n",
+            "    let doubler = move |value: i32|\n",
+            "        requires {} throws {} -> i32 {\n",
+            "            value + value\n",
+            "        };\n",
+            "    doubler('x')\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(failure.diagnostics().is_some());
+        assert!(diagnostics.contains("TYPE002"), "diagnostics={diagnostics}");
+    }
+
+    #[test]
+    fn generic_owners_carry_identity_arguments_on_closure_values() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub enum Fault2 {\n",
+            "    Soft,\n",
+            "}\n",
+            "pub fn owner<'a, T: Clone + 'a, const N: usize>(seed: i32) -> i32 {\n",
+            "    let doubler = move |value: i32|\n",
+            "        requires {} throws {} -> i32 {\n",
+            "            value + value\n",
+            "        };\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws { Fault2 } -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let state = factory(seed);\n",
+            "    doubler(seed)\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies =
+            check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_or_else(|failure| {
+                panic!("generic-owner closure values must close: {failure:#?}")
+            });
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn unchecked_pin_construction_infers_from_its_argument() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn drive(seed: i32) -> i32 {\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let mut state = factory(seed);\n",
+            "    let pinned = unsafe { Pin::new_unchecked(&mut state) };\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("unchecked pin must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+    }
+
+    #[test]
+    fn checked_pin_keeps_the_unpin_bound_gap_and_unsafe_stays_gated() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn checked(seed: i32) -> i32 {\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let mut state = factory(seed);\n",
+            "    let pinned = Pin::new(&mut state);\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "the Unpin bound awaits its structural judgment: {:?}",
+            failure.diagnostics()
+        );
+        assert!(!failure.incompleteness().is_empty());
+
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn no_unsafe(seed: i32) -> i32 {\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let mut state = factory(seed);\n",
+            "    let pinned = Pin::new_unchecked(&mut state);\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        let diagnostics = format!("{:?}", failure.diagnostics());
+        assert!(failure.diagnostics().is_some());
+        assert!(
+            diagnostics.contains("unsafe context"),
+            "diagnostics={diagnostics}"
+        );
+    }
+
+    #[test]
+    fn pinned_resume_types_the_generator_state() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn drive(seed: i32) -> i32 {\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let mut state = factory(seed);\n",
+            "    let resumed = unsafe { Pin::new_unchecked(&mut state) }.resume(1i32);\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let bodies = check_workspace_bodies_c2(&handoff, &declarations, checked)
+            .unwrap_or_else(|failure| panic!("pinned resume must close: {failure:#?}"));
+        assert!(bodies.all_authority_complete());
+        assert!(bodies
+            .bodies()
+            .flat_map(C2BodyView::calls)
+            .any(|call| call.callee() == &CheckedBodyCallee::GeneratorResume
+                && matches!(
+                    call.result(),
+                    SymbolicType::NominalPath { declaration, arguments }
+                        if declaration.name == "GeneratorState"
+                            && arguments.len() == 2
+                )));
+    }
+
+    #[test]
+    fn resume_off_the_pin_stays_the_suspension_gap() {
+        let handoff = C2Handoff::begin(inline_frontend(concat!(
+            "pub fn drive(seed: i32) -> i32 {\n",
+            "    let factory = gen move |start: i32|\n",
+            "        resume i32 yields i32 requires {} throws {} -> i32 {\n",
+            "            let next = yield start;\n",
+            "            next\n",
+            "        };\n",
+            "    let mut state = factory(seed);\n",
+            "    let resumed = state.resume(1i32);\n",
+            "    seed\n",
+            "}\n",
+        )))
+        .unwrap();
+        let declarations = DeclarationTable::build(&handoff).unwrap();
+        let checked_result = check_declarations_c2(&handoff, &declarations);
+        let checked = match &checked_result {
+            Ok(facts) => facts,
+            Err(failure) => failure.partial(),
+        };
+        let failure = check_workspace_bodies_c2(&handoff, &declarations, checked).unwrap_err();
+        assert!(
+            failure.diagnostics().is_none(),
+            "unpinned resume is later authority, not a rejection: {:?}",
+            failure.diagnostics()
+        );
+        assert!(failure
+            .incompleteness()
+            .iter()
+            .any(|gap| gap.kind() == BodyCheckIncompletenessKind::MissingGeneratorType));
     }
 }
